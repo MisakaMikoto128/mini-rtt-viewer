@@ -1,7 +1,7 @@
 // release 版隐藏控制台黑框;debug 保留方便看日志
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use mini_rtt_viewer::rtt;
+use mini_rtt_viewer::rtt::{self, APP_SHUTDOWN, WorkerHandle};
 use rtt::WorkerMsg;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -19,13 +19,15 @@ const MAX_LINE_CHARS: usize = 256; // 单行硬上限:积压数据批量到达�
 const MAX_LINES: usize = 3000;
 
 fn main() -> anyhow::Result<()> {
+    eprintln!("[trace] app starting");
     let app = AppWindow::new()?;
+    eprintln!("[trace] window created");
 
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
     // 每次连接新建一条命令管道;UI 持有"当前 worker 的 sender"。
     let cmd_tx: Rc<RefCell<Option<mpsc::Sender<String>>>> = Rc::new(RefCell::new(None));
     // 连接互斥门闩:worker 线程存活期间(含阻塞在 connect() 时)不允许 spawn 新 worker
-    let stop_flag: Rc<RefCell<Option<Arc<AtomicBool>>>> = Rc::new(RefCell::new(None));
+    let worker: Rc<RefCell<Option<Arc<WorkerHandle>>>> = Rc::new(RefCell::new(None));
 
     // 行式日志模型:worker 文本 → 断帧成行 → VecModel,ListView 虚拟化渲染
     let lines: Rc<VecModel<SharedString>> = Rc::new(VecModel::default());
@@ -41,7 +43,7 @@ fn main() -> anyhow::Result<()> {
         let pending = pending.clone();
         let last_data = last_data.clone();
         let lines = lines.clone();
-        let stop_flag = stop_flag.clone();
+        let worker = worker.clone();
         timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
             let ui = match weak.upgrade() { Some(u) => u, None => return };
             // 1. 消化 worker 消息
@@ -60,7 +62,7 @@ fn main() -> anyhow::Result<()> {
                     }
                     Ok(WorkerMsg::Exited) => {
                         // worker 真正退出(含 DLL close),解锁"再连接"
-                        *stop_flag.borrow_mut() = None;
+                        *worker.borrow_mut() = None;
                         ui.set_connecting(false);
                         ui.set_connected(false);
                     }
@@ -116,38 +118,44 @@ fn main() -> anyhow::Result<()> {
     {
         let weak = app.as_weak();
         let cmd_tx = cmd_tx.clone();
-        let stop_flag = stop_flag.clone();
+        let worker = worker.clone();
         let msg_tx = msg_tx.clone();
         app.on_connect_clicked(move || {
-            if stop_flag.borrow().is_some() {
+            if worker.borrow().as_ref().is_some_and(|h| h.alive.load(Ordering::Relaxed)) {
                 return; // 上一个 worker 还活着(可能在阻塞 connect),严禁并发
             }
+            *worker.borrow_mut() = None;
             let ui = weak.unwrap();
+            // chip 名去首尾空白;空名直接拒绝(空设备名会让 J-Link DLL 沿用上一次设备,行为不可预期)
+            let chip = ui.get_chip_name().trim().to_string();
+            if chip.is_empty() {
+                ui.set_status_text("● 请先填写目标芯片型号".into());
+                return;
+            }
             ui.set_connecting(true);
             ui.set_status_text("● 连接中…".into());
 
-            let chip = ui.get_chip_name().to_string();
             let iface = ui.get_iface_index() as usize;
             let speed = SPEEDS_KHZ[ui.get_speed_index().clamp(0, 7) as usize];
             let channel = ui.get_channel() as u32;
 
             let (tx, rx) = mpsc::channel::<String>();
             *cmd_tx.borrow_mut() = Some(tx);
-            let flag = rtt::spawn(chip, iface, speed, channel, msg_tx.clone(), rx);
-            *stop_flag.borrow_mut() = Some(flag);
+            let handle = rtt::spawn(chip, iface, speed, channel, msg_tx.clone(), rx);
+            *worker.borrow_mut() = Some(handle);
         });
     }
 
     // 断开/取消连接:置停止标志,等 worker 的 Exited 消息回到未连接态。
-    // 不在此处清 stop_flag —— worker 可能还阻塞在 DLL 调用里,此刻 spawn 新
+    // 不在此处清 worker 句柄 —— worker 可能还阻塞在 DLL 调用里,此刻 spawn 新
     // worker 会并发抢 J-Link(数据损坏 + 状态错乱的根源)。
     {
         let weak = app.as_weak();
-        let stop_flag = stop_flag.clone();
+        let worker = worker.clone();
         let cmd_tx = cmd_tx.clone();
         app.on_disconnect_clicked(move || {
-            if let Some(flag) = stop_flag.borrow().as_ref() {
-                flag.store(true, Ordering::Relaxed);
+            if let Some(h) = worker.borrow().as_ref() {
+                h.stop.store(true, Ordering::Relaxed);
             }
             *cmd_tx.borrow_mut() = None; // 掐断旧管道,worker try_recv 后自行退出
             let ui = weak.unwrap();
@@ -201,13 +209,36 @@ fn main() -> anyhow::Result<()> {
                 text.push_str(lines.row_data(i).unwrap_or_default().as_str());
                 text.push('\n');
             }
+            eprintln!("[trace] copy handler fired, rows={n}, bytes={}", text.len());
             match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-                Ok(()) => ui.set_status_text(format!("● 已复制 {n} 行到剪贴板").into()),
-                Err(e) => ui.set_status_text(format!("● 复制失败: {e}").into()),
+                Ok(()) => {
+                    eprintln!("[trace] clipboard set ok");
+                    ui.set_status_text(format!("● 已复制 {n} 行到剪贴板").into())
+                }
+                Err(e) => {
+                    eprintln!("[trace] clipboard set err: {e}");
+                    ui.set_status_text(format!("● 复制失败: {e}").into())
+                }
             }
         });
     }
 
+    eprintln!("[trace] entering event loop");
     app.run()?;
+    eprintln!("[trace] event loop exited");
+    // 应用退出:通知 worker 停止,等它清理完 DLL;超时强制退出,不留僵尸进程
+    APP_SHUTDOWN.store(true, Ordering::Relaxed);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let alive = worker.borrow().as_ref().is_some_and(|h| h.alive.load(Ordering::Relaxed));
+        if !alive {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if worker.borrow().as_ref().is_some_and(|h| h.alive.load(Ordering::Relaxed)) {
+        // worker 卡死在不可中断的 DLL 调用里(如模态弹窗):强制退出,宁可不优雅也不留僵尸
+        std::process::exit(0);
+    }
     Ok(())
 }

@@ -57,6 +57,23 @@ impl JLinkDll {
         }
     }
 
+    /// 抑制 J-Link DLL 的所有模态弹窗(固件升级确认、设备选择框、连接错误框等)。
+    /// 不抑制的话,连接失败时 DLL 会弹隐藏对话框等待确认,worker 线程看起来
+    /// 像"卡在连接中"永远不返回(命令序列与 pylink-square disable_dialog_boxes 一致)。
+    pub fn disable_dialog_boxes(&self) {
+        for cmd in [
+            "SilentUpdateFW",
+            "SuppressInfoUpdateFW",
+            "SetBatchMode = 1",
+            "HideDeviceSelection = 1",
+            "SuppressControlPanel",
+            "DisableInfoWinFlashDL",
+            "DisableInfoWinFlashBPs",
+        ] {
+            self.exec_command(cmd);
+        }
+    }
+
     pub fn close(&self) {
         unsafe {
             let f: Symbol<unsafe extern "C" fn()> = self.lib.get(b"JLINKARM_Close").unwrap();

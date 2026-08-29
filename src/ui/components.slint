@@ -7,6 +7,11 @@ export component AppButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
+    // 暴露为标准 UIA 按钮:读屏器/自动化可直接按压
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+
     height: AppTheme.ctrl-h;
     border-radius: AppTheme.radius;
     property <bool> hovered <=> ta.has-hover;
@@ -23,11 +28,22 @@ export component AppButton inherits Rectangle {
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
-        // 按下即触发:不依赖释放位置,快速点击/轻微拖动不丢点击(修"要点两次")
+        // 双路触发:
+        //  - 物理按下(pointer-event down)立即触发,快速点击/轻微拖动不丢点击
+        //  - UIA/读屏器的 Invoke 走 TouchArea clicked(抬起语义)
+        // fired 标志防止一次物理点击被两条路径触发两次
+        property <bool> fired: false;
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down) {
+                fired = true;
                 root.clicked();
             }
+        }
+        clicked => {
+            if (!fired) {
+                root.clicked();
+            }
+            fired = false;
         }
     }
     // 焦点支持:Tab 可达,空格/回车触发

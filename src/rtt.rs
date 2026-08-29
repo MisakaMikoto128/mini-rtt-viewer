@@ -12,8 +12,17 @@ pub enum WorkerMsg {
     Exited,
 }
 
+/// 应用退出信号:主窗口关闭后置位,worker 循环(包括阻塞中的轮询间隔)
+/// 检测到后尽快退出,否则非 daemon 线程会让进程在窗口关闭后残留。
+pub static APP_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// worker 生命周期句柄:stop 请求退出,alive 反映线程是否还在。
+pub struct WorkerHandle {
+    pub stop: AtomicBool,
+    pub alive: AtomicBool,
+}
+
 /// 启动 RTT 工作线程:加载 DLL → 按验证过的序列连接 → 循环读通道。
-/// 返回 stop 标志;置 true 后线程自行清理退出。
 pub fn spawn(
     chip: String,
     iface_index: usize,
@@ -21,18 +30,22 @@ pub fn spawn(
     channel: u32,
     tx: mpsc::Sender<WorkerMsg>,
     cmd_rx: mpsc::Receiver<String>,
-) -> Arc<AtomicBool> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop2 = stop.clone();
+) -> Arc<WorkerHandle> {
+    let handle = Arc::new(WorkerHandle {
+        stop: AtomicBool::new(false),
+        alive: AtomicBool::new(true),
+    });
+    let h = handle.clone();
     thread::spawn(move || {
-        let result = run(&chip, iface_index, speed_khz, channel, &tx, &cmd_rx, &stop2);
+        let result = run(&chip, iface_index, speed_khz, channel, &tx, &cmd_rx, &h.stop);
         if let Err(e) = result {
             let _ = tx.send(WorkerMsg::State(false, format!("● 错误: {e}")));
         }
+        h.alive.store(false, Ordering::Relaxed);
         // 无论成败,线程结束必须广播 Exited,解锁 UI 的"再连接"门闩
         let _ = tx.send(WorkerMsg::Exited);
     });
-    stop
+    handle
 }
 
 fn run(
@@ -52,6 +65,7 @@ fn run(
     )));
 
     jlink.open();
+    jlink.disable_dialog_boxes();
 
     // 序列遵循原项目验证过的 DLL 状态机要求:RTT START 必须在 connect 之前
     let tif = if iface_index == 0 { TIF_SWD } else { TIF_JTAG };
@@ -78,7 +92,7 @@ fn run(
     let mut buf = [0u8; 4096];
     // 跨块 UTF-8 增量解码:emoji 4 字节可能被 RTT 读块边界切断
     let mut carry: Vec<u8> = Vec::new();
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) && !APP_SHUTDOWN.load(Ordering::Relaxed) {
         let n = jlink.rtt_read(channel as i32, &mut buf);
         if n > 0 {
             let text = decode_utf8_incremental(&mut carry, &buf[..n as usize]);

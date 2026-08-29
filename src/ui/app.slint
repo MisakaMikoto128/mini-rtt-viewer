@@ -1,6 +1,6 @@
 import { AppTheme } from "theme.slint";
 import { AppButton, FieldLabel, PanelSection } from "components.slint";
-import { LineEdit, ComboBox, SpinBox, ListView, ScrollView, CheckBox, Palette } from "std-widgets.slint";
+import { LineEdit, ComboBox, ListView, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
 export { AppTheme }
 
@@ -43,14 +43,14 @@ export component AppWindow inherits Window {
 
     HorizontalLayout {
         // ============ 左侧配置面板 ============
+        // 不用 ScrollView 包裹:其内部焦点链与外层断开,导致面板按钮 Tab 不可达
         Rectangle {
             width: AppTheme.panel-w;
             background: AppTheme.app-bg;
 
-            ScrollView {
-                VerticalLayout {
-                    padding: 10px;
-                    spacing: AppTheme.gap;
+            VerticalLayout {
+                padding: 10px;
+                spacing: AppTheme.gap;
 
                     // ---- 连接设置 ----
                     PanelSection {
@@ -94,12 +94,12 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
                                 FieldLabel { text: "RTT 通道"; vertical-alignment: center; }
                                 Rectangle { width: 1px; }
-                                SpinBox {
+                                // 用 ComboBox 而非 SpinBox:SpinBox 内部 FocusScope 会困住 Tab 焦点
+                                ComboBox {
                                     width: 110px;
                                     height: AppTheme.ctrl-h;
-                                    minimum: 0;
-                                    maximum: 15;
-                                    value <=> root.channel;
+                                    model: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"];
+                                    current-index <=> root.channel;
                                     enabled: !root.connected && !root.connecting;
                                 }
                             }
@@ -162,7 +162,6 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                }
             }
         }
 

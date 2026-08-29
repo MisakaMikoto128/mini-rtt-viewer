@@ -4,16 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# 精简 features:去掉 software 渲染器/system-tray 等,桌面只需 winit + femtovg
+# 精简 features:桌面只需 winit + femtovg;renderer-software 作为显示异常时的兜底
 slint = { version = "1", default-features = false, features = [
     "std",
     "compat-1-2",
     "backend-winit",
     "renderer-femtovg",
+    "renderer-software",
     "accessibility",
 ] }
 libloading = "0.8"
 anyhow = "1"
+arboard = "3"
 
 [build-dependencies]
 slint-build = "1"

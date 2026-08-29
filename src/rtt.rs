@@ -7,6 +7,9 @@ use std::time::Duration;
 pub enum WorkerMsg {
     Log(String),
     State(bool, String),
+    /// worker 线程已完全退出(含 DLL close),UI 收到后才允许再次连接,
+    /// 防止上一个 worker 还阻塞在 connect() 时 spawn 新 worker 并发抢 RTT。
+    Exited,
 }
 
 /// 启动 RTT 工作线程:加载 DLL → 按验证过的序列连接 → 循环读通道。
@@ -22,9 +25,12 @@ pub fn spawn(
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     thread::spawn(move || {
-        if let Err(e) = run(&chip, iface_index, speed_khz, channel, &tx, &cmd_rx, &stop2) {
+        let result = run(&chip, iface_index, speed_khz, channel, &tx, &cmd_rx, &stop2);
+        if let Err(e) = result {
             let _ = tx.send(WorkerMsg::State(false, format!("● 错误: {e}")));
         }
+        // 无论成败,线程结束必须广播 Exited,解锁 UI 的"再连接"门闩
+        let _ = tx.send(WorkerMsg::Exited);
     });
     stop
 }
@@ -59,7 +65,9 @@ fn run(
     let rc = jlink.connect();
     if rc < 0 {
         jlink.close();
-        anyhow::bail!("J-Link 连接目标失败 (错误码 {rc}),请检查芯片型号/接线/供电");
+        anyhow::bail!(
+            "J-Link 连接目标失败 (错误码 {rc});请检查芯片型号/接线/供电,或尝试降低速率(高速率在 Cortex-M0 上可能不稳定)"
+        );
     }
 
     let _ = tx.send(WorkerMsg::State(

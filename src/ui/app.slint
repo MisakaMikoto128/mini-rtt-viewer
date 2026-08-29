@@ -32,6 +32,7 @@ export component AppWindow inherits Window {
     callback connect-clicked();
     callback disconnect-clicked();
     callback send-clicked();
+    callback copy-log-clicked();
 
     forward-focus: chip-input;
 
@@ -102,16 +103,17 @@ export component AppWindow inherits Window {
                                     enabled: !root.connected && !root.connecting;
                                 }
                             }
+                            // 连接中可点击"取消"(走 disconnect),避免连接卡住时无出路
                             AppButton {
                                 primary: true;
                                 text: root.connecting ? "连接中…" : "连接";
                                 enabled: !root.connecting && !root.connected;
-                                visible: !root.connected;
+                                visible: !root.connected && !root.connecting;
                                 clicked => { root.connect-clicked(); }
                             }
                             AppButton {
-                                text: "断开";
-                                visible: root.connected;
+                                text: root.connecting ? "取消连接" : "断开";
+                                visible: root.connected || root.connecting;
                                 clicked => { root.disconnect-clicked(); }
                             }
                         }
@@ -124,9 +126,16 @@ export component AppWindow inherits Window {
 
                         VerticalLayout {
                             spacing: 6px;
-                            AppButton {
-                                text: "清空";
-                                clicked => { root.clear-clicked(); }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                AppButton {
+                                    text: "清空";
+                                    clicked => { root.clear-clicked(); }
+                                }
+                                AppButton {
+                                    text: "复制全部";
+                                    clicked => { root.copy-log-clicked(); }
+                                }
                             }
                             HorizontalLayout {
                                 spacing: 6px;
@@ -175,18 +184,20 @@ export component AppWindow inherits Window {
                     width: 100%;
                     height: 100%;
 
+                    // 行委托:不透明背景盖住局部重绘残影;自动换行 + 高度自适应,长行不再横向溢出
                     for line in root.log-lines: Rectangle {
-                        height: 21px;
-                        Text {
+                        height: l.preferred-height + 2px;
+                        background: AppTheme.log-bg;
+
+                        l := Text {
                             x: 8px;
                             width: parent.width - 16px;
+                            y: 1px;
                             text: line;
                             color: AppTheme.log-fg;
                             font-family: AppTheme.mono-font;
                             font-size: AppTheme.log-font-size;
-                            vertical-alignment: center;
-                            wrap: no-wrap;
-                            overflow: elide;
+                            wrap: word-wrap;
                         }
                     }
                 }

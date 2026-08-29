@@ -23,7 +23,12 @@ export component AppButton inherits Rectangle {
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        // 按下即触发:不依赖释放位置,快速点击/轻微拖动不丢点击(修"要点两次")
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.clicked();
+            }
+        }
     }
     // 焦点支持:Tab 可达,空格/回车触发
     fs := FocusScope {

@@ -9,6 +9,10 @@ export component AppWindow inherits Window {
     title: "Mini RTT Viewer";
     preferred-width: 960px;
     preferred-height: 640px;
+    min-width: 560px;
+    min-height: 420px;
+    max-width: 3840px;
+    max-height: 2160px;
     background: AppTheme.app-bg;
 
     // Rust → UI 状态
@@ -150,7 +154,8 @@ export component AppWindow inherits Window {
                                     height: AppTheme.ctrl-h;
                                     text <=> root.frame-timeout;
                                     enabled: root.auto-frame;
-                                    input-type: number;
+                                    // 不用 input-type: number —— 其 UIA 缺 ValuePattern,
+                                    // 自动化/辅助技术读不到值;非法输入由 Rust 侧 parse 兜底
                                 }
                                 Text {
                                     text: "ms";

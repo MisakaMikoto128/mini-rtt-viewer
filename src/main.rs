@@ -18,10 +18,58 @@ const DEFAULT_FRAME_TIMEOUT_MS: u128 = 100; // 设备不发换行符时,静默�
 const MAX_LINE_CHARS: usize = 256; // 单行硬上限:积压数据批量到达时强制切行,防止超长行
 const MAX_LINES: usize = 3000;
 
+/// 单实例互斥:第二个实例弹窗提示后退出。
+/// 不做互斥的话两个进程会同时连同一个 J-Link(数据各收一份,状态互相干扰)。
+#[cfg(windows)]
+fn enforce_single_instance() {
+    use libloading::{Library, Symbol};
+    use std::ffi::c_void;
+    let kernel32 = match unsafe { Library::new("kernel32.dll") } {
+        Ok(l) => l,
+        Err(_) => return, // 拿不到 kernel32 不合理,但不要因此挡启动
+    };
+    unsafe {
+        // 先取齐函数指针:libloading 的 get() 内部会调 Win32 API 清掉 GetLastError,
+        // 所以 GetLastError 必须在 CreateMutexW 之后立刻调用
+        // CreateMutexW(lpMutexAttributes, bInitialOwner, lpName) -> HANDLE
+        let create: Symbol<unsafe extern "C" fn(*mut c_void, i32, *const u16) -> *mut c_void> =
+            kernel32.get(b"CreateMutexW").unwrap();
+        let last_err: Symbol<unsafe extern "C" fn() -> u32> =
+            kernel32.get(b"GetLastError").unwrap();
+        let name: Vec<u16> = "Local\\MiniRttViewerSingleInstance\0".encode_utf16().collect();
+        let _mutex_guard = create(std::ptr::null_mut(), 0, name.as_ptr());
+        if last_err() == 183 {
+            // ERROR_ALREADY_EXISTS:已有实例在跑。mutex 故意不释放,随进程存活
+            let user32 = match unsafe { Library::new("user32.dll") } {
+                Ok(l) => l,
+                Err(_) => std::process::exit(0),
+            };
+            let msgbox: Symbol<
+                unsafe extern "C" fn(*mut c_void, *const u16, *const u16, u32) -> i32,
+            > = user32.get(b"MessageBoxW").unwrap();
+            let title: Vec<u16> = "Mini RTT Viewer\0".encode_utf16().collect();
+            let msg: Vec<u16> =
+                "Mini RTT Viewer 已经在运行。\0".encode_utf16().collect();
+            msgbox(
+                std::ptr::null_mut(),
+                msg.as_ptr(),
+                title.as_ptr(),
+                0x30, // MB_ICONWARNING
+            );
+            std::mem::forget(user32);
+            std::process::exit(0);
+        }
+        // 保持 kernel32 Library 活到进程结束(句柄泄漏即设计)
+        std::mem::forget(kernel32);
+    }
+}
+
+#[cfg(not(windows))]
+fn enforce_single_instance() {}
+
 fn main() -> anyhow::Result<()> {
-    eprintln!("[trace] app starting");
+    enforce_single_instance();
     let app = AppWindow::new()?;
-    eprintln!("[trace] window created");
 
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
     // 每次连接新建一条命令管道;UI 持有"当前 worker 的 sender"。
@@ -36,6 +84,8 @@ fn main() -> anyhow::Result<()> {
     // 半行缓冲(等待换行符/断帧超时的未完成行)
     let pending: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let last_data: Rc<RefCell<Instant>> = Rc::new(RefCell::new(Instant::now()));
+    // 最近一次 worker 状态文案(清空日志后恢复用,避免状态栏退化成无参数的"已连接")
+    let last_status: Rc<RefCell<SharedString>> = Rc::new(RefCell::new("● 未连接".into()));
 
     let timer = Timer::default();
     {
@@ -44,6 +94,7 @@ fn main() -> anyhow::Result<()> {
         let last_data = last_data.clone();
         let lines = lines.clone();
         let worker = worker.clone();
+        let last_status = last_status.clone();
         timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
             let ui = match weak.upgrade() { Some(u) => u, None => return };
             // 1. 消化 worker 消息
@@ -58,6 +109,7 @@ fn main() -> anyhow::Result<()> {
                         if !connected {
                             ui.set_connecting(false);
                         }
+                        *last_status.borrow_mut() = status.clone().into();
                         ui.set_status_text(status.into());
                     }
                     Ok(WorkerMsg::Exited) => {
@@ -185,10 +237,11 @@ fn main() -> anyhow::Result<()> {
         let weak = app.as_weak();
         let lines = lines.clone();
         let pending = pending.clone();
+        let last_status = last_status.clone();
         app.on_clear_clicked(move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_log_viewport_y(0.0);
-                ui.set_status_text(if ui.get_connected() { "● 已连接".into() } else { "● 未连接".into() });
+                ui.set_status_text(last_status.borrow().clone());
             }
             pending.borrow_mut().clear();
             while lines.row_count() > 0 {
@@ -209,23 +262,14 @@ fn main() -> anyhow::Result<()> {
                 text.push_str(lines.row_data(i).unwrap_or_default().as_str());
                 text.push('\n');
             }
-            eprintln!("[trace] copy handler fired, rows={n}, bytes={}", text.len());
             match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-                Ok(()) => {
-                    eprintln!("[trace] clipboard set ok");
-                    ui.set_status_text(format!("● 已复制 {n} 行到剪贴板").into())
-                }
-                Err(e) => {
-                    eprintln!("[trace] clipboard set err: {e}");
-                    ui.set_status_text(format!("● 复制失败: {e}").into())
-                }
+                Ok(()) => ui.set_status_text(format!("● 已复制 {n} 行到剪贴板").into()),
+                Err(e) => ui.set_status_text(format!("● 复制失败: {e}").into()),
             }
         });
     }
 
-    eprintln!("[trace] entering event loop");
     app.run()?;
-    eprintln!("[trace] event loop exited");
     // 应用退出:通知 worker 停止,等它清理完 DLL;超时强制退出,不留僵尸进程
     APP_SHUTDOWN.store(true, Ordering::Relaxed);
     let deadline = Instant::now() + Duration::from_secs(3);

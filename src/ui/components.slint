@@ -1,0 +1,84 @@
+import { AppTheme } from "theme.slint";
+
+// 主按钮(accent 底)与次级按钮(卡片底 + 描边),三态 + 过渡动效。
+export component AppButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: AppTheme.ctrl-h;
+    border-radius: AppTheme.radius;
+    property <bool> hovered <=> ta.has-hover;
+    property <bool> is-pressed: ta.pressed;
+    background: !root.enabled ? AppTheme.hover-bg
+        : root.is-pressed ? (root.primary ? AppTheme.accent-press : AppTheme.hover-bg)
+        : root.hovered ? (root.primary ? AppTheme.accent-hover : AppTheme.hover-bg)
+        : (root.primary ? AppTheme.accent : AppTheme.card-bg);
+    property <bool> focused <=> fs.has-focus;
+    border-width: root.primary ? 0 : 1px;
+    border-color: root.focused && !root.primary ? AppTheme.accent : AppTheme.border-color;
+    animate background { duration: 120ms; }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    // 焦点支持:Tab 可达,空格/回车触发
+    fs := FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(e) => {
+            if (e.text == " " || e.text == "\u{000d}") {
+                root.clicked();
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    Text {
+        text: root.text;
+        color: root.primary && root.enabled ? white : AppTheme.text-primary;
+        font-size: AppTheme.ui-font-size;
+        font-family: AppTheme.ui-font;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}
+
+// 字段标签:配置面板里每行控件上方的小标题。
+export component FieldLabel inherits Text {
+    color: AppTheme.text-secondary;
+    font-size: 11px;
+    font-family: AppTheme.ui-font;
+    vertical-alignment: center;
+}
+
+// 区块标题 + 分隔线的面板区块壳。
+export component PanelSection inherits Rectangle {
+    in property <string> title;
+    in property <length> content-height;
+    border-radius: AppTheme.radius;
+    background: AppTheme.panel-bg;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            Text {
+                text: root.title;
+                color: AppTheme.text-primary;
+                font-size: 13px;
+                font-weight: 700;
+                font-family: AppTheme.ui-font;
+                vertical-alignment: center;
+            }
+            Rectangle { height: 1px; background: AppTheme.border-color; }
+        }
+        Rectangle { height: root.content-height; VerticalLayout { @children } }
+    }
+}

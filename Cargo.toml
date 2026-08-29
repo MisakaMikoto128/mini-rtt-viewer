@@ -1,0 +1,26 @@
+[package]
+name = "mini-rtt-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 精简 features:去掉 software 渲染器/system-tray 等,桌面只需 winit + femtovg
+slint = { version = "1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-femtovg",
+    "accessibility",
+] }
+libloading = "0.8"
+anyhow = "1"
+
+[build-dependencies]
+slint-build = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

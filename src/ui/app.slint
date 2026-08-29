@@ -1,0 +1,249 @@
+import { AppTheme } from "theme.slint";
+import { AppButton, FieldLabel, PanelSection } from "components.slint";
+import { LineEdit, ComboBox, SpinBox, ListView, ScrollView, CheckBox, Palette } from "std-widgets.slint";
+
+export { AppTheme }
+
+// 单页布局:左配置面板(280px) + 右侧日志区/发送区,复刻原 PySide6 监控页骨架。
+export component AppWindow inherits Window {
+    title: "Mini RTT Viewer";
+    preferred-width: 960px;
+    preferred-height: 640px;
+    background: AppTheme.app-bg;
+
+    // Rust → UI 状态
+    in property <bool> connected: false;
+    in property <bool> connecting: false;
+    in property <string> status-text: "● 未连接";
+    in-out property <[string]> log-lines;
+    in-out property <length> log-viewport-y <=> log-view.viewport-y;
+    out property <length> log-viewport-height <=> log-view.viewport-height;
+    out property <length> log-area-height <=> log-view.height;
+    // UI → Rust 输入
+    in-out property <string> chip-name: "STM32F030C8";
+    in-out property <int> iface-index: 0;      // 0=SWD 1=JTAG
+    in-out property <int> speed-index: 5;      // 默认 4000kHz
+    in-out property <int> channel: 0;
+    in-out property <string> send-text: "";
+    // 接收选项
+    in-out property <bool> auto-frame: true;         // 无换行符时按静默超时断帧
+    in-out property <string> frame-timeout: "100";   // 断帧超时 ms
+
+    callback connect-clicked();
+    callback disconnect-clicked();
+    callback send-clicked();
+
+    forward-focus: chip-input;
+
+    init => {
+        Palette.color-scheme = ColorScheme.dark;
+        chip-input.focus();
+    }
+
+    HorizontalLayout {
+        // ============ 左侧配置面板 ============
+        Rectangle {
+            width: AppTheme.panel-w;
+            background: AppTheme.app-bg;
+
+            ScrollView {
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: AppTheme.gap;
+
+                    // ---- 连接设置 ----
+                    PanelSection {
+                        title: "连接设置";
+                        content-height: 246px;
+
+                        VerticalLayout {
+                            spacing: 6px;
+                            FieldLabel { text: "目标芯片"; }
+                            chip-input := LineEdit {
+                                text <=> root.chip-name;
+                                height: AppTheme.ctrl-h;
+                                enabled: !root.connected && !root.connecting;
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                VerticalLayout {
+                                    spacing: 6px;
+                                    FieldLabel { text: "接口"; }
+                                    ComboBox {
+                                        width: 118px;
+                                        height: AppTheme.ctrl-h;
+                                        model: ["SWD", "JTAG"];
+                                        current-index <=> root.iface-index;
+                                        enabled: !root.connected && !root.connecting;
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 6px;
+                                    FieldLabel { text: "速度 (kHz)"; }
+                                    ComboBox {
+                                        width: 118px;
+                                        height: AppTheme.ctrl-h;
+                                        model: ["100", "200", "500", "1000", "2000", "4000", "8000", "12000"];
+                                        current-index <=> root.speed-index;
+                                        enabled: !root.connected && !root.connecting;
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                FieldLabel { text: "RTT 通道"; vertical-alignment: center; }
+                                Rectangle { width: 1px; }
+                                SpinBox {
+                                    width: 110px;
+                                    height: AppTheme.ctrl-h;
+                                    minimum: 0;
+                                    maximum: 15;
+                                    value <=> root.channel;
+                                    enabled: !root.connected && !root.connecting;
+                                }
+                            }
+                            AppButton {
+                                primary: true;
+                                text: root.connecting ? "连接中…" : "连接";
+                                enabled: !root.connecting && !root.connected;
+                                visible: !root.connected;
+                                clicked => { root.connect-clicked(); }
+                            }
+                            AppButton {
+                                text: "断开";
+                                visible: root.connected;
+                                clicked => { root.disconnect-clicked(); }
+                            }
+                        }
+                    }
+
+                    // ---- 接收设置 ----
+                    PanelSection {
+                        title: "接收";
+                        content-height: 128px;
+
+                        VerticalLayout {
+                            spacing: 6px;
+                            AppButton {
+                                text: "清空";
+                                clicked => { root.clear-clicked(); }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                CheckBox {
+                                    text: "自动断帧";
+                                    checked <=> root.auto-frame;
+                                    enabled: true;
+                                }
+                                Rectangle { width: 1px; }
+                                LineEdit {
+                                    width: 56px;
+                                    height: AppTheme.ctrl-h;
+                                    text <=> root.frame-timeout;
+                                    enabled: root.auto-frame;
+                                    input-type: number;
+                                }
+                                Text {
+                                    text: "ms";
+                                    color: AppTheme.text-muted;
+                                    font-size: 11px;
+                                    font-family: AppTheme.ui-font;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ============ 右侧:日志 + 发送 ============
+        VerticalLayout {
+            padding: 10px;
+            spacing: AppTheme.gap;
+
+            // 日志区:行式 ListView,虚拟化只渲染可见行,大量日志不卡 UI
+            Rectangle {
+                vertical-stretch: 1;
+                border-radius: AppTheme.radius;
+                background: AppTheme.log-bg;
+                border-width: 1px;
+                border-color: AppTheme.border-color;
+                clip: true;
+
+                log-view := ListView {
+                    width: 100%;
+                    height: 100%;
+
+                    for line in root.log-lines: Rectangle {
+                        height: 21px;
+                        Text {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            text: line;
+                            color: AppTheme.log-fg;
+                            font-family: AppTheme.mono-font;
+                            font-size: AppTheme.log-font-size;
+                            vertical-alignment: center;
+                            wrap: no-wrap;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // 发送区
+            HorizontalLayout {
+                spacing: AppTheme.gap;
+                height: 64px;
+
+                Rectangle {
+                    border-radius: AppTheme.radius;
+                    background: AppTheme.input-bg;
+                    border-width: 1px;
+                    border-color: AppTheme.border-color;
+
+                    LineEdit {
+                        x: 6px; y: (parent.height - self.height) / 2;
+                        width: parent.width - 12px;
+                        placeholder-text: "发送到通道 " + root.channel + "…(Enter 发送)";
+                        text <=> root.send-text;
+                        accepted => { root.send-clicked(); }
+                    }
+                }
+                AppButton {
+                    width: 80px;
+                    primary: true;
+                    text: "发送";
+                    enabled: root.connected && root.send-text != "";
+                    clicked => { root.send-clicked(); }
+                }
+            }
+
+            // 状态栏
+            HorizontalLayout {
+                height: 20px;
+                Text {
+                    text: root.status-text;
+                    color: root.connected ? AppTheme.ok-green
+                        : root.connecting ? AppTheme.warn-orange
+                        : AppTheme.text-muted;
+                    font-size: 12px;
+                    font-family: AppTheme.ui-font;
+                    vertical-alignment: center;
+                }
+                Rectangle { width: 1px; }
+                Text {
+                    text: root.chip-name + " · " + (root.iface-index == 0 ? "SWD" : "JTAG");
+                    color: AppTheme.text-muted;
+                    font-size: 12px;
+                    font-family: AppTheme.ui-font;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                }
+            }
+        }
+    }
+
+    callback clear-clicked();
+}

@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Download UPX
+        shell: pwsh
+        run: |
+          $url = "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip"
+          Invoke-WebRequest -Uri $url -OutFile upx.zip
+          Expand-Archive -Force upx.zip -DestinationPath upx
+
+      - name: Pack with UPX (tolerate failure)
+        shell: pwsh
+        run: |
+          ./upx/upx-5.2.1-win64/upx.exe --best target/release/mini-rtt-viewer.exe
+          exit 0
+
+      - name: Collect artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/mini-rtt-viewer.exe dist/
+          Get-ChildItem dist
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/mini-rtt-viewer.exe
+          generate_release_notes: true

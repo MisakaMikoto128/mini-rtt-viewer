@@ -1,0 +1,43 @@
+// 设计令牌唯一真源:所有组件从这里取值,不散落硬编码颜色。
+export global AppTheme {
+    // 强调色(沿用原项目 #28afe9)
+    out property <color> accent: #28afe9;
+    out property <color> accent-hover: #4fc1f5;
+    out property <color> accent-press: #1c8cc4;
+
+    // 背景层级
+    out property <color> app-bg: #1b1b1f;
+    out property <color> panel-bg: #222228;
+    out property <color> card-bg: #2a2a31;
+    out property <color> hover-bg: #34343c;
+    out property <color> input-bg: #26262c;
+
+    // 日志区(沿用原项目 #222222 底 / #dddddd 字)
+    out property <color> log-bg: #222222;
+    out property <color> log-fg: #dddddd;
+
+    // 文本
+    out property <color> text-primary: #e8e8ea;
+    out property <color> text-secondary: #a0a0a8;
+    out property <color> text-muted: #6a6a72;
+
+    // 描边
+    out property <color> border-color: #3a3a42;
+
+    // 状态色
+    out property <color> ok-green: #2e7d32;
+    out property <color> warn-orange: #ff8c00;
+    out property <color> err-red: #cc4455;
+
+    // 尺寸
+    out property <length> ctrl-h: 33px;
+    out property <length> radius: 6px;
+    out property <length> gap: 8px;
+    out property <length> panel-w: 280px;
+
+    // 字体
+    out property <string> ui-font: "Segoe UI";
+    out property <string> mono-font: "Consolas";
+    out property <length> ui-font-size: 13px;
+    out property <length> log-font-size: 13px;
+}

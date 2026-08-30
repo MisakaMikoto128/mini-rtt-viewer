@@ -10,7 +10,12 @@ pub enum WorkerMsg {
     /// 一次 RTT read 的解码输出。块尾是安全断行点:
     /// 设备每次发送恰好产生一个 read 块,按块断行 = 按设备发送节奏断行。
     Block(String),
+    /// 连接/断开的**最终结果**:true=已连接,false=已断开或失败。
+    /// 中间进度用 Progress(只刷状态栏文字,绝不改变连接标志,
+    /// 否则按钮会在 连接/断开 之间来回跳)。
     State(bool, String),
+    /// 连接过程的中间进度(只更新状态栏文字)
+    Progress(String),
     /// worker 线程已完全退出(含 DLL close),UI 收到后才允许再次连接,
     /// 防止上一个 worker 还阻塞在 connect() 时 spawn 新 worker 并发抢 RTT。
     Exited,
@@ -61,7 +66,7 @@ fn run(
     cmd_rx: &mpsc::Receiver<String>,
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
-    let _ = tx.send(WorkerMsg::State(false, "● 正在加载 JLinkARM.dll…".into()));
+    let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLinkARM.dll…".into()));
     let jlink = JLinkDll::load()?;
     let sn = jlink.serial_number();
     let _ = tx.send(WorkerMsg::Log(format!(
@@ -87,10 +92,9 @@ fn run(
         if rc >= 0 || stop.load(Ordering::Relaxed) {
             break;
         }
-        let _ = tx.send(WorkerMsg::State(
-            false,
-            format!("● 连接中…(第 {attempt} 次重试)"),
-        ));
+        let _ = tx.send(WorkerMsg::Progress(format!(
+            "● 连接中…(第 {attempt} 次重试)"
+        )));
         thread::sleep(Duration::from_millis(400));
         rc = jlink.connect();
     }

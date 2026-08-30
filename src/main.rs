@@ -14,6 +14,7 @@ slint::include_modules!();
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
 const FLUSH_MS: u64 = 200;
+const DEFAULT_FRAME_TIMEOUT_MS: u128 = 100; // 时间窗断行周期兜底值
 const MAX_LINE_CHARS: usize = 512; // 单行硬上限兜底
 const MAX_LOG_CHARS: usize = 60_000; // 日志文本上限(只读文本全量渲染,超限丢最旧)
 
@@ -77,8 +78,10 @@ fn main() -> anyhow::Result<()> {
 
     // 日志文本缓冲:只读 TextEdit 全量渲染,超限丢最旧(按行边界)
     let log_buf: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
-    // 半行缓冲(等待换行符/块尾断行的未完成行)
+    // 半行缓冲(等待换行符/块尾/时间窗断行的未完成行)
     let pending: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    // 上次断行时刻:时间窗断行的基准
+    let last_split: Rc<RefCell<Instant>> = Rc::new(RefCell::new(Instant::now()));
     // 暂停接收:置位后新数据直接丢弃,不进日志
     let paused: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     // 最近一次 worker 状态文案(清空日志后恢复用,避免状态栏退化成无参数的"已连接")
@@ -88,15 +91,15 @@ fn main() -> anyhow::Result<()> {
     {
         let weak = app.as_weak();
         let pending = pending.clone();
+        let last_split = last_split.clone();
         let paused = paused.clone();
         let log_buf = log_buf.clone();
         let worker = worker.clone();
         let last_status = last_status.clone();
-        // 断行切出的完整行(块尾/换行符处切),tick 末统一刷新到 TextEdit
+        // 断行切出的完整行(块尾/换行符/时间窗处切),tick 末统一刷新到 TextEdit
         let new_lines: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
             let ui = match weak.upgrade() { Some(u) => u, None => return };
-            let auto_frame = ui.get_auto_frame();
             // 1. 消化 worker 消息;在块尾/换行符处立即切行
             loop {
                 match msg_rx.try_recv() {
@@ -117,11 +120,10 @@ fn main() -> anyhow::Result<()> {
                         if *paused.borrow() {
                             continue; // 暂停接收:数据直接丢弃
                         }
-                        let mut p = pending.borrow_mut();
-                        p.push_str(&text);
-                        // 块尾 = 设备一次发送的结束:立即断行,
-                        // 每个 RTT 数据块恰好对应设备的一个发送节奏
-                        if auto_frame {
+                        pending.borrow_mut().push_str(&text);
+                        // 块尾 = 设备一次发送的结束:按数据块模式时立即断行
+                        if ui.get_frame_mode() == 1 {
+                            let mut p = pending.borrow_mut();
                             while let Some(pos) = p.find('\n') {
                                 let line: String = p.drain(..pos + 1).collect();
                                 new_lines
@@ -132,6 +134,10 @@ fn main() -> anyhow::Result<()> {
                                 new_lines.borrow_mut().push(std::mem::take(&mut *p));
                             }
                         }
+                    }
+                    Ok(WorkerMsg::Progress(text)) => {
+                        // 连接过程进度:只刷状态栏文字,绝不改变连接标志(防按钮闪烁)
+                        ui.set_status_text(text.into());
                     }
                     Ok(WorkerMsg::State(connected, status)) => {
                         ui.set_connected(connected);
@@ -150,14 +156,42 @@ fn main() -> anyhow::Result<()> {
                     Err(_) => break,
                 }
             }
-            // 2. 单行长度兜底(超长块/关闭自动断行时的无换行流)
-            {
-                let mut p = pending.borrow_mut();
-                if p.chars().count() > MAX_LINE_CHARS {
-                    let mut chars: Vec<char> = p.chars().collect();
-                    let tail: String = chars.split_off(MAX_LINE_CHARS).into_iter().collect();
-                    let line = std::mem::replace(&mut *p, tail);
-                    new_lines.borrow_mut().push(line);
+            // 2. 断行策略:
+            //    - 模式 1(每数据块一行):块尾已在消息循环内切行
+            //    - 模式 2(时间窗):pending 非空且距上次断行超过周期 → 整段切出
+            //    - 模式 0(关闭):只按数据内换行符断行
+            //    - 单行 512 字符硬上限兜底
+            match ui.get_frame_mode() {
+                2 => {
+                    let timeout = ui
+                        .get_frame_timeout()
+                        .trim()
+                        .parse::<u128>()
+                        .unwrap_or(DEFAULT_FRAME_TIMEOUT_MS);
+                    let due = last_split.borrow().elapsed().as_millis() > timeout;
+                    let mut p = pending.borrow_mut();
+                    if due && !p.is_empty() {
+                        while let Some(pos) = p.find('\n') {
+                            let line: String = p.drain(..pos + 1).collect();
+                            new_lines
+                                .borrow_mut()
+                                .push(line.trim_end_matches(['\r', '\n']).into());
+                        }
+                        if !p.is_empty() {
+                            new_lines.borrow_mut().push(std::mem::take(&mut *p));
+                        }
+                        *last_split.borrow_mut() = Instant::now();
+                    }
+                }
+                _ => {
+                    let mut p = pending.borrow_mut();
+                    if p.chars().count() > MAX_LINE_CHARS {
+                        let mut chars: Vec<char> = p.chars().collect();
+                        let tail: String =
+                            chars.split_off(MAX_LINE_CHARS).into_iter().collect();
+                        let line = std::mem::replace(&mut *p, tail);
+                        new_lines.borrow_mut().push(line);
+                    }
                 }
             }
 
@@ -256,8 +290,14 @@ fn main() -> anyhow::Result<()> {
             if text.is_empty() {
                 return;
             }
+            let ending = match ui.get_send_ending() {
+                1 => "\n",
+                2 => "\r",
+                3 => "",
+                _ => "\r\n",
+            };
             if let Some(tx) = cmd_tx.borrow().as_ref() {
-                let _ = tx.send(text + "\r\n");
+                let _ = tx.send(text + ending);
             }
         });
     }

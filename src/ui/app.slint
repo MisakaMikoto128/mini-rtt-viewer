@@ -1,6 +1,6 @@
 import { AppTheme } from "theme.slint";
 import { FieldLabel, PanelSection } from "components.slint";
-import { Button, LineEdit, ComboBox, ScrollView, CheckBox, Palette } from "std-widgets.slint";
+import { Button, LineEdit, ComboBox, ScrollView, Palette } from "std-widgets.slint";
 
 export { AppTheme }
 
@@ -31,9 +31,12 @@ export component AppWindow inherits Window {
     in-out property <int> speed-index: 5;      // 默认 4000kHz
     in-out property <int> channel: 0;
     in-out property <string> send-text: "";
-    // 接收选项:开启后每个 RTT 数据块断为一行(与设备发送节奏 1:1)
-    in-out property <bool> auto-frame: true;
+    // 接收选项:断行模式 0=关闭(仅换行符) 1=每数据块一行 2=按时间窗断行
+    in-out property <int> frame-mode: 1;
+    in-out property <string> frame-timeout: "100";   // 时间窗模式断行周期 ms
     in-out property <bool> paused: false;            // 暂停接收
+    // 发送行尾 0=CRLF 1=LF 2=CR 3=无
+    in-out property <int> send-ending: 0;
 
     callback connect-clicked();
     callback disconnect-clicked();
@@ -141,10 +144,39 @@ export component AppWindow inherits Window {
                                 clicked => { root.pause-toggled(); }
                             }
                         }
-                        CheckBox {
-                            text: "自动断行(每行一个数据块)";
-                            checked <=> root.auto-frame;
-                            enabled: true;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            FieldLabel { text: "断行"; vertical-alignment: center; }
+                            ComboBox {
+                                width: 96px;
+                                height: AppTheme.ctrl-h;
+                                model: ["关闭", "每数据块一行", "按时间窗"];
+                                current-index <=> root.frame-mode;
+                                enabled: !root.paused;
+                            }
+                            LineEdit {
+                                width: 52px;
+                                height: AppTheme.ctrl-h;
+                                text <=> root.frame-timeout;
+                                enabled: root.frame-mode == 2;
+                            }
+                            Text {
+                                text: "ms";
+                                color: AppTheme.text-muted;
+                                font-size: 11px;
+                                font-family: AppTheme.ui-font;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            FieldLabel { text: "发送行尾"; vertical-alignment: center; }
+                            ComboBox {
+                                width: 118px;
+                                height: AppTheme.ctrl-h;
+                                model: ["CRLF (\\r\\n)", "LF (\\n)", "CR (\\r)", "无"];
+                                current-index <=> root.send-ending;
+                            }
                         }
                     }
 

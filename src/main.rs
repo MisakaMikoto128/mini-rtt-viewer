@@ -104,6 +104,16 @@ fn fmt_dur(d: Duration) -> String {
     }
 }
 
+/// 标记行文本(自动带本地时间戳;label 为空则只有时间)。独立自由函数:
+/// tick(持 pump borrow)与 UI 回调(不持)两条路径共用
+fn mark_text(label: &str) -> String {
+    if label.is_empty() {
+        format!("── {} ──", now_hms())
+    } else {
+        format!("── [{}] {label} ──", now_hms())
+    }
+}
+
 /// 收发统计(会话级:连接成功时清零,断开停止累计)
 struct Stats {
     tx: u64,
@@ -199,9 +209,11 @@ impl Ctx {
                         st.rx = 0;
                         st.since = Some(Instant::now());
                         drop(st);
-                        self.insert_mark("已连接");
+                        // 用已借用的 pump 直插标记——严禁调 self.insert_mark,
+                        // 它会再 borrow_mut 同一 RefCell(tick 正持有),连接成功瞬间即 panic
+                        pump.push_colored_line(&mark_text("已连接"), MARK_COLOR);
                     } else if self.stats.borrow_mut().since.take().is_some() {
-                        self.insert_mark("已断开");
+                        pump.push_colored_line(&mark_text("已断开"), MARK_COLOR);
                     }
                 }
                 Ok(WorkerMsg::DeviceInfo(info)) => self.apply_device_info(ui, info),
@@ -396,14 +408,10 @@ impl Ctx {
         }
     }
 
-    /// 插入一条会话标记行(自动带本地时间戳;label 为空则只有时间)
+    /// 插入一条会话标记行。**只能在 UI 回调上下文调用**(此时不持 pump 的
+    /// borrow);tick 内持 borrow 期间必须直接 `pump.push_colored_line(...)`
     fn insert_mark(&self, label: &str) {
-        let text = if label.is_empty() {
-            format!("── {} ──", now_hms())
-        } else {
-            format!("── [{}] {label} ──", now_hms())
-        };
-        self.pump.borrow_mut().push_colored_line(&text, MARK_COLOR);
+        self.pump.borrow_mut().push_colored_line(&mark_text(label), MARK_COLOR);
     }
 
     /// 复位目标并恢复运行(仅连接状态;复位后 worker 重挂 RTT 继续收)

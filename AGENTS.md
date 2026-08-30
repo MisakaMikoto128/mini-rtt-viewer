@@ -219,6 +219,21 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 - 层次:main(装配)→ Ctx(共享状态 + 业务方法)→ log_model/ansi(纯逻辑,可单测)→ rtt(worker 线程,connect_target + rtt_read_loop 两段)→ jlink_dll(FFI)→ device_db(后台枚举)
 - 新增 DLL 能力的路径:jlink_dll.rs 加 FFI → rtt.rs 接入序列/循环 → main.rs Ctx 加方法 → app.slint 加控件
 
+## tick 持 RefCell borrow 期间严禁调用会再借同一 RefCell 的 self 方法
+
+**现象**:八项功能上线后真机「连接成功瞬间崩溃」(release `panic = "abort"`),日志区表现为连上就死、数据取不到。demo 冒烟却完全正常。
+
+**原因**:`Ctx::tick` 开头 `let mut pump = self.pump.borrow_mut()` 并持有到函数尾;新加的 State(true) 分支调了 `self.insert_mark(...)`,其内部再次 `self.pump.borrow_mut()` → `BorrowMutError` panic。**State 消息只在真机连接/断开时产生,demo(当时只发数据消息)永远走不到这条分支**,冒烟因此全绿——测试盲区不在断言,在数据覆盖。
+
+**处理**:
+- tick 内一律用已借用的 `pump` 直接调 `push_colored_line` 等方法;需要同样文案的方法拆两层:纯文本构造(自由函数)+ UI 回调路径的薄封装(文档注明"只能在回调上下文调用")
+- demo 数据源**必须模拟 State(true/false) 循环**(5s 连上、20s 断开、3s 重连),让无设备冒烟覆盖连接分支(统计清零/自动标记/按钮态翻转)
+- 规则:持 `RefCell` borrow 的作用域内新增 `self.xxx()` 调用时,先查该方法链上有没有借同一个 RefCell
+
+参考:`src/main.rs` `tick` 的 State 分支、`mark_text`/`insert_mark` 拆分、`src/demo.rs` 状态机。
+
+---
+
 ## 全局快捷键:外层 FocusScope 的 KeyBinding 靠按键冒泡捕获
 
 **现象**:想在 Window 级做 F2/F3 全局快捷键,但 Window 元素没有 key-pressed;而 KeyBinding/FocusScope 只有持焦时收键——焦点在内部 LineEdit 时按 F2 会不会丢?

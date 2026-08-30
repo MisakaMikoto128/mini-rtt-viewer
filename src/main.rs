@@ -6,7 +6,7 @@ use rtt::WorkerMsg;
 use slint::{ComponentHandle, SharedString, Timer, TimerMode};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -80,7 +80,10 @@ fn main() -> anyhow::Result<()> {
     let log_buf: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     // 半行缓冲(等待换行符/断行超时的未完成行)
     let pending: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
-    let last_data: Rc<RefCell<Instant>> = Rc::new(RefCell::new(Instant::now()));
+    // 上次断行时刻:时间窗断行的基准(与数据到达节奏无关,保证行按固定周期切出)
+    let last_split: Rc<RefCell<Instant>> = Rc::new(RefCell::new(Instant::now()));
+    // 暂停接收:置位后新数据直接丢弃,不进日志
+    let paused: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     // 最近一次 worker 状态文案(清空日志后恢复用,避免状态栏退化成无参数的"已连接")
     let last_status: Rc<RefCell<SharedString>> = Rc::new(RefCell::new("● 未连接".into()));
 
@@ -88,7 +91,8 @@ fn main() -> anyhow::Result<()> {
     {
         let weak = app.as_weak();
         let pending = pending.clone();
-        let last_data = last_data.clone();
+        let last_split = last_split.clone();
+        let paused = paused.clone();
         let log_buf = log_buf.clone();
         let worker = worker.clone();
         let last_status = last_status.clone();
@@ -98,7 +102,9 @@ fn main() -> anyhow::Result<()> {
             loop {
                 match msg_rx.try_recv() {
                     Ok(WorkerMsg::Log(text)) => {
-                        *last_data.borrow_mut() = Instant::now();
+                        if *paused.borrow() {
+                            continue; // 暂停接收:数据直接丢弃
+                        }
                         pending.borrow_mut().push_str(&text);
                     }
                     Ok(WorkerMsg::State(connected, status)) => {
@@ -118,7 +124,8 @@ fn main() -> anyhow::Result<()> {
                     Err(_) => break,
                 }
             }
-            // 2. 断行:完整行立即入缓冲;半行超过静默超时或超过单行上限也入缓冲
+            // 2. 断行:换行符立即断行;半行按固定时间窗断行(与数据到达节奏无关,
+            //    保证密集流也按 timeout 周期切出短行);单行 256 字符硬上限兜底
             let frame_timeout = if ui.get_auto_frame() {
                 ui.get_frame_timeout().trim().parse::<u128>().unwrap_or(DEFAULT_FRAME_TIMEOUT_MS)
             } else {
@@ -129,16 +136,20 @@ fn main() -> anyhow::Result<()> {
             while let Some(pos) = pending.find('\n') {
                 let line: String = pending.drain(..pos + 1).collect();
                 new_lines.push(line.trim_end_matches(['\r', '\n']).into());
+                *last_split.borrow_mut() = Instant::now();
             }
             if !pending.is_empty() {
-                let idle = last_data.borrow().elapsed().as_millis() > frame_timeout;
+                let window_due =
+                    last_split.borrow().elapsed().as_millis() > frame_timeout;
                 let mut chars: Vec<char> = pending.chars().collect();
                 if chars.len() > MAX_LINE_CHARS {
                     let tail: String = chars.split_off(MAX_LINE_CHARS).into_iter().collect();
                     let line = std::mem::replace(&mut *pending, tail);
                     new_lines.push(line);
-                } else if idle {
+                    *last_split.borrow_mut() = Instant::now();
+                } else if window_due {
                     new_lines.push(std::mem::take(&mut *pending));
+                    *last_split.borrow_mut() = Instant::now();
                 }
             }
             drop(pending);
@@ -254,6 +265,24 @@ fn main() -> anyhow::Result<()> {
             }
             pending.borrow_mut().clear();
             log_buf.borrow_mut().clear();
+        });
+    }
+
+    // 暂停/继续接收:暂停期间 worker 读到的新数据直接丢弃(不进日志、不占缓冲)
+    {
+        let weak = app.as_weak();
+        let paused = paused.clone();
+        let last_status = last_status.clone();
+        app.on_pause_toggled(move || {
+            let ui = weak.unwrap();
+            let now = !ui.get_paused();
+            ui.set_paused(now);
+            *paused.borrow_mut() = now;
+            ui.set_status_text(if now {
+                "● 已暂停接收(新数据被丢弃)".into()
+            } else {
+                last_status.borrow().clone()
+            });
         });
     }
 

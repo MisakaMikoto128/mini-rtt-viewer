@@ -81,14 +81,6 @@ impl JLinkDll {
         }
     }
 
-    pub fn is_connected(&self) -> bool {
-        unsafe {
-            let f: Symbol<unsafe extern "C" fn() -> c_int> =
-                self.lib.get(b"JLINKARM_IsConnected").unwrap();
-            f() != 0
-        }
-    }
-
     pub fn serial_number(&self) -> u32 {
         unsafe {
             let f: Symbol<unsafe extern "C" fn() -> u32> =

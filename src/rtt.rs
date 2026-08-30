@@ -33,14 +33,19 @@ pub struct WorkerHandle {
     pub alive: AtomicBool,
 }
 
+/// 一次连接的全部参数(UI 收集 → worker 使用)
+pub struct WorkerConfig {
+    pub chip: String,
+    pub iface_index: usize,
+    pub speed_khz: u32,
+    pub channel: u32,
+    /// 断帧间隔(毫秒)共享变量,UI 侧运行时可改
+    pub frame_timeout_ms: Arc<AtomicU32>,
+}
+
 /// 启动 RTT 工作线程:加载 DLL → 按验证过的序列连接 → 循环读通道。
-/// frame_timeout_ms:断帧间隔(毫秒)共享变量,UI 侧运行时可改。
 pub fn spawn(
-    chip: String,
-    iface_index: usize,
-    speed_khz: u32,
-    channel: u32,
-    frame_timeout_ms: Arc<AtomicU32>,
+    config: WorkerConfig,
     tx: mpsc::Sender<WorkerMsg>,
     cmd_rx: mpsc::Receiver<String>,
 ) -> Arc<WorkerHandle> {
@@ -50,16 +55,7 @@ pub fn spawn(
     });
     let h = handle.clone();
     thread::spawn(move || {
-        let result = run(
-            &chip,
-            iface_index,
-            speed_khz,
-            channel,
-            &frame_timeout_ms,
-            &tx,
-            &cmd_rx,
-            &h.stop,
-        );
+        let result = run(&config, &tx, &cmd_rx, &h.stop);
         if let Err(e) = result {
             let _ = tx.send(WorkerMsg::State(false, format!("● 错误: {e}")));
         }
@@ -71,15 +67,18 @@ pub fn spawn(
 }
 
 fn run(
-    chip: &str,
-    iface_index: usize,
-    speed_khz: u32,
-    channel: u32,
-    frame_timeout_ms: &AtomicU32,
+    config: &WorkerConfig,
     tx: &mpsc::Sender<WorkerMsg>,
     cmd_rx: &mpsc::Receiver<String>,
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
+    let WorkerConfig {
+        chip,
+        iface_index,
+        speed_khz,
+        channel,
+        frame_timeout_ms,
+    } = config;
     let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLinkARM.dll…".into()));
     let jlink = JLinkDll::load()?;
     let sn = jlink.serial_number();
@@ -91,10 +90,10 @@ fn run(
     jlink.disable_dialog_boxes();
 
     // 序列遵循原项目验证过的 DLL 状态机要求:RTT START 必须在 connect 之前
-    let tif = if iface_index == 0 { TIF_SWD } else { TIF_JTAG };
+    let tif = if *iface_index == 0 { TIF_SWD } else { TIF_JTAG };
     jlink.rtt_control(RTT_CMD_START);
     jlink.select_tif(tif);
-    jlink.set_speed(speed_khz as i32);
+    jlink.set_speed(*speed_khz as i32);
     let resp = jlink.exec_command(&format!("Device = {chip}"));
     if !resp.trim().is_empty() {
         let _ = tx.send(WorkerMsg::Log(format!("[J-Link] {resp}\r\n")));
@@ -132,13 +131,13 @@ fn run(
     let mut last_rx = Instant::now();
     let mut frame_open = false;
     while !stop.load(Ordering::Relaxed) && !APP_SHUTDOWN.load(Ordering::Relaxed) {
-        let n = jlink.rtt_read(channel as i32, &mut buf);
+        let n = jlink.rtt_read(*channel as i32, &mut buf);
         let now = Instant::now();
         let to = Duration::from_millis(frame_timeout_ms.load(Ordering::Relaxed) as u64);
         if n > 0 {
             if frame_open && now.duration_since(last_rx) > to {
+                // 上一帧到此结束;新块马上开启新帧(frame_open 统一在下面置位)
                 let _ = tx.send(WorkerMsg::FrameEnd);
-                frame_open = false;
             }
             let text = decode_utf8_incremental(&mut carry, &buf[..n as usize]);
             let _ = tx.send(WorkerMsg::Block(strip_ansi(&text)));
@@ -155,7 +154,7 @@ fn run(
             return Ok(());
         }
         while let Ok(data) = cmd_rx.try_recv() {
-            let w = jlink.rtt_write(channel as i32, data.as_bytes());
+            let w = jlink.rtt_write(*channel as i32, data.as_bytes());
             if w < 0 {
                 let _ = tx.send(WorkerMsg::Log("[发送失败]\r\n".into()));
             }

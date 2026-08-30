@@ -1,105 +1,31 @@
 // release 版隐藏控制台黑框;debug 保留方便看日志
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use mini_rtt_viewer::rtt::{self, APP_SHUTDOWN, WorkerHandle};
-use rtt::WorkerMsg;
+mod demo;
+mod jlink_dll;
+mod log_model;
+mod rtt;
+mod single_instance;
+
+use log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
+use rtt::{WorkerHandle, WorkerMsg, APP_SHUTDOWN};
 use slint::{ComponentHandle, SharedString, Timer, TimerMode};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::OnceLock;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 slint::include_modules!();
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
-// UI 刷新周期:决定消息从到达(队列)到上屏的额外延迟。过大(如 200ms)会把
-// 均匀到达的多条消息攒成一批同时冒出来,视觉上"两条一次"。10ms 粒度下
-// 每 tick 通常 0~1 条,显示节奏与设备发送节奏一致。空 tick 只有一次
-// try_recv 的开销,可忽略。
-const FLUSH_MS: u64 = 10;
-const DEFAULT_FRAME_TIMEOUT_MS: u128 = 20; // 断帧间隔默认值(1~200ms)
-const MAX_LINE_CHARS: usize = 512; // 单行硬上限兜底
-const MAX_LOG_CHARS: usize = 60_000; // 日志文本上限(只读文本全量渲染,超限丢最旧)
-
-/// --demo-log 模式的时间基准(微秒时间戳测量用;非 demo 模式为空,零开销)
-static DEMO_T0: OnceLock<Instant> = OnceLock::new();
-
-/// 按接收行尾模式切行:0=自动(\n 断行、吞 \r) 1=CRLF 2=LF 3=CR 4=无(不断行)
-fn split_lines(p: &mut String, rx_ending: i32, out: &mut Vec<String>) {
-    let pat: &str = match rx_ending {
-        1 => "\r\n",
-        2 => "\n",
-        3 => "\r",
-        4 => return,
-        _ => "\n",
-    };
-    while let Some(pos) = p.find(pat) {
-        let line: String = p.drain(..pos + pat.len()).collect();
-        let line = if rx_ending == 0 || rx_ending == 2 {
-            line.trim_end_matches('\r').to_string()
-        } else {
-            line
-        };
-        out.push(line.into());
-    }
-}
-
-/// 单实例互斥:第二个实例弹窗提示后退出。
-/// 不做互斥的话两个进程会同时连同一个 J-Link(数据各收一份,状态互相干扰)。
-#[cfg(windows)]
-fn enforce_single_instance() {
-    use libloading::{Library, Symbol};
-    use std::ffi::c_void;
-    let kernel32 = match unsafe { Library::new("kernel32.dll") } {
-        Ok(l) => l,
-        Err(_) => return, // 拿不到 kernel32 不合理,但不要因此挡启动
-    };
-    unsafe {
-        // 先取齐函数指针:libloading 的 get() 内部会调 Win32 API 清掉 GetLastError,
-        // 所以 GetLastError 必须在 CreateMutexW 之后立刻调用
-        let create: Symbol<unsafe extern "C" fn(*mut c_void, i32, *const u16) -> *mut c_void> =
-            kernel32.get(b"CreateMutexW").unwrap();
-        let last_err: Symbol<unsafe extern "C" fn() -> u32> =
-            kernel32.get(b"GetLastError").unwrap();
-        let name: Vec<u16> = "Local\\MiniRttViewerSingleInstance\0".encode_utf16().collect();
-        let _mutex_guard = create(std::ptr::null_mut(), 0, name.as_ptr());
-        if last_err() == 183 {
-            // ERROR_ALREADY_EXISTS:已有实例在跑。mutex 故意不释放,随进程存活
-            let user32 = match unsafe { Library::new("user32.dll") } {
-                Ok(l) => l,
-                Err(_) => std::process::exit(0),
-            };
-            let msgbox: Symbol<
-                unsafe extern "C" fn(*mut c_void, *const u16, *const u16, u32) -> i32,
-            > = user32.get(b"MessageBoxW").unwrap();
-            let title: Vec<u16> = "Mini RTT Viewer\0".encode_utf16().collect();
-            let msg: Vec<u16> =
-                "Mini RTT Viewer 已经在运行。\0".encode_utf16().collect();
-            msgbox(
-                std::ptr::null_mut(),
-                msg.as_ptr(),
-                title.as_ptr(),
-                0x30, // MB_ICONWARNING
-            );
-            std::mem::forget(user32);
-            std::process::exit(0);
-        }
-        // 保持 kernel32 Library 活到进程结束(句柄泄漏即设计)
-        std::mem::forget(kernel32);
-    }
-}
-
-#[cfg(not(windows))]
-fn enforce_single_instance() {}
 
 fn main() -> anyhow::Result<()> {
     // --demo-log 是无设备的自动化测试模式:跳过单实例互斥,
     // 允许与真实实例并存(它不加载 JLinkARM.dll,不会抢 J-Link)
-    let demo_mode = std::env::args().any(|a| a == "--demo-log");
+    let demo_mode = demo::is_enabled(&std::env::args().collect::<Vec<_>>());
     if !demo_mode {
-        enforce_single_instance();
+        single_instance::enforce_single_instance();
     }
     let app = AppWindow::new()?;
 
@@ -109,89 +35,51 @@ fn main() -> anyhow::Result<()> {
     // 连接互斥门闩:worker 线程存活期间(含阻塞在 connect() 时)不允许 spawn 新 worker
     let worker: Rc<RefCell<Option<Arc<WorkerHandle>>>> = Rc::new(RefCell::new(None));
 
-    // 日志文本缓冲:只读 TextEdit 全量渲染,超限丢最旧(按行边界)
-    let log_buf: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
-    // 半行缓冲(等待换行符/帧结束标记的未完成行)
-    let pending: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     // 断帧间隔共享变量:UI 改输入框 → worker 实时读取(断帧判定在 worker,5ms 精度)
-    let frame_timeout_ms = Arc::new(AtomicU32::new(20));
-    // 暂停接收:置位后新数据直接丢弃,不进日志
-    let paused: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let frame_timeout_ms = Arc::new(AtomicU32::new(DEFAULT_FRAME_TIMEOUT_MS));
+    // 日志消息泵:worker 消息 → 断行 → 展示文本(逻辑在 log_model,可单测)
+    let pump = Rc::new(RefCell::new(LogPump::default()));
     // 最近一次 worker 状态文案(清空日志后恢复用,避免状态栏退化成无参数的"已连接")
     let last_status: Rc<RefCell<SharedString>> = Rc::new(RefCell::new("● 未连接".into()));
 
-    // --demo-log:无设备自动化测试数据源(中英混排 + emoji,验证滚动/断行/UTF-8)。
-    // 发送与上屏各打一行微秒时间戳(stderr),用于测量显示节奏是否与发送节奏一致
     if demo_mode {
-        let tx = msg_tx.clone();
-        let _ = DEMO_T0.set(Instant::now());
-        std::thread::spawn(move || {
-            let mut i: u64 = 0;
-            loop {
-                if APP_SHUTDOWN.load(Ordering::Relaxed) {
-                    break;
-                }
-                let _ = tx.send(WorkerMsg::Log(format!(
-                    "[demo {i:04}] Heartbeat: {i} 😊🍟❤ 心跳 中文 English mixed padding text\r\n"
-                )));
-                if let Some(t0) = DEMO_T0.get() {
-                    eprintln!("[tx] i={i} t={}us", t0.elapsed().as_micros());
-                }
-                i += 1;
-                std::thread::sleep(Duration::from_millis(80));
-            }
-        });
+        demo::spawn(msg_tx.clone());
     }
 
     let timer = Timer::default();
     {
         let weak = app.as_weak();
-        let pending = pending.clone();
-        let paused = paused.clone();
-        let log_buf = log_buf.clone();
+        let pump = pump.clone();
         let worker = worker.clone();
         let last_status = last_status.clone();
         let frame_timeout_ms = frame_timeout_ms.clone();
-        // 断行切出的完整行(换行符/帧结束处切),tick 末统一刷新到 TextEdit
-        let new_lines: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
             let ui = match weak.upgrade() { Some(u) => u, None => return };
             // 0. 把输入框的断帧间隔同步给 worker(判定在 worker,精度 5ms)
             if ui.get_auto_frame() {
-                let v = ui.get_frame_timeout().trim().parse::<u32>().unwrap_or(20);
+                let v = ui
+                    .get_frame_timeout()
+                    .trim()
+                    .parse::<u32>()
+                    .unwrap_or(DEFAULT_FRAME_TIMEOUT_MS);
                 frame_timeout_ms.store(v.clamp(1, 200), Ordering::Relaxed);
             }
             // 接收行尾:0=自动 1=CRLF 2=LF 3=CR 4=无
             let rx_ending = ui.get_rx_ending();
+            let mut pump = pump.borrow_mut();
             // 1. 消化 worker 消息
             loop {
                 match msg_rx.try_recv() {
-                    Ok(WorkerMsg::Log(text)) => {
-                        if *paused.borrow() {
-                            continue; // 暂停接收:数据直接丢弃
+                    Ok(WorkerMsg::Log(text) | WorkerMsg::Block(text)) => {
+                        // 暂停接收:数据直接丢弃
+                        if !pump.paused {
+                            pump.absorb_text(&text, rx_ending);
                         }
-                        let mut p = pending.borrow_mut();
-                        p.push_str(&text);
-                        split_lines(&mut p, rx_ending, &mut new_lines.borrow_mut());
-                    }
-                    Ok(WorkerMsg::Block(text)) => {
-                        if *paused.borrow() {
-                            continue; // 暂停接收:数据直接丢弃
-                        }
-                        pending.borrow_mut().push_str(&text);
-                        split_lines(&mut pending.borrow_mut(), rx_ending, &mut new_lines.borrow_mut());
                     }
                     Ok(WorkerMsg::FrameEnd) => {
                         // worker 判定一帧结束(间隔超过断帧超时):切出缓冲为完整行
-                        if *paused.borrow() || !ui.get_auto_frame() {
-                            continue;
-                        }
-                        let mut p = pending.borrow_mut();
-                        if !p.is_empty() {
-                            split_lines(&mut p, rx_ending, &mut new_lines.borrow_mut());
-                            if !p.is_empty() {
-                                new_lines.borrow_mut().push(std::mem::take(&mut *p));
-                            }
+                        if !pump.paused && ui.get_auto_frame() {
+                            pump.absorb_frame_end(rx_ending);
                         }
                     }
                     Ok(WorkerMsg::Progress(text)) => {
@@ -216,45 +104,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             // 2. 单行长度兜底(超长帧/关闭自动断帧时的无换行流)
-            {
-                let mut p = pending.borrow_mut();
-                if p.chars().count() > MAX_LINE_CHARS {
-                    let mut chars: Vec<char> = p.chars().collect();
-                    let tail: String =
-                        chars.split_off(MAX_LINE_CHARS).into_iter().collect();
-                    let line = std::mem::replace(&mut *p, tail);
-                    new_lines.borrow_mut().push(line);
-                }
+            pump.enforce_line_cap();
+            // 3. 有新行才写文本;贴底跟随/上翻失随由 LogView 内部闭环
+            if let Some(text) = pump.take_text() {
+                demo::trace_flush(text.lines().count());
+                ui.set_log_text(text.into());
             }
-
-            let mut lines = new_lines.borrow_mut();
-            if lines.is_empty() {
-                drop(lines);
-                return;
-            }
-            if let Some(t0) = DEMO_T0.get() {
-                eprintln!("[flush] lines={} t={}us", lines.len(), t0.elapsed().as_micros());
-            }
-            // 3. 追加到日志文本;超限按行丢最旧
-            let mut buf = log_buf.borrow_mut();
-            for l in lines.iter() {
-                buf.push_str(l);
-                buf.push('\n');
-            }
-            lines.clear();
-            drop(lines);
-            if buf.len() > MAX_LOG_CHARS {
-                // 按字符边界 + 行边界截断到上限以内
-                let cut = buf.len() - MAX_LOG_CHARS;
-                let boundary = (cut..buf.len())
-                    .find(|i| buf.is_char_boundary(*i) && buf.as_bytes()[*i] == b'\n')
-                    .map(|i| i + 1)
-                    .unwrap_or(buf.len());
-                buf.drain(..boundary);
-            }
-            ui.set_log_text(buf.clone().into());
-            drop(buf);
-            // 4. 自动滚底由 LogView 内部闭环:贴底跟随者贴新底部,上翻者不被拉扯
         });
     }
 
@@ -264,6 +119,7 @@ fn main() -> anyhow::Result<()> {
         let cmd_tx = cmd_tx.clone();
         let worker = worker.clone();
         let msg_tx = msg_tx.clone();
+        let frame_timeout_ms = frame_timeout_ms.clone();
         app.on_connect_clicked(move || {
             if worker.borrow().as_ref().is_some_and(|h| h.alive.load(Ordering::Relaxed)) {
                 return; // 上一个 worker 还活着(可能在阻塞 connect),严禁并发
@@ -279,18 +135,16 @@ fn main() -> anyhow::Result<()> {
             ui.set_connecting(true);
             ui.set_status_text("● 连接中…".into());
 
-            let iface = ui.get_iface_index() as usize;
-            let speed = SPEEDS_KHZ[ui.get_speed_index().clamp(0, 7) as usize];
-            let channel = ui.get_channel() as u32;
-
             let (tx, rx) = mpsc::channel::<String>();
             *cmd_tx.borrow_mut() = Some(tx);
             let handle = rtt::spawn(
-                chip,
-                iface,
-                speed,
-                channel,
-                frame_timeout_ms.clone(),
+                rtt::WorkerConfig {
+                    chip,
+                    iface_index: ui.get_iface_index() as usize,
+                    speed_khz: SPEEDS_KHZ[ui.get_speed_index().clamp(0, 7) as usize],
+                    channel: ui.get_channel() as u32,
+                    frame_timeout_ms: frame_timeout_ms.clone(),
+                },
                 msg_tx.clone(),
                 rx,
             );
@@ -341,29 +195,27 @@ fn main() -> anyhow::Result<()> {
     // 清空
     {
         let weak = app.as_weak();
-        let log_buf = log_buf.clone();
-        let pending = pending.clone();
+        let pump = pump.clone();
         let last_status = last_status.clone();
         app.on_clear_clicked(move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_log_text("".into());
                 ui.set_status_text(last_status.borrow().clone());
             }
-            pending.borrow_mut().clear();
-            log_buf.borrow_mut().clear();
+            pump.borrow_mut().clear();
         });
     }
 
     // 暂停/继续接收:暂停期间 worker 读到的新数据直接丢弃(不进日志、不占缓冲)
     {
         let weak = app.as_weak();
-        let paused = paused.clone();
+        let pump = pump.clone();
         let last_status = last_status.clone();
         app.on_pause_toggled(move || {
             let ui = weak.unwrap();
             let now = !ui.get_paused();
             ui.set_paused(now);
-            *paused.borrow_mut() = now;
+            pump.borrow_mut().paused = now;
             ui.set_status_text(if now {
                 "● 已暂停接收(新数据被丢弃)".into()
             } else {

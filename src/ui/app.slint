@@ -17,8 +17,14 @@ component LogView inherits Rectangle {
     border-color: AppTheme.border-color;
     clip: true;
 
-    // 内容总高(上下各 8px 内边距)
-    private property <length> content-h: log-edit.preferred-height + 16px;
+    // 内容总高:向上补齐到「视口高 + 整数行」。这样最大卷动量(max-offset =
+    // content-h - 视口高)天然是行高的整数倍,贴底位置与手动滚动的行格重合,
+    // 底边空隙 = 8px 内边距 + 恒定补齐量 δ(<1 行)——滚动/跟随切换时底边
+    // 距离不再跳动。
+    private property <length> content-h: root.line-h > 0px
+        ? ceil((log-edit.preferred-height + 16px - self.height) / root.line-h) * 1px
+            + self.height
+        : log-edit.preferred-height + 16px;
     // 最大卷动量
     private property <length> max-offset: max(0px, content-h - self.height);
     // 手动滚动的行格上界:floor 到行高网格(自动贴底仍贴死 max-offset,

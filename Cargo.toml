@@ -24,7 +24,9 @@ vte = "0.13"
 slint-build = "1"
 
 [profile.release]
-opt-level = "z"
+# opt-level 3(性能优先):RTT 数据路径(UTF-8 增量解码/ANSI 解析/行切分)与
+# UI 布局计算受益于向量化与更激进的内联;体积代价见 CHANGELOG 0.1.8 后的对比
+opt-level = 3
 lto = true
 codegen-units = 1
 strip = true

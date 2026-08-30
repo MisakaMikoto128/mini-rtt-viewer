@@ -1,0 +1,5 @@
+# 构建配置(随仓库生效,含 CI)
+# target-cpu=x86-64-v2:启用 SSE4.2/POPCNT 等基线 SIMD;2009 年后的 x64 CPU
+# 全部支持,GitHub Actions windows-latest 也支持——发布兼容性安全
+[build]
+rustflags = ["-C", "target-cpu=x86-64-v2"]

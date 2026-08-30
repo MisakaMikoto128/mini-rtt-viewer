@@ -1,9 +1,4 @@
 /dist
-/target
-/target2
-/targetfix
-/targetmeasure
-/targettestbuild
-/targetui
+/target*
 /tools
 timing_*.log

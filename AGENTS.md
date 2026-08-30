@@ -208,6 +208,7 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 - **cargo target 目录会锁 exe**:运行中的实例锁住 `target/<dir>/release/*.exe`,杀不掉的僵尸进程(如 DLL 卸载卡死)会让该目录永久不可写。换 `CARGO_TARGET_DIR=target2` 等新目录绕开;`.gitignore` 已忽略所有本地 target 变体(target/target2/targetfix/targettestbuild/targetmeasure)
 - **build_release.bat**:UPX 压缩;bat 里不能设名为 `UPX` 的环境变量(UPX.exe 会把它当参数读),变量用 `UPXBIN`;bat 文件写英文注释(中文 GBK 乱码)
 - **发布**:推 tag `vX.Y.Z` → GitHub Actions(windows-latest 构建 + UPX)→ 自动挂 Release 资产。不要随便发版,先本地验证、用户确认
+- **编译优化基线(2026-08-30)**:`opt-level = 3 + target-cpu=x86-64-v2`(.cargo/config.toml 随仓库生效,含 CI)。体积 z→3:9.27MB→11.38MB(+29%),CI 的 UPX 会再压一半左右,最终资产差距更小。为什么 3:`opt-level = "z"/"s"` 是体积极值,禁用向量化与激进内联——RTT 数据路径(UTF-8 增量解码 / vte ANSI 解析 / 行切分)与 Slint 布局计算都在 CPU 上;v2(SSE4.2/POPCNT)2009+ 的 x64 CPU 全支持,发布兼容安全。lto=fat + codegen-units=1 + panic=abort 保留。再往上只有 PGO(-Cprofile-generate/use,需代表性运行轨迹,收益 5-15%,工程重)。教训:`git add -A` 之前先确认 .gitignore 覆盖所有 target 变体(现统一 `/target*`)
 - **验证工具**:`cargo test`(log_model 纯逻辑);`cargo run --example rtt_check -- [芯片] [秒数]`(无界面 RTT 直读);`--demo-log`(带 UI 的无设备演示)
 
 ---

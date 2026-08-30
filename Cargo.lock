@@ -2798,7 +2798,7 @@ dependencies = [
 
 [[package]]
 name = "mini-rtt-viewer"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "libloading",

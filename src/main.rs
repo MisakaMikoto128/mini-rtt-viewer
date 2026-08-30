@@ -1,6 +1,7 @@
 // release 版隐藏控制台黑框;debug 保留方便看日志
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ansi;
 mod demo;
 mod device_db;
 mod jlink_dll;
@@ -10,7 +11,7 @@ mod single_instance;
 
 use log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
 use rtt::{WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN};
-use slint::{ComponentHandle, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -20,6 +21,11 @@ use std::time::{Duration, Instant};
 slint::include_modules!();
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
+
+/// 默认日志前景色(Run.fg == None 时用)
+fn log_default_fg() -> slint::Color {
+    slint::Color::from_rgb_u8(0xdd, 0xdd, 0xdd)
+}
 
 /// 重建设备下拉候选:按输入大小写不敏感过滤(候选由 EditableCombo 的
 /// 原生下拉展示,选中后回填输入框,Rust 无需维护选中态)
@@ -58,8 +64,11 @@ fn main() -> anyhow::Result<()> {
 
     // 断帧间隔共享变量:UI 改输入框 → worker 实时读取(断帧判定在 worker,5ms 精度)
     let frame_timeout_ms = Arc::new(AtomicU32::new(DEFAULT_FRAME_TIMEOUT_MS));
-    // 日志消息泵:worker 消息 → 断行 → 展示文本(逻辑在 log_model,可单测)
+    // 日志消息泵:worker 消息 → 断行 → ANSI 带色行(逻辑在 log_model,可单测)
     let pump = Rc::new(RefCell::new(LogPump::default()));
+    // 日志行模型(ListView 虚拟化;只在启动时装入一次,此后增量 push)
+    let log_rows = Rc::new(VecModel::from(Vec::<LogRow>::new()));
+    app.set_log_rows(ModelRc::from(log_rows.clone()));
     // 最近一次 worker 状态文案(清空日志后恢复用,避免状态栏退化成无参数的"已连接")
     let last_status: Rc<RefCell<SharedString>> = Rc::new(RefCell::new("● 未连接".into()));
 
@@ -93,6 +102,7 @@ fn main() -> anyhow::Result<()> {
         let frame_timeout_ms = frame_timeout_ms.clone();
         let device_names = device_names.clone();
         let jlinks = jlinks.clone();
+        let log_rows = log_rows.clone();
         timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
             let ui = match weak.upgrade() { Some(u) => u, None => return };
             // 0. 把输入框的断帧间隔同步给 worker(判定在 worker,精度 5ms)
@@ -189,10 +199,23 @@ fn main() -> anyhow::Result<()> {
             }
             // 2. 单行长度兜底(超长帧/关闭自动断帧时的无换行流)
             pump.enforce_line_cap();
-            // 3. 有新行才写文本;贴底跟随/上翻失随由 LogView 内部闭环
-            if let Some(text) = pump.take_text() {
-                demo::trace_flush(text.lines().count());
-                ui.set_log_text(text.into());
+            // 3. 增量上屏:新行 → 行模型 push(ANSI 已在 pump 内解析为带色段;
+            //    ListView 虚拟化只渲染可见行,长日志不全量重排)
+            if let Some(rows) = pump.take_new_rows() {
+                for runs in rows {
+                    let spans: Vec<LogRun> = runs
+                        .into_iter()
+                        .map(|r| LogRun {
+                            text: r.text.into(),
+                            color: r
+                                .fg
+                                .map(|(r8, g8, b8)| slint::Color::from_rgb_u8(r8, g8, b8))
+                                .unwrap_or_else(log_default_fg),
+                        })
+                        .collect();
+                    log_rows.push(LogRow { runs: ModelRc::new(VecModel::from(spans)) });
+                }
+                ui.set_log_row_count(log_rows.row_count() as i32);
             }
         });
     }
@@ -322,10 +345,12 @@ fn main() -> anyhow::Result<()> {
     {
         let weak = app.as_weak();
         let pump = pump.clone();
+        let log_rows = log_rows.clone();
         let last_status = last_status.clone();
         app.on_clear_clicked(move || {
             if let Some(ui) = weak.upgrade() {
-                ui.set_log_text("".into());
+                log_rows.set_vec(vec![]);
+                ui.set_log_row_count(0);
                 ui.set_status_text(last_status.borrow().clone());
             }
             pump.borrow_mut().clear();

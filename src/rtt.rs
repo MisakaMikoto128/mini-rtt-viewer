@@ -199,8 +199,9 @@ fn run(
                 // 上一帧到此结束;新块马上开启新帧(frame_open 统一在下面置位)
                 let _ = tx.send(WorkerMsg::FrameEnd);
             }
+            // ANSI 转义序列原样透传,由 UI 端 vte 解析着色(本层不再剥掉)
             let text = decode_utf8_incremental(&mut carry, &buf[..n as usize]);
-            let _ = tx.send(WorkerMsg::Block(strip_ansi(&text)));
+            let _ = tx.send(WorkerMsg::Block(text));
             frame_open = true;
             last_rx = now;
         } else if frame_open && now.duration_since(last_rx) > to {
@@ -281,32 +282,6 @@ pub fn decode_utf8_incremental(carry: &mut Vec<u8>, data: &[u8]) -> String {
     // 合法截断尾最多 3 字节;超限说明是垃圾数据,丢弃防止无限堆积
     if carry.len() > 3 {
         carry.clear();
-    }
-    out
-}
-
-/// 去掉 ANSI 转义序列(CSI 与常见单字符转义),只保留可见文本。
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            match chars.next() {
-                Some('[') => {
-                    for f in chars.by_ref() {
-                        if f.is_ascii_alphabetic() {
-                            break;
-                        }
-                    }
-                }
-                Some(']') | Some('(') | Some(')') => {
-                    chars.next();
-                }
-                _ => {}
-            }
-        } else {
-            out.push(c);
-        }
     }
     out
 }

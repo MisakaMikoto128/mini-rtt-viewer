@@ -1,12 +1,24 @@
 import { AppTheme } from "theme.slint";
+import { ListView } from "std-widgets.slint";
 
-// 日志滚动区:不使用 ScrollView——其内部 Flickable 按像素滚、滚轮步长与行高无关,
-// 行永远停在非行高对齐的亚像素位置,连续滚动时行看起来"上下抖动"。
-// 自建:滚轮 delta 累积后 floor 量化到整数行高,手动滚动位置永远落在行高网格上
-// (逐屏上翻时上一行精确落进上一屏位置,视觉上像静止的行流);
+// 一行日志里的一段同色文本
+export struct LogRun {
+    text: string,
+    color: color,
+}
+
+// 一行日志 = 若干同色段(ANSI 转义由 Rust 端 vte 解析,这里只渲染)
+export struct LogRow {
+    runs: [LogRun],
+}
+
+// 日志滚动区:ListView 虚拟化(只渲染可见行,长日志不全量重排);
+// 滚轮仍走自建的行高量化逻辑,直接驱动 ListView 的 viewport-y,
+// 手动滚动位置永远落在行高网格上(逐屏上翻行位稳定,不抖动);
 // 贴底跟随用显式 follow 标志(滚离底部失随、滚回底部恢复),新数据不拉扯视口。
 export component LogView inherits Rectangle {
-    in property <string> text;
+    in property <[LogRow]> rows;
+    in property <int> row-count;      // 跟随逻辑的新行触发器
     // 自动滚动状态(follow 的对外呈现):滚离底部自动变 false,滚回底部/用户勾选变 true。
     // AppWindow 的「自动滚动」checkbox 与它 <=> 双向绑定——checkbox 是状态呈现也是开关。
     in-out property <bool> auto-scroll: true;
@@ -16,8 +28,8 @@ export component LogView inherits Rectangle {
     border-color: AppTheme.border-color;
     clip: true;
 
-    // 内容总高(上下各 8px 内边距)
-    private property <length> content-h: log-edit.preferred-height + 16px;
+    // 内容总高(上下各 8px 内边距;每行严格一行高,天然行格对齐)
+    private property <length> content-h: root.row-count * root.line-h + 16px;
     // 最大卷动量
     private property <length> max-offset: max(0px, content-h - self.height);
     // 手动滚动的行格上界:floor 到行高网格(自动贴底仍贴死 max-offset,
@@ -25,7 +37,7 @@ export component LogView inherits Rectangle {
     private property <length> grid-max: root.line-h > 0px
         ? floor(root.max-offset / root.line-h) * root.line-h
         : root.max-offset;
-    // 顶部卷走量(手动滚动时永远为行高整数倍)
+    // 顶部卷走量(手动滚动时永远为行高整数倍;= -viewport-y)
     private property <length> offset: 0px;
     // 滚轮/触摸板累积量(未量化;floor 取整后亚行残余自然保留在 raw 里,
     // 触摸板细粒度滚动凑满一行才动,滚轮大步长每格稳定前进整数行)
@@ -54,8 +66,8 @@ export component LogView inherits Rectangle {
         root.auto-scroll = root.follow;
     }
 
-    // 滚轮层在下:TextInput 在上层优先处理鼠标拖选/复制,不消费滚轮,
-    // 滚轮事件落到这里统一量化
+    // 滚轮层在最上:拦截全部滚轮事件(不给下层 Flickable 原生像素滚动抢走),
+    // 统一量化后驱动 viewport-y;鼠标拖选/复制在彩色行模型下不可用,无需放行
     wheel := TouchArea {
         width: 100%;
         height: 100%;
@@ -76,24 +88,33 @@ export component LogView inherits Rectangle {
         font-size: AppTheme.log-font-size;
     }
 
-    log-edit := TextInput {
+    list := ListView {
         x: 8px;
-        y: 8px - root.offset;
+        y: 8px;
         width: parent.width - 16px;
-        // 显式全文本高度:TextInput 默认高度只有一行,贴底(y = 8 - offset)
-        // 会把整个元素滚出视口 → 日志区只剩一片空白
-        height: self.preferred-height;
-        read-only: true;
-        single-line: false;
-        text: root.text;
-        font-family: AppTheme.mono-font;
-        font-size: AppTheme.log-font-size;
-        wrap: word-wrap;
-        color: AppTheme.log-fg;
-        selection-background-color: AppTheme.accent;
-        selection-foreground-color: white;
-        // 注:不做键盘滚动——多行 TextInput 内置行为会先吃掉 PageUp/PageDown
-        // (移光标),自定义 key-pressed 拦不到;滚轮/拖动是主路径,键盘滚动放弃。
+        height: parent.height - 16px;
+        // offset 是我们量化的滚动量;Flickable 的原生滚动被顶层 wheel 屏蔽,
+        // viewport-y 只会由这里驱动
+        viewport-y: -root.offset;
+
+        for row in root.rows: Rectangle {
+            // 每行严格一行高:内容超高部分裁掉(终端语义;行内不换行)
+            height: root.line-h;
+            clip: true;
+            HorizontalLayout {
+                for run in row.runs: Text {
+                    text: run.text;
+                    color: run.color;
+                    font-family: AppTheme.mono-font;
+                    font-size: AppTheme.log-font-size;
+                    vertical-alignment: center;
+                    // 锁定固有宽度且不参与拉伸/压缩:总宽超出行宽时由行容器
+                    // 从右侧整体裁切(否则长行会把中间的段挤窄、位置漂移)
+                    width: self.preferred-width;
+                    horizontal-stretch: 0;
+                }
+            }
+        }
     }
 
     // 用户点击「自动滚动」checkbox:勾选=立即跳到底部并恢复跟随;
@@ -107,14 +128,14 @@ export component LogView inherits Rectangle {
         }
     }
 
-    // 新数据追加(内容变高):跟随者贴到新底部
-    changed content-h => {
+    // 新行追加:跟随者贴到新底部
+    changed row-count => {
         if (root.follow) {
             root.offset = root.max-offset;
             root.raw = root.offset;
         }
     }
-    // 内容变矮(清空/截断):夹回范围
+    // 内容变矮(清空/裁剪):夹回范围
     changed max-offset => {
         if (root.offset > root.max-offset) {
             root.offset = root.max-offset;

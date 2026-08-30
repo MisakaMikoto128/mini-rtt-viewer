@@ -1,3 +1,4 @@
+pub mod ansi;
 pub mod demo;
 pub mod device_db;
 pub mod jlink_dll;

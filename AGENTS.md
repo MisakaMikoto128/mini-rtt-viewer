@@ -15,8 +15,8 @@ Rust + Slint + JLinkARM.dll FFI 的极简 RTT 查看器。本文件沉淀实际�
 
 **处理**:
 - 序列固定:`disable_dialog_boxes() → (EMU 枚举/SelectByUSBSN 选定) → Open → RTT START → TIF_Select → SetSpeed → ExecCommand("Device = …") → Connect`
-- **disable_dialog_boxes 必须在 Open 之前**:调试器选择窗、固件升级提示都发生在 Open 内部,open 之后再抑制就晚了。`ShowEmuSelect = 0` 彻底禁止 DLL 的调试器选择窗(多台 J-Link 时由 UI 下拉显式选定,未选则自动选第一台,绝不让 DLL 弹窗)
-- open 后立刻 `disable_dialog_boxes()`(命令序列与 pylink-square 一致,见 `jlink_dll.rs`),错误改为快速返回错误码
+- **disable_dialog_boxes 必须在 Open 之前**:调试器选择窗、固件升级提示都发生在 Open 内部,open 之后再抑制就晚了
+- **probe(调试器)选择窗的抑制靠 `SuppressGUI`**——命令表里**没有** ShowEmuSelect(那是 J-Link Commander 的 CLI 选项,ExecCommand 传了也没用)。配合"始终显式 SelectByUSBSN 选定"双保险:用户下拉指定优先,未指定则自动选枚举到的第一台,绝不让 DLL 自己拿主意
 - 首次 connect 失败在 worker 内自动重试 3 次(间隔 400ms),不回退 UI 状态,避免按钮闪烁
 
 参考:`src/rtt.rs` `run()`、`src/jlink_dll.rs` `disable_dialog_boxes`
@@ -69,6 +69,24 @@ Slint 里 `length / length` 产出**无单位 float 比值**(探针实测 `floor
 **教训**:Slint 长度运算的单位语义靠猜不可靠,涉及 `length/length` 的表达式先写探针实测再上线。
 
 参考:`src/ui/log_view.slint` `scroll-by-px` / `grid-max`
+
+---
+
+## ANSI 彩色日志:解析用 vte,渲染逐行逐段;Slint 没有富文本
+
+**约束**:Slint 的 Text/TextEdit 不支持混色(官方 issue #3728 仍开放),也没有 TextCanvas——彩色日志只能"解析成带色段 → 每段一个 Text"渲染。
+
+**架构**(全部用现成件,不自造解析):
+- 解析:`vte` crate(Alacritty/WezTerm 同款状态机),`src/ansi.rs` 持有持久 Parser——**SGR 颜色状态跨行、跨读块保持**(序列被 RTT 块切断也能续上)。SGR 变色时必须先 flush 已累积文本再换色,否则整行并成一段
+- 数据:log_model 产出 `Vec<Run{ text, fg }>` 行,按行数(非字符数)裁剪上限;take_new_rows 增量返回
+- 渲染:ListView 虚拟化(只实例化可见行,长日志不全量重排)+ 每行 HorizontalLayout 逐段 Text 着色
+- 滚动:自建行格滚动继续生效——滚轮 TouchArea 放在 ListView **上层**拦截全部 scroll-event(不给 Flickable 原生像素滚动),量化后直接写 `viewport-y = -offset`(ListView 继承自 Flickable,viewport-y 公开)
+
+**已知取舍**:①行内不换行,超宽行从右侧整体裁切(终端语义);②彩色行模型下失去鼠标选中文本/Ctrl+C 复制(单 TextInput 时代的红利);③背景色/粗体斜体 v1 忽略,只解析前景色(16/256/RGB)。
+
+**HorizontalLayout 挤压坑**:各段 Text 必须显式 `width: self.preferred-width; horizontal-stretch: 0` 锁死固有宽度——不锁的话,总宽超出的长行会把中间的段**压缩变形**(位置漂移),`min-width` 锁不住。
+
+参考:`src/ansi.rs`、`src/log_model.rs`、`src/ui/log_view.slint`
 
 ---
 

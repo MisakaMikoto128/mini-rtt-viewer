@@ -1,6 +1,6 @@
 import { AppTheme } from "theme.slint";
 import { FieldLabel, PanelSection } from "components.slint";
-import { LogView } from "log_view.slint";
+import { LogView, LogRow } from "log_view.slint";
 import { EditableCombo } from "editable_combo.slint";
 import { Button, LineEdit, ComboBox, CheckBox, Palette } from "std-widgets.slint";
 
@@ -34,8 +34,9 @@ export component AppWindow inherits Window {
     in property <[string]> jlink-names;
     // J-Link 设备库候选(后台枚举/磁盘缓存),输入过滤后由 Rust 重建
     in property <[string]> device-names;
-    // 日志整段文本(只读 TextInput:支持鼠标选中 + Ctrl+C 复制)
-    in-out property <string> log-text: "";
+    // 日志行(Rust 端 vte 解析 ANSI 后的带色行,增量 push)
+    in property <[LogRow]> log-rows;
+    in property <int> log-row-count;
     // UI → Rust 输入
     in-out property <string> chip-name: "STM32F030C8";
     in-out property <int> jlink-index: 0;      // 选中的 J-Link
@@ -318,11 +319,11 @@ export component AppWindow inherits Window {
             padding: 10px;
             spacing: AppTheme.gap;
 
-            // 日志区:自建滚动(滚轮按行高量化对齐,新数据贴底跟随不拉扯);
-            // 自动滚动的开关在左侧「接收」卡片里,与这里的 follow 状态双向同步
+            // 日志区:ListView 虚拟化 + ANSI 带色行;滚轮行对齐/贴底跟随在 LogView 内闭环
             LogView {
                 vertical-stretch: 1;
-                text <=> root.log-text;
+                rows: root.log-rows;
+                row-count: root.log-row-count;
                 auto-scroll <=> root.auto-scroll;
             }
 

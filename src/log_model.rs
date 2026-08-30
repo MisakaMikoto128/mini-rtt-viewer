@@ -1,9 +1,12 @@
-//! 日志消息泵:worker 消息 → 按接收行尾模式断行 → 日志文本缓冲。
+//! 日志消息泵:worker 消息 → 按接收行尾模式断行 → ANSI 解析 → 带色行。
 //!
 //! 与 Slint UI 完全解耦(纯逻辑,可单测);main 的 UI timer 每个周期:
 //! 1. 逐条取 worker 消息,调用 [`LogPump::absorb_text`] / [`LogPump::absorb_frame_end`]
 //! 2. 调 [`LogPump::enforce_line_cap`] 兜底超长行
-//! 3. 调 [`LogPump::take_text`] 拿合并后的完整文本,写入日志区
+//! 3. 调 [`LogPump::take_new_rows`] 拿**增量**新行,逐行 push 进 UI 的行模型
+//!    (ListView 虚拟化,只渲染可见行,长日志不再全量重排)
+
+use crate::ansi::{AnsiLines, Run};
 
 /// UI 刷新周期:决定消息从到达(队列)到上屏的额外延迟。过大(如 200ms)会把
 /// 均匀到达的多条消息攒成一批同时冒出来,视觉上"两条一次"。10ms 粒度下
@@ -14,8 +17,8 @@ pub const FLUSH_MS: u64 = 10;
 pub const DEFAULT_FRAME_TIMEOUT_MS: u32 = 20;
 /// 单行硬上限兜底(超长帧/关闭断行时的无换行流)
 pub const MAX_LINE_CHARS: usize = 512;
-/// 日志文本上限(只读文本全量渲染,超限丢最旧,按行边界)
-pub const MAX_LOG_CHARS: usize = 60_000;
+/// 日志行数上限(ListView 虚拟化渲染,超限丢最旧行)
+pub const MAX_LOG_ROWS: usize = 1000;
 
 /// 按接收行尾模式切行:0=自动(\n 断行、吞 \r) 1=CRLF 2=LF 3=CR 4=无(不断行)。
 /// 切出的行内容**一律不含行尾符**——行尾模式只决定"在哪断行",不改变内容。
@@ -38,18 +41,19 @@ pub fn split_lines(p: &mut String, rx_ending: i32, out: &mut Vec<String>) {
 pub struct LogPump {
     /// 半行缓冲:等待换行符/帧结束/兜底上限的未完成行
     pending: String,
-    /// 展示用日志全量文本(每行以 \n 结尾,超出 [`MAX_LOG_CHARS`] 丢最旧)
-    buf: String,
-    /// 已切出的完整行,`take_text` 时合并进 buf
+    /// 已切出的完整行(含 ANSI 转义原样)
     new_lines: Vec<String>,
+    /// 展示用带色行(全量,超出 [`MAX_LOG_ROWS`] 丢最旧)
+    rows: Vec<Vec<Run>>,
+    /// ANSI 解析器(持久实例:颜色状态跨行跨块保持)
+    ansi: AnsiLines,
     /// 暂停接收:置位后新数据直接丢弃(不进日志、不占缓冲)
     pub paused: bool,
 }
 
 impl LogPump {
     /// 消化一段文本数据(Log 横幅 / RTT 读块),按接收行尾模式切出完整行
-    pub fn absorb_text(&mut self, text: &str, rx_ending: i32) {
-        self.pending.push_str(text);
+    pub fn absorb_text(&mut self, text: &str, rx_ending: i32) {        self.pending.push_str(text);
         split_lines(&mut self.pending, rx_ending, &mut self.new_lines);
     }
 
@@ -76,33 +80,36 @@ impl LogPump {
         }
     }
 
-    /// 把已切出的行合并进展示文本;有变化返回完整文本(无变化返回 None)。
-    /// 超出 [`MAX_LOG_CHARS`] 时按字符边界 + 行边界丢最旧。
-    pub fn take_text(&mut self) -> Option<String> {
+    /// 把已切出的行经 ANSI 解析转为带色行;有新行返回它们(增量上屏)。
+    /// 超出 [`MAX_LOG_ROWS`] 时丢最旧行,返回值仍只含**本次新增**的行。
+    pub fn take_new_rows(&mut self) -> Option<Vec<Vec<Run>>> {
         if self.new_lines.is_empty() {
             return None;
         }
+        let mut fresh: Vec<Vec<Run>> = Vec::with_capacity(self.new_lines.len());
         for l in self.new_lines.drain(..) {
-            self.buf.push_str(&l);
-            self.buf.push('\n');
+            fresh.push(self.ansi.feed_line(&l));
         }
-        if self.buf.len() > MAX_LOG_CHARS {
-            // 按字符边界 + 行边界截断到上限以内
-            let cut = self.buf.len() - MAX_LOG_CHARS;
-            let boundary = (cut..self.buf.len())
-                .find(|i| self.buf.is_char_boundary(*i) && self.buf.as_bytes()[*i] == b'\n')
-                .map(|i| i + 1)
-                .unwrap_or(self.buf.len());
-            self.buf.drain(..boundary);
+        self.rows.extend(fresh.iter().cloned());
+        if self.rows.len() > MAX_LOG_ROWS {
+            let drop = self.rows.len() - MAX_LOG_ROWS;
+            self.rows.drain(..drop);
         }
-        Some(self.buf.clone())
+        Some(fresh)
     }
 
-    /// "清空"按钮:缓冲与半行全部丢弃
+    /// 测试专用:内部保留行数(裁剪断言用;仅 lib 测试编译)
+    #[cfg(test)]
+    pub fn test_rows_len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// "清空"按钮:缓冲、行、解析器颜色状态全部丢弃
     pub fn clear(&mut self) {
         self.pending.clear();
-        self.buf.clear();
         self.new_lines.clear();
+        self.rows.clear();
+        self.ansi.reset();
     }
 }
 
@@ -154,16 +161,20 @@ mod tests {
     }
 
     #[test]
-    fn pump_accumulates_blocks_into_lines() {
+    fn pump_accumulates_blocks_into_rows() {
         let mut pump = LogPump::default();
         pump.absorb_text("Hel", 0);
-        assert!(pump.take_text().is_none()); // 未成行不上屏
+        assert!(pump.take_new_rows().is_none()); // 未成行不上屏
         pump.absorb_text("lo\r\nWorld", 0);
         // "Hello" 已成行上屏;"World" 还没有换行符,留在缓冲
-        assert_eq!(pump.take_text().unwrap(), "Hello\n");
-        assert!(pump.take_text().is_none());
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].text, "Hello");
+        assert!(pump.take_new_rows().is_none());
         pump.absorb_frame_end(0);
-        assert_eq!(pump.take_text().unwrap(), "Hello\nWorld\n");
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].text, "World");
     }
 
     #[test]
@@ -171,7 +182,8 @@ mod tests {
         let mut pump = LogPump::default();
         pump.absorb_text("no-newline-tail", 0);
         pump.absorb_frame_end(0);
-        assert_eq!(pump.take_text().unwrap(), "no-newline-tail\n");
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows[0][0].text, "no-newline-tail");
     }
 
     #[test]
@@ -179,35 +191,61 @@ mod tests {
         let mut pump = LogPump::default();
         pump.absorb_text(&"x".repeat(MAX_LINE_CHARS + 10), 4);
         pump.enforce_line_cap();
-        let text = pump.take_text().unwrap();
-        assert_eq!(text.lines().count(), 1);
-        assert_eq!(text.trim_end_matches('\n').chars().count(), MAX_LINE_CHARS);
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].text.chars().count(), MAX_LINE_CHARS);
         // 剩余 10 字符留在 pending
         pump.absorb_frame_end(0);
-        let after = pump.take_text().unwrap();
-        assert_eq!(after.matches('x').count(), MAX_LINE_CHARS + 10);
-        assert!(after.ends_with("xxxxxxxxxx\n"));
+        let rows = pump.take_new_rows().unwrap();
+        let joined: String = rows.iter().flat_map(|r| r.iter().map(|s| s.text.clone())).collect();
+        assert!(joined.ends_with("xxxxxxxxxx"));
     }
 
     #[test]
-    fn pump_trims_to_max_chars_on_line_boundary() {
+    fn pump_trims_to_max_rows_dropping_oldest() {
         let mut pump = LogPump::default();
-        let row = "y".repeat(1000);
-        for _ in 0..(MAX_LOG_CHARS / 1000 + 5) {
-            pump.absorb_text(&row, 0);
+        for i in 0..(MAX_LOG_ROWS + 5) {
+            pump.absorb_text(&format!("line{i}\n"), 0);
             pump.enforce_line_cap();
         }
-        let text = pump.take_text().unwrap();
-        assert!(text.len() <= MAX_LOG_CHARS);
-        assert!(text.starts_with("yyyy")); // 行首对齐,没有半行
-        assert!(text.ends_with('\n'));
+        assert!(pump.take_new_rows().is_some());
+        assert_eq!(pump.test_rows_len(), MAX_LOG_ROWS);
+        // 最旧的 line0..line4 被挤出窗口;fresh 行包含全部输入
+        let mut pump2 = LogPump::default();
+        for i in 0..(MAX_LOG_ROWS + 5) {
+            pump2.absorb_text(&format!("line{i}\n"), 0);
+            pump2.enforce_line_cap();
+        }
+        let rows = pump2.take_new_rows().unwrap();
+        assert_eq!(rows.first().unwrap()[0].text, "line0");
+        let last = rows.last().unwrap().last().unwrap();
+        assert_eq!(last.text, format!("line{}", MAX_LOG_ROWS + 4));
+    }
+
+    #[test]
+    fn pump_preserves_ansi_escapes_for_parser() {
+        let mut pump = LogPump::default();
+        pump.absorb_text("\x1b[32mOK\r\n", 0);
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows[0][0].text, "OK");
+        assert_eq!(rows[0][0].fg, Some((0x0d, 0xbc, 0x79)));
+    }
+
+    #[test]
+    fn pump_color_state_carries_between_rows() {
+        let mut pump = LogPump::default();
+        pump.absorb_text("\x1b[31mred\nstill red\n", 0);
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows[0][0].fg, Some((0xcd, 0x31, 0x31)));
+        assert_eq!(rows[1][0].fg, Some((0xcd, 0x31, 0x31)));
     }
 
     #[test]
     fn pump_clear_resets_everything() {
         let mut pump = LogPump::default();
         pump.absorb_text("a\r\n", 0);
+        assert!(pump.take_new_rows().is_some());
         pump.clear();
-        assert!(pump.take_text().is_none());
+        assert!(pump.take_new_rows().is_none());
     }
 }

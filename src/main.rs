@@ -144,6 +144,8 @@ struct Ctx {
     msg_tx: mpsc::Sender<WorkerMsg>,
     msg_rx: mpsc::Receiver<WorkerMsg>,
     frame_timeout_ms: Arc<AtomicU32>,
+    /// 字符集下拉索引共享变量:UI 改 → worker 读循环实时检测并热重建解码器
+    encoding_index: Arc<AtomicU32>,
     /// 设备库全量名单(后台枚举/磁盘缓存回传),筛选下拉按输入重建
     device_names: Rc<RefCell<Vec<SharedString>>>,
     /// 本机接入的 J-Link (序列号, 显示名);下拉选中项在连接时换算成 selected_sn
@@ -171,6 +173,9 @@ impl Ctx {
                 .unwrap_or(DEFAULT_FRAME_TIMEOUT_MS);
             self.frame_timeout_ms.store(v.clamp(1, 200), Ordering::Relaxed);
         }
+        // 字符集动态生效:UI 下拉 → 共享变量(worker 每块检测变化热切换)
+        self.encoding_index
+            .store(ui.get_encoding_index().clamp(0, ENCODINGS.len() as i32 - 1) as u32, Ordering::Relaxed);
         // 接收行尾:0=自动 1=CRLF 2=LF 3=CR 4=无
         let rx_ending = ui.get_rx_ending();
         let mut pump = self.pump.borrow_mut();
@@ -388,11 +393,6 @@ impl Ctx {
 
         let (tx, rx) = mpsc::channel::<WorkerCmd>();
         *self.cmd_tx.borrow_mut() = Some(tx);
-        // 字符集:下拉索引 → encoding_rs 标签(越界回落 UTF-8)
-        let encoding = ENCODINGS
-            .get(ui.get_encoding_index().clamp(0, ENCODINGS.len() as i32 - 1) as usize)
-            .map(|(_, label)| label.to_string())
-            .unwrap_or_else(|| "utf-8".into());
         let handle = rtt::spawn(
             rtt::WorkerConfig {
                 chip,
@@ -401,7 +401,7 @@ impl Ctx {
                 channel: ui.get_channel() as u32,
                 frame_timeout_ms: self.frame_timeout_ms.clone(),
                 selected_sn,
-                encoding,
+                encoding_index: self.encoding_index.clone(),
             },
             self.msg_tx.clone(),
             rx,
@@ -580,6 +580,8 @@ fn main() -> anyhow::Result<()> {
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
     // 断帧间隔共享变量:UI 改输入框 → worker 实时读取(断帧判定在 worker,5ms 精度)
     let frame_timeout_ms = Arc::new(AtomicU32::new(DEFAULT_FRAME_TIMEOUT_MS));
+    // 字符集共享变量(初始 0=UTF-8;配置恢复段按保存值 store)
+    let encoding_index = Arc::new(AtomicU32::new(0));
     let ctx = Rc::new(Ctx {
         pump: Rc::new(RefCell::new(LogPump::default())),
         worker: Rc::new(RefCell::new(None)),
@@ -594,6 +596,7 @@ fn main() -> anyhow::Result<()> {
         stats: RefCell::default(),
         preferred_jlink: RefCell::new(None),
         last_prefs: RefCell::new(None),
+        encoding_index,
     });
     app.set_log_rows(ModelRc::from(ctx.log_rows.clone()));
 
@@ -620,6 +623,10 @@ fn main() -> anyhow::Result<()> {
         app.global::<AppTheme>().set_log_font_size(saved.log_font_px as f32);
     }
     *ctx.preferred_jlink.borrow_mut() = saved.jlink_serial;
+    ctx.encoding_index.store(
+        saved.encoding_index.clamp(0, ENCODINGS.len() as i32 - 1) as u32,
+        Ordering::Relaxed,
+    );
 
     if demo_mode {
         demo::spawn(ctx.msg_tx.clone());

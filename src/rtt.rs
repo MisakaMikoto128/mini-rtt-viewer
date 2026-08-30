@@ -73,9 +73,9 @@ pub struct WorkerConfig {
     pub frame_timeout_ms: Arc<AtomicU32>,
     /// 用户在「J-Link」下拉选中的调试器序列号;None = 交给 DLL 自动选(单机场景)
     pub selected_sn: Option<u32>,
-    /// 字符集标签("utf-8"/"gbk"/"utf-16le"/"windows-1252"/"ascii");
-    /// 未知标签回落 UTF-8。UI 下拉顺序见 [`ENCODINGS`]
-    pub encoding: String,
+    /// 字符集下拉索引(ENCODINGS 下标)共享变量,UI 侧运行时可改——读循环每块
+    /// 检测变化并热重建解码器,切换**动态生效**(无需重连)
+    pub encoding_index: Arc<AtomicU32>,
 }
 
 /// 字符集下拉表:**与 app.slint 的「字符集」ComboBox 顺序严格一致**。
@@ -116,6 +116,11 @@ impl CharsetDecoder {
         let (_, _, _) = self.decoder.decode_to_string(bytes, &mut out, false);
         out
     }
+}
+
+/// 下拉索引 → encoding_rs 标签(越界回落 UTF-8)
+fn enc_label(index: u32) -> &'static str {
+    ENCODINGS.get(index as usize).map(|(_, label)| *label).unwrap_or("utf-8")
 }
 
 /// 启动 RTT 工作线程:加载 DLL → 按验证过的序列连接 → 循环读通道。
@@ -260,12 +265,13 @@ fn rtt_read_loop(
     cmd_rx: &mpsc::Receiver<WorkerCmd>,
     stop: &AtomicBool,
 ) {
-    let WorkerConfig { channel, frame_timeout_ms, encoding, .. } = config;
+    let WorkerConfig { channel, frame_timeout_ms, encoding_index, .. } = config;
 
     let mut buf = [0u8; 4096];
     // 按用户选定字符集增量解码:跨读块的多字节边界(emoji 4 字节/GBK 2 字节
     // 被块切断)由 decoder 内部管理
-    let mut decoder = CharsetDecoder::for_label(encoding);
+    let mut current_enc = encoding_index.load(Ordering::Relaxed);
+    let mut decoder = CharsetDecoder::for_label(enc_label(current_enc));
     // 帧边界判定(在 worker 用真实时间戳,不受 UI 刷新粒度影响):
     // 相邻两次数据到达的间隔超过断帧超时 → 上一帧结束(FrameEnd)
     let mut last_rx = Instant::now();
@@ -278,6 +284,20 @@ fn rtt_read_loop(
             if frame_open && now.duration_since(last_rx) > to {
                 // 上一帧到此结束;新块马上开启新帧(frame_open 统一在下面置位)
                 let _ = tx.send(WorkerMsg::FrameEnd);
+            }
+            // 字符集动态生效:检测到下拉变化即热重建解码器(旧编码的半字节残留
+            // 一并丢弃——按新编码解释旧残留没有意义),并发横幅提示
+            let want_enc = encoding_index.load(Ordering::Relaxed);
+            if want_enc != current_enc {
+                current_enc = want_enc;
+                decoder = CharsetDecoder::for_label(enc_label(current_enc));
+                let _ = tx.send(WorkerMsg::Log(format!(
+                    "[字符集] {}\r\n",
+                    ENCODINGS
+                        .get(current_enc as usize)
+                        .map(|(name, _)| *name)
+                        .unwrap_or("UTF-8")
+                )));
             }
             // ANSI 转义序列原样透传,由 UI 端 vte 解析着色(本层不再剥掉)
             let text = decoder.decode(&buf[..n as usize]);

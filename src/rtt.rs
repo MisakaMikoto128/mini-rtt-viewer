@@ -102,14 +102,20 @@ fn run(
     cmd_rx: &mpsc::Receiver<WorkerCmd>,
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
-    let WorkerConfig {
-        chip,
-        iface_index,
-        speed_khz,
-        channel,
-        frame_timeout_ms,
-        selected_sn,
-    } = config;
+    let jlink = connect_target(config, tx, stop)?;
+    rtt_read_loop(&jlink, config, tx, cmd_rx, stop);
+    Ok(())
+}
+
+/// 连接序列:加载 DLL → 抑制弹窗 → 选定调试器 → OpenEx → RTT START →
+/// TIF/速度/设备名 → Connect(带重试)→ State(true) + DeviceInfo。
+/// 成功返回已打开的 JLinkDll;失败路径自行 close 后返回 Err。
+fn connect_target(
+    config: &WorkerConfig,
+    tx: &mpsc::Sender<WorkerMsg>,
+    stop: &AtomicBool,
+) -> anyhow::Result<JLinkDll> {
+    let WorkerConfig { chip, iface_index, speed_khz, selected_sn, .. } = config;
     let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLinkARM.dll…".into()));
     let jlink = JLinkDll::load()?;
     // 抑制 DLL 模态弹窗必须最先做(调试器选择窗/固件升级提示都发生在 Open 内部),
@@ -197,6 +203,19 @@ fn run(
         iface: iface_name.into(),
         speed_khz: *speed_khz,
     }));
+    Ok(jlink)
+}
+
+/// RTT 读循环:5ms 轮询读通道 → 帧间隔判定 → 透传块;同时消化命令管道
+/// (发送/电源)。退出(停止/关窗/读失败)时清理 RTT 与 DLL 并回报未连接。
+fn rtt_read_loop(
+    jlink: &JLinkDll,
+    config: &WorkerConfig,
+    tx: &mpsc::Sender<WorkerMsg>,
+    cmd_rx: &mpsc::Receiver<WorkerCmd>,
+    stop: &AtomicBool,
+) {
+    let WorkerConfig { channel, frame_timeout_ms, .. } = config;
 
     let mut buf = [0u8; 4096];
     // 跨块 UTF-8 增量解码:emoji 4 字节可能被 RTT 读块边界切断
@@ -227,7 +246,7 @@ fn run(
             let _ = tx.send(WorkerMsg::State(false, format!("● RTT 读取失败 ({n}),已断开")));
             jlink.rtt_control(RTT_CMD_STOP);
             jlink.close();
-            return Ok(());
+            return;
         }
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
@@ -261,7 +280,6 @@ fn run(
     let _ = jlink.rtt_control(RTT_CMD_STOP);
     jlink.close();
     let _ = tx.send(WorkerMsg::State(false, "● 未连接".into()));
-    Ok(())
 }
 
 /// 跨块安全的 UTF-8 增量解码:

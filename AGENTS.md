@@ -209,6 +209,15 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 
 ---
 
+## 模块层次(2026-08 重构后)
+
+- **bin/main.rs 只是装配层**:创建 AppWindow → 把回调接到 `Ctx` 的方法 → timer 调 `ctx.tick()` → 退出编排。**业务规则不写进 main**;新增功能 = 给 `Ctx` 加方法 + 接一行闭包
+- **模块树唯一在 lib**:`slint::include_modules!()` 在 lib.rs 展开(AppWindow/LogRow 等生成类型经 `mini_rtt_viewer::` 导出),bin/examples 一律 `use mini_rtt_viewer::…`,**绝不**在 bin 里重复 `mod` 声明——否则同模块编译两份,还容易漏声明(踩过:bin 漏 `mod ansi`)
+- 层次:main(装配)→ Ctx(共享状态 + 业务方法)→ log_model/ansi(纯逻辑,可单测)→ rtt(worker 线程,connect_target + rtt_read_loop 两段)→ jlink_dll(FFI)→ device_db(后台枚举)
+- 新增 DLL 能力的路径:jlink_dll.rs 加 FFI → rtt.rs 接入序列/循环 → main.rs Ctx 加方法 → app.slint 加控件
+
+---
+
 ## 已知未修(用户知情,勿"顺手修")
 
 1. 底边空隙的微小变化(见"滚动行对齐"的取舍说明)

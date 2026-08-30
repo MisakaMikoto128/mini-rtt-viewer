@@ -66,13 +66,19 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 
 | 文件 | 职责 |
 |---|---|
-| `src/main.rs` | 装配:单实例检查、UI 回调、10ms 消息泵调度、退出编排 |
-| `src/log_model.rs` | 消息泵纯逻辑(断行/缓冲/截断),有单元测试 |
-| `src/rtt.rs` | worker 线程:连接序列、RTT 读循环、断帧判定、UTF-8 增量解码 |
-| `src/jlink_dll.rs` | JLinkARM.dll 最小 FFI 绑定 |
+| `src/lib.rs` | 模块树唯一入口;Slint 生成代码(AppWindow 等)在此导出,bin/examples 一律 `use` 本 crate |
+| `src/main.rs` | 纯装配层:`Ctx` 收拢全部 UI 共享状态并承载业务方法,main() 只创建窗口、接回调、起 timer |
+| `src/log_model.rs` | 消息泵纯逻辑(断行/缓冲/ANSI 带色行/行数上限),有单元测试 |
+| `src/ansi.rs` | ANSI 转义 → 带色文本段(vte 状态机,颜色状态跨行跨块保持),有单元测试 |
+| `src/rtt.rs` | worker 线程:`connect_target` 连接序列 + `rtt_read_loop` 读循环(断帧判定/命令消化/UTF-8 增量解码) |
+| `src/jlink_dll.rs` | JLinkARM.dll 最小 FFI 绑定(连接/RTT/设备信息/调试器枚举与选定) |
+| `src/device_db.rs` | 设备库后台枚举 + 磁盘缓存 + 多台调试器列表 |
 | `src/single_instance.rs` | 单实例互斥 |
-| `src/demo.rs` | `--demo-log` 演示数据源 + 微秒时序打点 |
-| `src/ui/log_view.slint` | 日志滚动区(滚轮行高对齐、贴底跟随) |
+| `src/demo.rs` | `--demo-log` 演示数据源(中英混排 + emoji + ANSI 颜色样例) |
+| `src/ui/log_view.slint` | 日志滚动区(ListView 虚拟化、滚轮行高对齐、贴底跟随、自动滚动同步) |
+| `src/ui/editable_combo.slint` | 目标设备单控件(输入即筛选 + 原生下拉候选) |
+| `examples/emu_check.rs` | 无界面验证:枚举调试器 + 选定/实际打开一致性 |
+| `examples/rtt_check.rs` | 无界面 RTT 直读(连接序列排障用) |
 | `AGENTS.md` | 实际踩坑经验笔记(改代码前先读) |
 
 ## License

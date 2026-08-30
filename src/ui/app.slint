@@ -62,7 +62,6 @@ export component AppWindow inherits Window {
                     // ---- 连接设置 ----
                     PanelSection {
                         title: "连接设置";
-                        content-height: 246px;
 
                         VerticalLayout {
                             spacing: 6px;
@@ -110,12 +109,11 @@ export component AppWindow inherits Window {
                                     enabled: !root.connected && !root.connecting;
                                 }
                             }
-                            // 单按钮三态(连接/取消连接/断开):位置固定只换文字,避免切换闪烁
+                            // 单按钮两态:按下立即换文字(连接中显示"断开",再点=取消)
                             Button {
+                                height: AppTheme.ctrl-h;
                                 primary: !root.connected && !root.connecting;
-                                text: root.connected ? "断开"
-                                    : root.connecting ? "取消连接"
-                                    : "连接";
+                                text: root.connected || root.connecting ? "断开" : "连接";
                                 clicked => {
                                     if (root.connected || root.connecting) {
                                         root.disconnect-clicked();
@@ -130,15 +128,16 @@ export component AppWindow inherits Window {
                     // ---- 接收设置 ----
                     PanelSection {
                         title: "接收";
-                        content-height: 96px;
 
                         HorizontalLayout {
                             spacing: 6px;
                             Button {
+                                height: AppTheme.ctrl-h;
                                 text: "清空";
                                 clicked => { root.clear-clicked(); }
                             }
                             Button {
+                                height: AppTheme.ctrl-h;
                                 text: root.paused ? "继续接收" : "暂停接收";
                                 clicked => { root.pause-toggled(); }
                             }
@@ -165,6 +164,8 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+
+                    Rectangle { vertical-stretch: 1; }
             }
         }
 

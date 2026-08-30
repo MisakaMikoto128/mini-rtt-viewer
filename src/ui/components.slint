@@ -8,12 +8,14 @@ export component FieldLabel inherits Text {
     vertical-alignment: center;
 }
 
-// 区块标题 + 分隔线的面板区块壳。
+// 区块标题 + 内容的面板区块壳:高度由内容自适应(固定高度会随控件尺寸变化溢出遮挡)。
+// vertical-stretch 0:在父布局中按内容收缩,不被拉伸成巨块。
 export component PanelSection inherits Rectangle {
     in property <string> title;
-    in property <length> content-height;
     border-radius: AppTheme.radius;
     background: AppTheme.panel-bg;
+    vertical-stretch: 0;
+    horizontal-stretch: 0;
 
     VerticalLayout {
         padding: 10px;
@@ -30,6 +32,9 @@ export component PanelSection inherits Rectangle {
             }
             Rectangle { height: 1px; background: AppTheme.border-color; }
         }
-        Rectangle { height: root.content-height; VerticalLayout { @children } }
+        VerticalLayout {
+            spacing: 6px;
+            @children
+        }
     }
 }

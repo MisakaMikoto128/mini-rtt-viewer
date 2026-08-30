@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 slint::include_modules!();
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
-const FLUSH_MS: u64 = 100;
-const DEFAULT_FRAME_TIMEOUT_MS: u128 = 100; // 设备不发换行符时,静默超时自动断行
+const FLUSH_MS: u64 = 200;
+const DEFAULT_FRAME_TIMEOUT_MS: u128 = 100; // 设备不发换行符时,按时间窗自动断行
 const MAX_LINE_CHARS: usize = 256; // 单行硬上限:积压数据批量到达时强制切行,防止超长行
-const MAX_LOG_CHARS: usize = 100_000; // 日志文本上限(TextEdit 全量渲染,超限丢最旧)
+const MAX_LOG_CHARS: usize = 60_000; // 日志文本上限(只读文本全量渲染,超限丢最旧)
 
 /// 单实例互斥:第二个实例弹窗提示后退出。
 /// 不做互斥的话两个进程会同时连同一个 J-Link(数据各收一份,状态互相干扰)。

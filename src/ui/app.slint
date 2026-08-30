@@ -1,6 +1,7 @@
 import { AppTheme } from "theme.slint";
 import { FieldLabel, PanelSection } from "components.slint";
 import { LogView } from "log_view.slint";
+import { DeviceSelect } from "device_select.slint";
 import { Button, LineEdit, ComboBox, CheckBox, Palette } from "std-widgets.slint";
 
 export { AppTheme }
@@ -35,7 +36,6 @@ export component AppWindow inherits Window {
     in-out property <string> log-text: "";
     // UI → Rust 输入
     in-out property <string> chip-name: "STM32F030C8";
-    in-out property <int> device-index: -1;    // 设备下拉选中项;-1=未选(显示空)
     in-out property <int> iface-index: 0;      // 0=SWD 1=JTAG
     in-out property <int> speed-index: 5;      // 默认 4000kHz
     in-out property <int> channel: 0;
@@ -62,11 +62,8 @@ export component AppWindow inherits Window {
     // 电源输出开关(仅连接状态下 Rust 端会真正下发)
     callback power-toggled(bool);
 
-    forward-focus: chip-input;
-
     init => {
         Palette.color-scheme = ColorScheme.dark;
-        chip-input.focus();
     }
 
     HorizontalLayout {
@@ -86,24 +83,16 @@ export component AppWindow inherits Window {
 
                         VerticalLayout {
                             spacing: 6px;
-                            FieldLabel { text: "目标设备"; }
-                            chip-input := LineEdit {
-                                text <=> root.chip-name;
-                                height: AppTheme.ctrl-h;
-                                enabled: !root.connected && !root.connecting;
-                                // 输入即筛选:可手动填任意型号,也可从下方下拉选
-                                edited(t) => { root.chip-filtered(t); }
-                            }
-                            ComboBox {
-                                // 候选由 Rust 端按 chip-name 过滤重建;选中回填输入框。
-                                // current-index 复位 -1 = 不选中(显示空),不与输入框文本打架
-                                model: root.device-names;
-                                current-index <=> root.device-index;
-                                height: AppTheme.ctrl-h;
-                                enabled: !root.connected && !root.connecting;
-                                selected(text) => {
-                                    root.chip-name = text;
-                                    root.device-index = -1;
+                            // 目标设备:单控件(输入即筛选 + 下拉候选),对齐原工程 EditableComboBox
+                            HorizontalLayout {
+                                spacing: 6px;
+                                FieldLabel { text: "目标设备"; width: 58px; vertical-alignment: center; }
+                                chip-input := DeviceSelect {
+                                    horizontal-stretch: 1;
+                                    text <=> root.chip-name;
+                                    candidates: root.device-names;
+                                    enabled: !root.connected && !root.connecting;
+                                    filter-changed(t) => { root.chip-filtered(t); }
                                 }
                             }
                             HorizontalLayout {
@@ -175,14 +164,16 @@ export component AppWindow inherits Window {
                                 clicked => { root.info-expanded = !root.info-expanded; }
                                 HorizontalLayout {
                                     Text {
-                                        text: root.info-expanded ? "▾ 设备信息" : "▸ 设备信息";
+                                        // 注意 Segoe UI 没有 ▸/▾ 小三角字形(渲染成方框乱码),
+                                        // 折叠指示一律用 WGL4 集合里的 ▼/►/▲
+                                        text: root.info-expanded ? "▼ 设备信息" : "► 设备信息";
                                         color: AppTheme.text-primary;
                                         font-size: 13px;
                                         font-weight: 700;
                                         font-family: AppTheme.ui-font;
                                         vertical-alignment: center;
                                     }
-                                    Rectangle { height: 1px; background: AppTheme.border-color; }
+                                    Rectangle { width: 1px; }
                                 }
                             }
                             if root.info-expanded: VerticalLayout {
@@ -271,11 +262,16 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                         }
+                        CheckBox {
+                            text: "自动滚动";
+                            checked <=> root.auto-scroll;
+                        }
                         Text {
                             text: "相邻数据间隔超过设定值(1~200ms)判定一帧结束,自动换行";
                             color: AppTheme.text-muted;
                             font-size: 10px;
                             font-family: AppTheme.ui-font;
+                            wrap: word-wrap;
                         }
                         HorizontalLayout {
                             spacing: 6px;
@@ -308,18 +304,8 @@ export component AppWindow inherits Window {
             padding: 10px;
             spacing: AppTheme.gap;
 
-            // 自动滚动开关:勾选=贴底跟随;滚离底部时 LogView 会自动取消勾选,
-            // 再勾选立即跳回底部恢复跟随(状态双向同步)
-            HorizontalLayout {
-                height: 22px;
-                CheckBox {
-                    text: "自动滚动";
-                    checked <=> root.auto-scroll;
-                }
-                Rectangle {}
-            }
-
-            // 日志区:自建滚动(滚轮按行高量化对齐,新数据贴底跟随不拉扯)
+            // 日志区:自建滚动(滚轮按行高量化对齐,新数据贴底跟随不拉扯);
+            // 自动滚动的开关在左侧「接收」卡片里,与这里的 follow 状态双向同步
             LogView {
                 vertical-stretch: 1;
                 text <=> root.log-text;

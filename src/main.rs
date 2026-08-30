@@ -2,14 +2,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod demo;
+mod device_db;
 mod jlink_dll;
 mod log_model;
 mod rtt;
 mod single_instance;
 
 use log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
-use rtt::{WorkerHandle, WorkerMsg, APP_SHUTDOWN};
-use slint::{ComponentHandle, SharedString, Timer, TimerMode};
+use rtt::{WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN};
+use slint::{ComponentHandle, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -19,6 +20,22 @@ use std::time::{Duration, Instant};
 slint::include_modules!();
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
+
+/// 重建设备下拉候选:按输入大小写不敏感过滤;选中态复位 -1(下拉显示空,
+/// 不与输入框文本打架,候选仅是"选择器")
+fn apply_device_filter(ui: &AppWindow, full: &[SharedString], needle: &str) {
+    let n = needle.trim().to_uppercase();
+    let list: Vec<SharedString> = if n.is_empty() {
+        full.to_vec()
+    } else {
+        full.iter()
+            .filter(|s| s.to_uppercase().contains(&n))
+            .cloned()
+            .collect()
+    };
+    ui.set_device_names(slint::ModelRc::new(VecModel::from(list)));
+    ui.set_device_index(-1);
+}
 
 fn main() -> anyhow::Result<()> {
     // --demo-log 是无设备的自动化测试模式:跳过单实例互斥,
@@ -31,9 +48,12 @@ fn main() -> anyhow::Result<()> {
 
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
     // 每次连接新建一条命令管道;UI 持有"当前 worker 的 sender"。
-    let cmd_tx: Rc<RefCell<Option<mpsc::Sender<String>>>> = Rc::new(RefCell::new(None));
+    // 枚举协议:Send=发数据,Power=电源输出开关
+    let cmd_tx: Rc<RefCell<Option<mpsc::Sender<WorkerCmd>>>> = Rc::new(RefCell::new(None));
     // 连接互斥门闩:worker 线程存活期间(含阻塞在 connect() 时)不允许 spawn 新 worker
     let worker: Rc<RefCell<Option<Arc<WorkerHandle>>>> = Rc::new(RefCell::new(None));
+    // 设备库全量名单(后台线程枚举/磁盘缓存回传),筛选下拉按输入重建
+    let device_names: Rc<RefCell<Vec<SharedString>>> = Rc::new(RefCell::new(Vec::new()));
 
     // 断帧间隔共享变量:UI 改输入框 → worker 实时读取(断帧判定在 worker,5ms 精度)
     let frame_timeout_ms = Arc::new(AtomicU32::new(DEFAULT_FRAME_TIMEOUT_MS));
@@ -44,6 +64,17 @@ fn main() -> anyhow::Result<()> {
 
     if demo_mode {
         demo::spawn(msg_tx.clone());
+    } else {
+        // 目标设备下拉候选:后台枚举 J-Link 设备库(有磁盘缓存则零 DLL 调用)。
+        // device_db 不依赖 WorkerMsg,这里用转发线程适配消息类型
+        let (db_tx, db_rx) = mpsc::channel::<Vec<String>>();
+        device_db::spawn_background(db_tx);
+        let msg_tx = msg_tx.clone();
+        std::thread::spawn(move || {
+            if let Ok(names) = db_rx.recv() {
+                let _ = msg_tx.send(WorkerMsg::DeviceNames(names));
+            }
+        });
     }
 
     let timer = Timer::default();
@@ -53,6 +84,7 @@ fn main() -> anyhow::Result<()> {
         let worker = worker.clone();
         let last_status = last_status.clone();
         let frame_timeout_ms = frame_timeout_ms.clone();
+        let device_names = device_names.clone();
         timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
             let ui = match weak.upgrade() { Some(u) => u, None => return };
             // 0. 把输入框的断帧间隔同步给 worker(判定在 worker,精度 5ms)
@@ -94,11 +126,34 @@ fn main() -> anyhow::Result<()> {
                         *last_status.borrow_mut() = status.clone().into();
                         ui.set_status_text(status.into());
                     }
+                    Ok(WorkerMsg::DeviceInfo(info)) => {
+                        // 设备信息区(字段对齐原 PySide6 工程;空字段 UI 显示 "—")
+                        let rows = vec![
+                            InfoRow { label: "固件版本".into(), value: info.firmware.into() },
+                            InfoRow { label: "硬件版本".into(), value: info.hardware.into() },
+                            InfoRow { label: "序列号".into(), value: info.serial.into() },
+                            InfoRow { label: "核心名称".into(), value: info.core_name.into() },
+                            InfoRow { label: "核心 ID".into(), value: info.core_id.into() },
+                            InfoRow { label: "CPU 类型".into(), value: info.core_cpu.into() },
+                            InfoRow { label: "目标设备".into(), value: info.target.into() },
+                            InfoRow { label: "接口".into(), value: info.iface.into() },
+                            InfoRow { label: "速度(kHz)".into(), value: info.speed_khz.to_string().into() },
+                        ];
+                        ui.set_info_rows(slint::ModelRc::new(VecModel::from(rows)));
+                    }
+                    Ok(WorkerMsg::DeviceNames(names)) => {
+                        let full: Vec<SharedString> =
+                            names.into_iter().map(SharedString::from).collect();
+                        apply_device_filter(&ui, &full, &ui.get_chip_name());
+                        *device_names.borrow_mut() = full;
+                    }
                     Ok(WorkerMsg::Exited) => {
-                        // worker 真正退出(含 DLL close),解锁"再连接"
+                        // worker 真正退出(含 DLL close),解锁"再连接";
+                        // 电源输出随连接一起失效(DLL close 会断电)
                         *worker.borrow_mut() = None;
                         ui.set_connecting(false);
                         ui.set_connected(false);
+                        ui.set_power_output(false);
                     }
                     Err(_) => break,
                 }
@@ -126,6 +181,12 @@ fn main() -> anyhow::Result<()> {
             }
             *worker.borrow_mut() = None;
             let ui = weak.unwrap();
+            // 首次启动设备库还在后台枚举:原 Python 项目踩过「枚举与 connect 并发
+            // 损坏 DLL TLS」的坑,枚举期间拒绝连接(窗口仅数秒,且只发生在无缓存的首次)
+            if device_db::busy() {
+                ui.set_status_text("● 设备库加载中,请稍候…".into());
+                return;
+            }
             // chip 名去首尾空白;空名直接拒绝(空设备名会让 J-Link DLL 沿用上一次设备,行为不可预期)
             let chip = ui.get_chip_name().trim().to_string();
             if chip.is_empty() {
@@ -135,7 +196,7 @@ fn main() -> anyhow::Result<()> {
             ui.set_connecting(true);
             ui.set_status_text("● 连接中…".into());
 
-            let (tx, rx) = mpsc::channel::<String>();
+            let (tx, rx) = mpsc::channel::<WorkerCmd>();
             *cmd_tx.borrow_mut() = Some(tx);
             let handle = rtt::spawn(
                 rtt::WorkerConfig {
@@ -187,7 +248,34 @@ fn main() -> anyhow::Result<()> {
                 _ => "\r\n",
             };
             if let Some(tx) = cmd_tx.borrow().as_ref() {
-                let _ = tx.send(text + ending);
+                let _ = tx.send(WorkerCmd::Send(text + ending));
+            }
+        });
+    }
+
+    // 电源输出:仅连接状态下真正下发;未连接时勾选状态回弹
+    {
+        let weak = app.as_weak();
+        let cmd_tx = cmd_tx.clone();
+        app.on_power_toggled(move |on| {
+            let ui = weak.unwrap();
+            if !ui.get_connected() {
+                ui.set_power_output(false);
+                return;
+            }
+            if let Some(tx) = cmd_tx.borrow().as_ref() {
+                let _ = tx.send(WorkerCmd::Power(on));
+            }
+        });
+    }
+
+    // 目标设备输入过滤:按输入重建下拉候选
+    {
+        let weak = app.as_weak();
+        let device_names = device_names.clone();
+        app.on_chip_filtered(move |text| {
+            if let Some(ui) = weak.upgrade() {
+                apply_device_filter(&ui, &device_names.borrow(), &text);
             }
         });
     }

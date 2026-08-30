@@ -5,8 +5,11 @@ import { AppTheme } from "theme.slint";
 // 自建:滚轮 delta 累积后 floor 量化到整数行高,手动滚动位置永远落在行高网格上
 // (逐屏上翻时上一行精确落进上一屏位置,视觉上像静止的行流);
 // 贴底跟随用显式 follow 标志(滚离底部失随、滚回底部恢复),新数据不拉扯视口。
-component LogView inherits Rectangle {
+export component LogView inherits Rectangle {
     in property <string> text;
+    // 自动滚动状态(follow 的对外呈现):滚离底部自动变 false,滚回底部/用户勾选变 true。
+    // AppWindow 的「自动滚动」checkbox 与它 <=> 双向绑定——checkbox 是状态呈现也是开关。
+    in-out property <bool> auto-scroll: true;
     background: AppTheme.log-bg;
     border-radius: AppTheme.radius;
     border-width: 1px;
@@ -20,7 +23,7 @@ component LogView inherits Rectangle {
     // 手动滚动的行格上界:floor 到行高网格(自动贴底仍贴死 max-offset,
     // 从底部上翻第一格落进网格,底部只留不到一行的空隙)
     private property <length> grid-max: root.line-h > 0px
-        ? floor(root.max-offset / root.line-h) * 1px
+        ? floor(root.max-offset / root.line-h) * root.line-h
         : root.max-offset;
     // 顶部卷走量(手动滚动时永远为行高整数倍)
     private property <length> offset: 0px;
@@ -42,12 +45,13 @@ component LogView inherits Rectangle {
     // 撞边界时累积量直接对齐,反向滚动立即响应(不消化攒量)。
     function scroll-by-px(delta: length) {
         root.raw = root.raw - delta;
-        root.u = floor(root.raw / root.line-h) * 1px;
+        root.u = floor(root.raw / root.line-h) * root.line-h;
         root.offset = min(max(root.u, 0px), root.grid-max);
         if (root.offset != root.u) {
             root.raw = root.offset;
         }
         root.follow = root.offset >= root.grid-max - 0.5px;
+        root.auto-scroll = root.follow;
     }
 
     // 滚轮层在下:TextInput 在上层优先处理鼠标拖选/复制,不消费滚轮,
@@ -90,6 +94,17 @@ component LogView inherits Rectangle {
         selection-foreground-color: white;
         // 注:不做键盘滚动——多行 TextInput 内置行为会先吃掉 PageUp/PageDown
         // (移光标),自定义 key-pressed 拦不到;滚轮/拖动是主路径,键盘滚动放弃。
+    }
+
+    // 用户点击「自动滚动」checkbox:勾选=立即跳到底部并恢复跟随;
+    // 取消=停在当前位置,新数据不再拉扯视口。
+    // 滚动路径经由 scroll-by-px 同步 auto-scroll,两条路径在这里汇合成单一 follow 真源。
+    changed auto-scroll => {
+        root.follow = root.auto-scroll;
+        if (root.auto-scroll) {
+            root.offset = root.max-offset;
+            root.raw = root.offset;
+        }
     }
 
     // 新数据追加(内容变高):跟随者贴到新底部

@@ -8,7 +8,7 @@
 //! DLL 由 libloading 运行时加载,要求用户机器装有 SEGGER 驱动(自带该 DLL)。
 
 use libloading::{Library, Symbol};
-use std::ffi::{c_char, c_int, c_void, CString};
+use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 
 pub const RTT_CMD_START: c_int = 0;
 pub const RTT_CMD_STOP: c_int = 1;
@@ -156,4 +156,170 @@ impl JLinkDll {
             f(channel, data.as_ptr(), data.len() as c_int)
         }
     }
+
+    // ============ 设备信息(连接成功后采集,字段对齐原项目) ============
+
+    /// 固件版本字符串,如 "J-Link V11.00 compiled ..."。未连接也可能返回空。
+    pub fn firmware_version(&self) -> String {
+        let mut buf = [0i8; 256];
+        unsafe {
+            if let Ok(f) = self
+                .lib
+                .get::<unsafe extern "C" fn(*mut c_char, c_int) -> c_int>(
+                    b"JLINKARM_GetFirmwareString",
+                )
+            {
+                f(buf.as_mut_ptr(), buf.len() as c_int);
+            }
+        }
+        cstr_to_string(&buf)
+    }
+
+    /// 硬件版本(整数编码:x.y → major = v/10000%100, minor = v/100%100,同 pylink)。
+    pub fn hardware_version(&self) -> String {
+        let v = unsafe {
+            match self.lib.get::<unsafe extern "C" fn() -> c_int>(b"JLINKARM_GetHardwareVersion") {
+                Ok(f) => f(),
+                Err(_) => return String::new(),
+            }
+        };
+        format!("{}.{:02}", v / 10000 % 100, v / 100 % 100)
+    }
+
+    /// 目标核心 ID(hex,连接后有效)
+    pub fn core_id(&self) -> String {
+        let v = unsafe {
+            match self.lib.get::<unsafe extern "C" fn() -> c_uint>(b"JLINKARM_GetId") {
+                Ok(f) => f(),
+                Err(_) => return String::new(),
+            }
+        };
+        format!("0x{v:08X}")
+    }
+
+    /// CPU 核心类型编号(JLINKARM_CORE_GetFound,连接后有效)
+    pub fn core_cpu(&self) -> String {
+        let v = unsafe {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn() -> c_uint>(b"JLINKARM_CORE_GetFound")
+            {
+                Ok(f) => f(),
+                Err(_) => return String::new(),
+            }
+        };
+        format!("0x{v:08X}")
+    }
+
+    /// 核心名称(如 "Cortex-M0",连接后有效;由 core_cpu 编号翻译)
+    pub fn core_name(&self) -> String {
+        let cpu = unsafe {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn() -> c_uint>(b"JLINKARM_CORE_GetFound")
+            {
+                Ok(f) => f(),
+                Err(_) => return String::new(),
+            }
+        };
+        let mut buf = [0i8; 256];
+        unsafe {
+            if let Ok(f) = self.lib.get::<unsafe extern "C" fn(c_uint, *mut c_char, c_int) -> c_int>(
+                b"JLINKARM_Core2CoreName",
+            ) {
+                f(cpu, buf.as_mut_ptr(), buf.len() as c_int);
+            }
+        }
+        cstr_to_string(&buf)
+    }
+
+    // ============ 设备库枚举(目标设备下拉候选;离线只读,不碰目标) ============
+
+    /// J-Link DLL 支持的设备总数。`DEVICE_GetInfo(-1, null)` 按约定返回数量。
+    pub fn device_count(&self) -> c_int {
+        unsafe {
+            match self.lib.get::<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>(
+                b"JLINKARM_DEVICE_GetInfo",
+            ) {
+                Ok(f) => f(-1, std::ptr::null_mut()),
+                Err(_) => 0,
+            }
+        }
+    }
+
+    /// 枚举设备库全部设备名。独立于连接状态(只读设备数据库)。
+    pub fn enumerate_device_names(&self) -> Vec<String> {
+        let get_info = unsafe {
+            match self.lib.get::<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>(
+                b"JLINKARM_DEVICE_GetInfo",
+            ) {
+                Ok(f) => f,
+                Err(_) => return Vec::new(),
+            }
+        };
+        let count = self.device_count().max(0);
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let mut raw = DeviceInfoRaw {
+                size_of_struct: std::mem::size_of::<DeviceInfoRaw>() as u32,
+                s_name: std::ptr::null(),
+                core_id: 0,
+                flash_addr: 0,
+                ram_addr: 0,
+                endian_mode: 0,
+                flash_size: 0,
+                ram_size: 0,
+                s_manu: std::ptr::null(),
+                flash_areas: [FlashAreaRaw { addr: 0, size: 0 }; 32],
+                ram_areas: [FlashAreaRaw { addr: 0, size: 0 }; 32],
+                core: 0,
+            };
+            let rc = unsafe { get_info(i, &mut raw as *mut DeviceInfoRaw as *mut c_void) };
+            if rc < 0 || raw.s_name.is_null() {
+                break;
+            }
+            let name = unsafe { std::ffi::CStr::from_ptr(raw.s_name).to_string_lossy() };
+            if name.is_empty() {
+                break;
+            }
+            out.push(name.into_owned());
+        }
+        out
+    }
+}
+
+/// i8 缓冲里的 NUL 结尾 ASCII/UTF-8 字符串 → String(空串原样返回)
+fn cstr_to_string(buf: &[i8]) -> String {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    buf[..end]
+        .iter()
+        .map(|&b| b as u8 as char)
+        .collect()
+}
+
+/// JLinkFlashArea / JLinkRAMArea 的 C 布局(pylink structs.py:Addr + Size)
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct FlashAreaRaw {
+    addr: u32,
+    size: u32,
+}
+
+/// JLINKARM_DEVICE_GetInfo 的设备信息结构体。
+/// 字段顺序/类型与 pylink-square structs.JLinkDeviceInfo 一一对应,不能改动:
+/// SizeofStruct 必须先按自身大小填好,DLL 按该字段做版本化兼容填充。
+#[repr(C)]
+struct DeviceInfoRaw {
+    size_of_struct: u32,
+    s_name: *const c_char,
+    core_id: u32,
+    flash_addr: u32,
+    ram_addr: u32,
+    endian_mode: c_char,
+    flash_size: u32,
+    ram_size: u32,
+    s_manu: *const c_char,
+    flash_areas: [FlashAreaRaw; 32],
+    ram_areas: [FlashAreaRaw; 32],
+    core: u32,
 }

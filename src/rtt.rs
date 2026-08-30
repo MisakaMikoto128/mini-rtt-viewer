@@ -18,9 +18,35 @@ pub enum WorkerMsg {
     State(bool, String),
     /// 连接过程的中间进度(只更新状态栏文字)
     Progress(String),
+    /// 连接成功后采集的设备信息(DLL 查询,字段对齐原项目)
+    DeviceInfo(DeviceInfo),
+    /// J-Link 设备库候选名(启动时后台枚举/磁盘缓存,用于目标设备下拉)
+    DeviceNames(Vec<String>),
     /// worker 线程已完全退出(含 DLL close),UI 收到后才允许再次连接,
     /// 防止上一个 worker 还阻塞在 connect() 时 spawn 新 worker 并发抢 RTT。
     Exited,
+}
+
+/// 连接成功后从 J-Link / 目标采集到的信息(UI 设备信息区展示)
+pub struct DeviceInfo {
+    pub firmware: String,
+    pub hardware: String,
+    pub serial: String,
+    pub core_name: String,
+    pub core_id: String,
+    pub core_cpu: String,
+    pub target: String,
+    pub iface: String,
+    pub speed_khz: u32,
+}
+
+/// UI → worker 命令。原来只有发数据一种,引入电源输出后升级为枚举协议,
+/// 避免在字符串上做前缀解析(易错且没有类型保障)。
+pub enum WorkerCmd {
+    /// 向 RTT 通道写数据(已含行尾)
+    Send(String),
+    /// 电源输出开关(J-Link 19 脚):true=开 false=关
+    Power(bool),
 }
 
 /// 应用退出信号:主窗口关闭后置位,worker 循环(包括阻塞中的轮询间隔)
@@ -47,7 +73,7 @@ pub struct WorkerConfig {
 pub fn spawn(
     config: WorkerConfig,
     tx: mpsc::Sender<WorkerMsg>,
-    cmd_rx: mpsc::Receiver<String>,
+    cmd_rx: mpsc::Receiver<WorkerCmd>,
 ) -> Arc<WorkerHandle> {
     let handle = Arc::new(WorkerHandle {
         stop: AtomicBool::new(false),
@@ -69,7 +95,7 @@ pub fn spawn(
 fn run(
     config: &WorkerConfig,
     tx: &mpsc::Sender<WorkerMsg>,
-    cmd_rx: &mpsc::Receiver<String>,
+    cmd_rx: &mpsc::Receiver<WorkerCmd>,
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
     let WorkerConfig {
@@ -118,10 +144,23 @@ fn run(
         );
     }
 
+    let iface_name = if tif == TIF_SWD { "SWD" } else { "JTAG" };
     let _ = tx.send(WorkerMsg::State(
         true,
-        format!("● 已连接 ({chip}, {}, {speed_khz}kHz)", if tif == TIF_SWD { "SWD" } else { "JTAG" }),
+        format!("● 已连接 ({chip}, {iface_name}, {speed_khz}kHz)"),
     ));
+    // 连接成功后采集设备信息(字段对齐原项目);单字段失败返回空串,UI 显示 "—"
+    let _ = tx.send(WorkerMsg::DeviceInfo(DeviceInfo {
+        firmware: jlink.firmware_version(),
+        hardware: jlink.hardware_version(),
+        serial: sn.to_string(),
+        core_name: jlink.core_name(),
+        core_id: jlink.core_id(),
+        core_cpu: jlink.core_cpu(),
+        target: chip.clone(),
+        iface: iface_name.into(),
+        speed_khz: *speed_khz,
+    }));
 
     let mut buf = [0u8; 4096];
     // 跨块 UTF-8 增量解码:emoji 4 字节可能被 RTT 读块边界切断
@@ -153,10 +192,28 @@ fn run(
             jlink.close();
             return Ok(());
         }
-        while let Ok(data) = cmd_rx.try_recv() {
-            let w = jlink.rtt_write(*channel as i32, data.as_bytes());
-            if w < 0 {
-                let _ = tx.send(WorkerMsg::Log("[发送失败]\r\n".into()));
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                WorkerCmd::Send(data) => {
+                    let w = jlink.rtt_write(*channel as i32, data.as_bytes());
+                    if w < 0 {
+                        let _ = tx.send(WorkerMsg::Log("[发送失败]\r\n".into()));
+                    }
+                }
+                WorkerCmd::Power(on) => {
+                    // SupplyPower:J-Link 19 脚给目标供电(与原项目 pylink power_on/off 一致)
+                    let resp = jlink.exec_command(if on { "SupplyPower = 1" } else { "SupplyPower = 0" });
+                    let resp = resp.trim();
+                    let suffix = if resp.is_empty() {
+                        String::new()
+                    } else {
+                        format!("({resp})")
+                    };
+                    let _ = tx.send(WorkerMsg::Log(format!(
+                        "[J-Link] 电源输出 {} {suffix}\r\n",
+                        if on { "开" } else { "关" }
+                    )));
+                }
             }
         }
         // 5ms 轮询:自动断帧按"相邻数据间隔"判定,轮询间隔决定间隔测量的精度上限

@@ -52,6 +52,45 @@ Rust + Slint + JLinkARM.dll FFI 的极简 RTT 查看器。本文件沉淀实际�
 
 ---
 
+## Slint 的 `length / length` 是无单位比值:`floor(x / line-h) * 1px` 会缩小 line-h 倍
+
+**现象**:LogView 上线后用户实测:上滚一格视口瞬移(贴底 offset=max-offset 几千像素,第一次量化后只剩 `max-offset/line-h` 像素);下滚撞底边界后再滚一格**突然弹回顶部**;平时滚动每格只挪 ~3px(亚行距,看起来像"微小抖动")。
+
+**原因**:代码写成了
+```slint
+u = floor(raw / line-h) * 1px;          // ❌
+grid-max = floor(max-offset / line-h) * 1px;   // ❌
+```
+Slint 里 `length / length` 产出**无单位 float 比值**(探针实测 `floor(9200px / 19px) * 1px == 484px`,不是 9200px)。floor(比值) 是"整数行数",乘 `1px` 得到的是"行数×1px"而不是"行数×行高"。于是:① 手动滚动范围被压缩到真实范围的 1/line-h;② 撞底边界 clamp 后 `raw = grid-max`,下一次同方向事件 `u = floor((grid-max+delta)/line-h)*1px` 远小于 grid-max,offset 直接跳回接近顶部——这正是"滚动过快弹回顶部、断开后仍复现"的根因;③ 每格位移 ≈ delta/line-h px,永远亚行距,行对齐从未真正生效。
+
+**处理**:量化一律乘回行高——`floor(raw / line-h) * root.line-h`(两处:u 与 grid-max)。验证手段:一次性 example 用 `slint::slint!` 宏内联组件,`out property` 承载表达式,从 Rust 打印求值结果(探针保留在 `examples/sem_probe.rs`,下次怀疑单位语义直接跑它)。
+
+**教训**:Slint 长度运算的单位语义靠猜不可靠,涉及 `length/length` 的表达式先写探针实测再上线。
+
+参考:`src/ui/log_view.slint` `scroll-by-px` / `grid-max`
+
+---
+
+## 设备库枚举与 connect 并发会损坏 DLL TLS,用 BUSY 门闩串行化
+
+**现象**:原 Python 项目的教训记录——pylink `supported_device` 枚举(1.1 万次 `JLINKARM_DEVICE_GetInfo`)若与 connect 在不同线程并发,connect 崩 0x14(DLL TLS 损坏)。
+
+**处理**:mini 版设备下拉候选在启动后台线程枚举:磁盘缓存(`%APPDATA%\MiniRttViewer\device_names.txt`)命中则零 DLL 调用;未命中才加载 DLL 枚举,期间置 `DEVICE_DB_BUSY`,`on_connect_clicked` 检查到 BUSY 直接拒绝连接并提示稍候(窗口只有首次启动无缓存的几秒)。
+
+参考:`src/device_db.rs`、`src/main.rs` `on_connect_clicked`
+
+---
+
+## 自绘弹层会被后续兄弟元素盖住,下拉选择用 std ComboBox 别手搓
+
+**现象**:目标设备选择如果做成"LineEdit + 浮动候选弹层"(自定义 Rectangle 弹在控件下方),弹层会被布局里**后面声明的兄弟区块**(接收设置等)盖住——Slint 无 z-index,后声明者在上层绘制。
+
+**处理**:候选列表用 std `ComboBox` 承载(其弹窗由官方组件在窗口层处理,不受兄弟遮挡)。模式:LineEdit 输入即筛选(`edited` 回调)→ Rust 重筛后 `set_device_names(ModelRc::new(VecModel))` → `current-index` 复位 -1(ComboBoxBase 显式支持 -1=显示空)→ `selected` 回填输入框。筛选重载模型后 ComboBox 的 `changed model` 会自动 clamp current-index,务必在设置完模型后把 index 拨回 -1。
+
+参考:`src/ui/app.slint` 连接设置区、`src/main.rs` `apply_device_filter`
+
+---
+
 ## 多行 TextInput 的内置按键行为吃掉 PageUp/PageDown,自定义 key-pressed 拦不到
 
 **现象**:在 TextInput 上覆盖 `key-pressed` 处理 PageUp,不生效(光标移动了、视口没滚)。

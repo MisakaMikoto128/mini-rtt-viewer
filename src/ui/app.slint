@@ -5,6 +5,12 @@ import { Button, LineEdit, ComboBox, CheckBox, Palette } from "std-widgets.slint
 
 export { AppTheme }
 
+// 设备信息行(连接成功后由 Rust 端填充,字段对齐原 PySide6 工程)
+export struct InfoRow {
+    label: string,
+    value: string,
+}
+
 // 单页布局:左配置面板(280px) + 右侧日志区/发送区,复刻原 PySide6 监控页骨架。
 // 按钮统一用 std Button(点击/焦点/无障碍行为由官方维护,自定义 TouchArea 有点击丢失怪癖)。
 export component AppWindow inherits Window {
@@ -21,10 +27,15 @@ export component AppWindow inherits Window {
     in property <bool> connected: false;
     in property <bool> connecting: false;
     in property <string> status-text: "● 未连接";
+    // 设备信息(连接成功后填充;折叠展示,默认收起省纵向空间)
+    in property <[InfoRow]> info-rows;
+    // J-Link 设备库候选(后台枚举/磁盘缓存),输入过滤后由 Rust 重建
+    in property <[string]> device-names;
     // 日志整段文本(只读 TextInput:支持鼠标选中 + Ctrl+C 复制)
     in-out property <string> log-text: "";
     // UI → Rust 输入
     in-out property <string> chip-name: "STM32F030C8";
+    in-out property <int> device-index: -1;    // 设备下拉选中项;-1=未选(显示空)
     in-out property <int> iface-index: 0;      // 0=SWD 1=JTAG
     in-out property <int> speed-index: 5;      // 默认 4000kHz
     in-out property <int> channel: 0;
@@ -33,6 +44,10 @@ export component AppWindow inherits Window {
     in-out property <bool> auto-frame: true;
     in-out property <string> frame-timeout: "20";    // 断帧间隔 1~200ms
     in-out property <bool> paused: false;            // 暂停接收
+    // 自动滚动:与 LogView 内部 follow 状态双向同步(滚离失随=自动取消勾选)
+    in-out property <bool> auto-scroll: true;
+    // 电源输出(J-Link 19 脚给目标供电),仅连接后可用
+    in-out property <bool> power-output: false;
     // 接收行尾 0=自动(LF 断行并吞 CR) 1=CRLF 2=LF 3=CR 4=无(仅靠断帧)
     in-out property <int> rx-ending: 0;
     // 发送行尾 0=CRLF 1=LF 2=CR 3=无
@@ -42,6 +57,10 @@ export component AppWindow inherits Window {
     callback disconnect-clicked();
     callback send-clicked();
     callback pause-toggled();
+    // 设备输入框文字变化 → Rust 端重筛候选列表
+    callback chip-filtered(string);
+    // 电源输出开关(仅连接状态下 Rust 端会真正下发)
+    callback power-toggled(bool);
 
     forward-focus: chip-input;
 
@@ -67,11 +86,25 @@ export component AppWindow inherits Window {
 
                         VerticalLayout {
                             spacing: 6px;
-                            FieldLabel { text: "目标芯片"; }
+                            FieldLabel { text: "目标设备"; }
                             chip-input := LineEdit {
                                 text <=> root.chip-name;
                                 height: AppTheme.ctrl-h;
                                 enabled: !root.connected && !root.connecting;
+                                // 输入即筛选:可手动填任意型号,也可从下方下拉选
+                                edited(t) => { root.chip-filtered(t); }
+                            }
+                            ComboBox {
+                                // 候选由 Rust 端按 chip-name 过滤重建;选中回填输入框。
+                                // current-index 复位 -1 = 不选中(显示空),不与输入框文本打架
+                                model: root.device-names;
+                                current-index <=> root.device-index;
+                                height: AppTheme.ctrl-h;
+                                enabled: !root.connected && !root.connecting;
+                                selected(text) => {
+                                    root.chip-name = text;
+                                    root.device-index = -1;
+                                }
                             }
                             HorizontalLayout {
                                 spacing: 6px;
@@ -127,6 +160,63 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // ---- 设备信息(可折叠:连接成功后有内容,默认收起) ----
+                    Rectangle {
+                        background: AppTheme.panel-bg;
+                        border-radius: AppTheme.radius;
+                        vertical-stretch: 0;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+
+                            info-head := TouchArea {
+                                height: 18px;
+                                clicked => { root.info-expanded = !root.info-expanded; }
+                                HorizontalLayout {
+                                    Text {
+                                        text: root.info-expanded ? "▾ 设备信息" : "▸ 设备信息";
+                                        color: AppTheme.text-primary;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        font-family: AppTheme.ui-font;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { height: 1px; background: AppTheme.border-color; }
+                                }
+                            }
+                            if root.info-expanded: VerticalLayout {
+                                spacing: 3px;
+                                for r in root.info-rows: HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        width: 58px;
+                                        text: r.label;
+                                        color: AppTheme.text-secondary;
+                                        font-size: 11px;
+                                        font-family: AppTheme.ui-font;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: r.value == "" ? "—" : r.value;
+                                        color: AppTheme.text-primary;
+                                        font-size: 11px;
+                                        font-family: AppTheme.ui-font;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                    }
+                                }
+                                if root.info-rows.length == 0: Text {
+                                    text: "连接后显示固件/核心/序列号等信息";
+                                    color: AppTheme.text-muted;
+                                    font-size: 11px;
+                                    font-family: AppTheme.ui-font;
+                                }
+                            }
+                        }
+                    }
+
                     // ---- 接收设置 ----
                     PanelSection {
                         title: "接收";
@@ -161,6 +251,22 @@ export component AppWindow inherits Window {
                                 text: "ms";
                                 color: AppTheme.text-muted;
                                 font-size: 11px;
+                                font-family: AppTheme.ui-font;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            CheckBox {
+                                text: "电源输出";
+                                checked <=> root.power-output;
+                                enabled: root.connected;
+                                toggled => { root.power-toggled(self.checked); }
+                            }
+                            Text {
+                                text: "J-Link 19 脚供电";
+                                color: AppTheme.text-muted;
+                                font-size: 10px;
                                 font-family: AppTheme.ui-font;
                                 vertical-alignment: center;
                             }
@@ -202,10 +308,22 @@ export component AppWindow inherits Window {
             padding: 10px;
             spacing: AppTheme.gap;
 
+            // 自动滚动开关:勾选=贴底跟随;滚离底部时 LogView 会自动取消勾选,
+            // 再勾选立即跳回底部恢复跟随(状态双向同步)
+            HorizontalLayout {
+                height: 22px;
+                CheckBox {
+                    text: "自动滚动";
+                    checked <=> root.auto-scroll;
+                }
+                Rectangle {}
+            }
+
             // 日志区:自建滚动(滚轮按行高量化对齐,新数据贴底跟随不拉扯)
             LogView {
                 vertical-stretch: 1;
                 text <=> root.log-text;
+                auto-scroll <=> root.auto-scroll;
             }
 
             // 发送区
@@ -251,6 +369,9 @@ export component AppWindow inherits Window {
             }
         }
     }
+
+    // 设备信息折叠状态(纯 UI 态,放最后与属性定义相邻更直观)
+    in-out property <bool> info-expanded: false;
 
     callback clear-clicked();
 }

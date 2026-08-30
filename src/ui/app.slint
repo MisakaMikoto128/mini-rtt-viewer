@@ -17,14 +17,8 @@ component LogView inherits Rectangle {
     border-color: AppTheme.border-color;
     clip: true;
 
-    // 内容总高:向上补齐到「视口高 + 整数行」。这样最大卷动量(max-offset =
-    // content-h - 视口高)天然是行高的整数倍,贴底位置与手动滚动的行格重合,
-    // 底边空隙 = 8px 内边距 + 恒定补齐量 δ(<1 行)——滚动/跟随切换时底边
-    // 距离不再跳动。
-    private property <length> content-h: root.line-h > 0px
-        ? ceil((log-edit.preferred-height + 16px - self.height) / root.line-h) * 1px
-            + self.height
-        : log-edit.preferred-height + 16px;
+    // 内容总高(上下各 8px 内边距)
+    private property <length> content-h: log-edit.preferred-height + 16px;
     // 最大卷动量
     private property <length> max-offset: max(0px, content-h - self.height);
     // 手动滚动的行格上界:floor 到行高网格(自动贴底仍贴死 max-offset,
@@ -51,13 +45,19 @@ component LogView inherits Rectangle {
     // 亚行残余留在 raw(触摸板细粒度凑满一行才动,滚轮每格稳定走整数行);
     // 撞边界时累积量直接对齐,反向滚动立即响应(不消化攒量)。
     function scroll-by-px(delta: length) {
+        // 从贴底状态起滚:先把位置同步到当前底部再应用 delta,
+        // 否则会从上次记录的旧位置滚起,内容瞬移
+        if (root.follow) {
+            root.offset = root.max-offset;
+            root.raw = root.offset;
+        }
         root.raw = root.raw - delta;
         root.u = floor(root.raw / root.line-h) * 1px;
         root.offset = min(max(root.u, 0px), root.grid-max);
         if (root.offset != root.u) {
             root.raw = root.offset;
         }
-        root.follow = root.offset >= root.grid-max - 0.5px;
+        root.follow = root.offset >= root.max-offset - 0.5px;
     }
 
     // 滚轮层在下:TextInput 在上层优先处理鼠标拖选/复制,不消费滚轮,
@@ -83,11 +83,17 @@ component LogView inherits Rectangle {
     }
 
     log-edit := TextInput {
-        x: 8px;
-        y: 8px - root.offset;
         width: parent.width - 16px;
-        // 显式全文本高度:TextInput 默认高度只有一行,贴底(y = 8 - offset)
-        // 会把整个元素滚出视口 → 日志区只剩一片空白
+        // 贴底跟随:底边用表达式直接锚定在「框底 - 8px」上——内容高度哪一帧
+        // 变、变多少,底边都恒定贴住,从机制上消灭"文本更新与滚动位置更新
+        // 不同帧"造成的微小上下抖动。内容不足一屏时取 min 自然落在顶部 8px。
+        // 手动滚动(follow=false):y = 8px - offset,offset 停在行高网格上。
+        y: root.follow
+            ? min(8px, root.height - 8px - self.preferred-height)
+            : 8px - root.offset;
+        x: 8px;
+        // 显式全文本高度:TextInput 默认高度只有一行,贴底时整个元素
+        // 会滚出视口 → 日志区只剩一片空白
         height: self.preferred-height;
         read-only: true;
         single-line: false;

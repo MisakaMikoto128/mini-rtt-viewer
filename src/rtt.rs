@@ -118,10 +118,6 @@ fn run(
     // 刷新 J-Link 下拉列表(用户可能插拔过)
     let emus = jlink.enumerate_emulators();
     let _ = tx.send(WorkerMsg::JLinks(emus.clone()));
-    let sn = jlink.serial_number();
-    let _ = tx.send(WorkerMsg::Log(format!(
-        "[J-Link] 序列号 {sn},建立连接…\r\n"
-    )));
 
     // 调试器选定,绝不让 DLL 自己弹选择窗:用户下拉指定优先;
     // 未指定但本机有 J-Link 时自动选第一台
@@ -132,9 +128,28 @@ fn run(
             jlink.close();
             anyhow::bail!("找不到序列号 {sel} 的 J-Link(可能已拔出,请重新选择)");
         }
+        // SetHostIF 是关键:实测 V8.24 只靠 SelectByUSBSN 时,无参 Open 仍会弹
+        // probe 选择窗并用弹窗里的选择(默认第一台)覆盖我们的选定
+        jlink.exec_command(&format!("SetHostIF USB = {sel}"));
+        let _ = tx.send(WorkerMsg::Log(format!("[J-Link] 已选定序列号 {sel}\r\n")));
     }
 
-    jlink.open();
+    // 必须用 OpenEx:无参 Open 在多台 J-Link 时会重新弹 probe 选择窗,
+    // OpenEx(pylink 同款入口)尊重上面的选定
+    jlink.open_ex();
+
+    // Open 之后读到的序列号才是实际打开的设备(Open 前读到的只是选定值)
+    let sn = jlink.serial_number();
+    if let Some(sel) = sn_to_use {
+        if sn != sel {
+            let _ = tx.send(WorkerMsg::Log(format!(
+                "[J-Link] 警告:选定 {sel} 但实际打开 {sn},请重新选择或拔插\r\n"
+            )));
+        }
+    }
+    let _ = tx.send(WorkerMsg::Log(format!(
+        "[J-Link] 序列号 {sn},建立连接…\r\n"
+    )));
 
     // 序列遵循原项目验证过的 DLL 状态机要求:RTT START 必须在 connect 之前
     let tif = if *iface_index == 0 { TIF_SWD } else { TIF_JTAG };
@@ -168,7 +183,7 @@ fn run(
     let iface_name = if tif == TIF_SWD { "SWD" } else { "JTAG" };
     let _ = tx.send(WorkerMsg::State(
         true,
-        format!("● 已连接 ({chip}, {iface_name}, {speed_khz}kHz)"),
+        format!("● 已连接 ({chip}, {iface_name}, {speed_khz}kHz, SN {sn})"),
     ));
     // 连接成功后采集设备信息(字段对齐原项目);单字段失败返回空串,UI 显示 "—"
     let _ = tx.send(WorkerMsg::DeviceInfo(DeviceInfo {

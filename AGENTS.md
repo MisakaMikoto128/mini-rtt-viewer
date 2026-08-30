@@ -14,9 +14,13 @@ Rust + Slint + JLinkARM.dll FFI 的极简 RTT 查看器。本文件沉淀实际�
 2. 连接出错(设备名错/未供电)时 DLL 会弹**隐藏的模态对话框**等人点确认——worker 看起来就是卡死。
 
 **处理**:
-- 序列固定:`disable_dialog_boxes() → (EMU 枚举/SelectByUSBSN 选定) → Open → RTT START → TIF_Select → SetSpeed → ExecCommand("Device = …") → Connect`
+- 序列固定:`disable_dialog_boxes() → (EMU 枚举/选定) → OpenEx → RTT START → TIF_Select → SetSpeed → ExecCommand("Device = …") → Connect`
 - **disable_dialog_boxes 必须在 Open 之前**:调试器选择窗、固件升级提示都发生在 Open 内部,open 之后再抑制就晚了
-- **probe(调试器)选择窗的抑制靠 `SuppressGUI`**——命令表里**没有** ShowEmuSelect(那是 J-Link Commander 的 CLI 选项,ExecCommand 传了也没用)。配合"始终显式 SelectByUSBSN 选定"双保险:用户下拉指定优先,未指定则自动选枚举到的第一台,绝不让 DLL 自己拿主意
+- **多台 J-Link 的选定三件套(缺一不可,实测 V8.24)**:
+  1. `JLINKARM_EMU_SelectByUSBSN(sn)`——返回成功、GetSN 也反映选定,**但无参 `JLINKARM_Open` 仍会弹 probe 选择窗,并用弹窗里的选择(默认第一台)覆盖选定**——这正是"下拉选了 888 实际连了 758"的根源
+  2. `ExecCommand("SetHostIF USB = <sn>")`——Open 路径认这个选定
+  3. 用 **`JLINKARM_OpenEx(null, 0)` 代替 `JLINKARM_Open`**——OpenEx 尊重选定,不再弹窗
+  打开后必须读 GetSN 与选定值比对,不符则告警(Open 前读 GetSN 只反映选定值,会误导)
 - 首次 connect 失败在 worker 内自动重试 3 次(间隔 400ms),不回退 UI 状态,避免按钮闪烁
 
 参考:`src/rtt.rs` `run()`、`src/jlink_dll.rs` `disable_dialog_boxes`

@@ -57,6 +57,15 @@ impl JLinkDll {
         }
     }
 
+    /// 带消息缓冲的 Open(pylink 同款入口);部分 DLL 行为与 Open 不一致
+    pub fn open_ex(&self) -> c_int {
+        unsafe {
+            let f: Symbol<unsafe extern "C" fn(*const c_char, c_int) -> c_int> =
+                self.lib.get(b"JLINKARM_OpenEx").unwrap();
+            f(std::ptr::null(), 0)
+        }
+    }
+
     /// 抑制 J-Link DLL 的所有模态弹窗(调试器选择、固件升级确认、设备选择框、
     /// 连接错误框等)。不抑制的话,连接失败时 DLL 会弹隐藏对话框等待确认,worker 线程
     /// 看起来像"卡在连接中";多台 J-Link 时 Open 还会弹 probe 选择窗。

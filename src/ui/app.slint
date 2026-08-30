@@ -56,11 +56,18 @@ export component AppWindow inherits Window {
     in-out property <int> rx-ending: 0;
     // 发送行尾 0=CRLF 1=LF 2=CR 3=无
     in-out property <int> send-ending: 0;
+    // HEX 发送模式:输入按 "41 42 43" / "0x4142" 解析为原始字节
+    in-out property <bool> hex-send: false;
+    // 收发统计栏(TX/RX 字节 + 会话时长,Rust 端 500ms 节流刷新)
+    in property <string> stats-text: "";
 
     callback connect-clicked();
     callback disconnect-clicked();
     callback send-clicked();
     callback pause-toggled();
+    callback reset-clicked();   // 复位目标并恢复运行(连接后可用)
+    callback mark-clicked();    // 插入会话标记行(带时间戳)
+    callback save-clicked();    // 保存当前日志为 .log 文件
     // 设备输入框文字变化 → Rust 端重筛候选列表
     callback chip-filtered(string);
     // 电源输出开关(仅连接状态下 Rust 端会真正下发)
@@ -69,6 +76,21 @@ export component AppWindow inherits Window {
     init => {
         Palette.color-scheme = ColorScheme.dark;
     }
+
+    // 全局快捷键:外层 FocusScope 包围持有焦点的子元素时也能收键——
+    // 内部 LineEdit 等不处理的按键(F2/F3)冒泡上来由 KeyBinding 命中
+    forward-focus: send-input;
+    keys := FocusScope {
+        width: 100%;
+        height: 100%;
+        KeyBinding {
+            keys: @keys(F2);
+            activated => { if (!root.connected && !root.connecting) { root.connect-clicked(); } }
+        }
+        KeyBinding {
+            keys: @keys(F3);
+            activated => { if (root.connected || root.connecting) { root.disconnect-clicked(); } }
+        }
 
     HorizontalLayout {
         // ============ 左侧配置面板 ============
@@ -161,6 +183,13 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
+                            // 复位目标并恢复运行;复位后 worker 自动重挂 RTT 继续收
+                            Button {
+                                height: AppTheme.ctrl-h;
+                                text: "重置目标";
+                                enabled: root.connected;
+                                clicked => { root.reset-clicked(); }
+                            }
                         }
                     }
 
@@ -236,8 +265,18 @@ export component AppWindow inherits Window {
                             }
                             Button {
                                 height: AppTheme.ctrl-h;
-                                text: root.paused ? "继续接收" : "暂停接收";
+                                text: root.paused ? "继续" : "暂停";
                                 clicked => { root.pause-toggled(); }
+                            }
+                            Button {
+                                height: AppTheme.ctrl-h;
+                                text: "标记";
+                                clicked => { root.mark-clicked(); }
+                            }
+                            Button {
+                                height: AppTheme.ctrl-h;
+                                text: "保存";
+                                clicked => { root.save-clicked(); }
                             }
                         }
                         HorizontalLayout {
@@ -277,9 +316,24 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                         }
-                        CheckBox {
-                            text: "自动滚动";
-                            checked <=> root.auto-scroll;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            CheckBox {
+                                text: "自动滚动";
+                                checked <=> root.auto-scroll;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            // 日志字号:改 AppTheme 全局字号,LogView 行高探针与滚动网格自动适应
+                            Button {
+                                width: 32px;
+                                text: "A-";
+                                clicked => { AppTheme.log-font-size = max(9px, AppTheme.log-font-size - 1px); }
+                            }
+                            Button {
+                                width: 32px;
+                                text: "A+";
+                                clicked => { AppTheme.log-font-size = min(30px, AppTheme.log-font-size + 1px); }
+                            }
                         }
                         Text {
                             text: "相邻数据间隔超过设定值(1~200ms)判定一帧结束,自动换行";
@@ -332,8 +386,14 @@ export component AppWindow inherits Window {
                 spacing: AppTheme.gap;
                 height: 64px;
 
-                LineEdit {
-                    placeholder-text: "发送到通道 " + root.channel + "…(Enter 发送)";
+                CheckBox {
+                    text: "HEX";
+                    checked <=> root.hex-send;
+                }
+                send-input := LineEdit {
+                    placeholder-text: root.hex-send
+                        ? "HEX 字节,如 41 42 43 / 0x4142(Enter 发送)"
+                        : "发送到通道 " + root.channel + "…(Enter 发送)";
                     text <=> root.send-text;
                     accepted => { root.send-clicked(); }
                 }
@@ -360,6 +420,15 @@ export component AppWindow inherits Window {
                 }
                 Rectangle { width: 1px; }
                 Text {
+                    text: root.stats-text;
+                    color: AppTheme.text-muted;
+                    font-size: 12px;
+                    font-family: AppTheme.ui-font;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    horizontal-alignment: right;
+                }
+                Text {
                     text: root.chip-name + " · " + (root.iface-index == 0 ? "SWD" : "JTAG");
                     color: AppTheme.text-muted;
                     font-size: 12px;
@@ -370,6 +439,7 @@ export component AppWindow inherits Window {
             }
         }
     }
+    } // keys FocusScope
 
     // 设备信息折叠状态(纯 UI 态,放最后与属性定义相邻更直观)
     in-out property <bool> info-expanded: false;

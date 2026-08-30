@@ -145,6 +145,25 @@ impl JLinkDll {
         }
     }
 
+    /// 复位目标(pylink reset 同款:复位后 CPU 处于 halted 态)。
+    /// 返回 < 0 失败。
+    pub fn reset(&self) -> c_int {
+        unsafe {
+            let f: Symbol<unsafe extern "C" fn() -> c_int> =
+                self.lib.get(b"JLINKARM_Reset").unwrap();
+            f()
+        }
+    }
+
+    /// 让复位后 halted 的 CPU 跑起来(pylink reset(halt=false) 的后半步)
+    pub fn go(&self) -> c_int {
+        unsafe {
+            let f: Symbol<unsafe extern "C" fn() -> c_int> =
+                self.lib.get(b"JLINKARM_Go").unwrap();
+            f()
+        }
+    }
+
     pub fn rtt_control(&self, cmd: c_int) -> c_int {
         unsafe {
             let f: Symbol<unsafe extern "C" fn(c_int, *mut c_void) -> c_int> =

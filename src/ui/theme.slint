@@ -39,5 +39,6 @@ export global AppTheme {
     out property <string> ui-font: "Segoe UI";
     out property <string> mono-font: "Consolas";
     out property <length> ui-font-size: 13px;
-    out property <length> log-font-size: 13px;
+    // 日志字号可由 A-/A+ 按钮调节(行高探针随字号实测,滚动网格自动适应)
+    in-out property <length> log-font-size: 13px;
 }

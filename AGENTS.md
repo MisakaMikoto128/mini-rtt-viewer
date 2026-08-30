@@ -218,6 +218,44 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 - 层次:main(装配)→ Ctx(共享状态 + 业务方法)→ log_model/ansi(纯逻辑,可单测)→ rtt(worker 线程,connect_target + rtt_read_loop 两段)→ jlink_dll(FFI)→ device_db(后台枚举)
 - 新增 DLL 能力的路径:jlink_dll.rs 加 FFI → rtt.rs 接入序列/循环 → main.rs Ctx 加方法 → app.slint 加控件
 
+## 全局快捷键:外层 FocusScope 的 KeyBinding 靠按键冒泡捕获
+
+**现象**:想在 Window 级做 F2/F3 全局快捷键,但 Window 元素没有 key-pressed;而 KeyBinding/FocusScope 只有持焦时收键——焦点在内部 LineEdit 时按 F2 会不会丢?
+
+**原因/机制**:Slint 1.5+ 按键事件从焦点元素沿父链**冒泡**,未被 accept 的键逐级上传;文档明确「FocusScope 在**包围另一个持焦 FocusScope** 时也参与处理」。外层 FocusScope 的 KeyBinding 因此能命中内部控件忽略的功能键。
+
+**处理**:
+```slint
+export component AppWindow inherits Window {
+    forward-focus: send-input;          // 初始焦点放内部
+    keys := FocusScope {                 // 包住全部内容,width/height 100%
+        KeyBinding { keys: @keys(F2); activated => { ...; } }
+        HorizontalLayout { ... }         // 原内容
+    }
+}
+```
+注意:KeyBinding 的 activated 要带与按钮 clicked 相同的**状态守卫**(如 F3 断开需 `if (connected || connecting)`)——全局键绕过了按钮的两态文案守卫,不守卫会在未连接时把 UI 卡进"断开中…"。
+
+参考:`src/ui/app.slint` `keys := FocusScope`、main_window 同款守卫。
+
+---
+
+## std 没有本地时区时间:Win32 GetLocalTime 一行 FFI 顶用
+
+**现象**:标记行/导出文件名要本地时间(HH:MM:SS),`std::time` 只有 Instant/SystemSince(UTC 语义),没有本地时区换算。
+
+**处理**:为零依赖不引 chrono/time,直接 FFI kernel32:
+```rust
+#[repr(C)] struct WinSystemTime { year: u16, month: u16, day_of_week: u16, day: u16, hour: u16, minute: u16, second: u16, millis: u16 }
+#[link(name = "kernel32")]
+extern "system" { fn GetLocalTime(out: *mut WinSystemTime); }
+```
+字段顺序是固定的(SYSTEMTIME 布局),别按直觉排。项目是 Windows-only(JLinkARM.dll),没有跨平台负担。
+
+参考:`src/main.rs` `WinSystemTime` / `now_hms` / `now_stamp`。
+
+---
+
 ---
 
 ## 已知未修(用户知情,勿"顺手修")

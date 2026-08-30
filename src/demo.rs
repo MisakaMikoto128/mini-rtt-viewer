@@ -35,7 +35,9 @@ pub fn spawn(msg_tx: mpsc::Sender<WorkerMsg>) {
                 format!("\x1b[32m{i}\x1b[0m")
             };
             let level = if i % 10 == 9 { " \x1b[41mERR\x1b[0m" } else { "" };
-            let _ = msg_tx.send(WorkerMsg::Log(format!(
+            // Block 而非 Log:demo 模拟的是设备输出流(计入 RX 统计),
+            // Log 是 J-Link 横幅语义,不参与统计
+            let _ = msg_tx.send(WorkerMsg::Block(format!(
                 "\x1b[36m[demo {i:04}]\x1b[0m Heartbeat: {value} 😊🍟❤ 心跳 中文 English mixed padding text{level}\r\n"
             )));
             if let Some(t0) = T0.get() {

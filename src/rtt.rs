@@ -45,10 +45,12 @@ pub struct DeviceInfo {
 /// UI → worker 命令。原来只有发数据一种,引入电源输出后升级为枚举协议,
 /// 避免在字符串上做前缀解析(易错且没有类型保障)。
 pub enum WorkerCmd {
-    /// 向 RTT 通道写数据(已含行尾)
-    Send(String),
+    /// 向 RTT 通道写原始字节(行尾已含;文本模式为 UTF-8 编码,HEX 模式为解析后的字节)
+    Send(Vec<u8>),
     /// 电源输出开关(J-Link 19 脚):true=开 false=关
     Power(bool),
+    /// 复位目标并恢复运行(复位后重挂 RTT:固件重新初始化后控制块可能移动)
+    Reset,
 }
 
 /// 应用退出信号:主窗口关闭后置位,worker 循环(包括阻塞中的轮询间隔)
@@ -251,9 +253,23 @@ fn rtt_read_loop(
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 WorkerCmd::Send(data) => {
-                    let w = jlink.rtt_write(*channel as i32, data.as_bytes());
+                    let w = jlink.rtt_write(*channel as i32, &data);
                     if w < 0 {
                         let _ = tx.send(WorkerMsg::Log("[发送失败]\r\n".into()));
+                    }
+                }
+                WorkerCmd::Reset => {
+                    // 复位并运行:JLINKARM_Reset 后 CPU 处于 halted,调 Go 才跑起来
+                    // (pylink reset(halt=false) 的两步);< 0 视为失败只报告不打断读循环
+                    let rc = jlink.reset();
+                    if rc < 0 {
+                        let _ = tx.send(WorkerMsg::Log(format!("[复位失败 rc={rc}]\r\n")));
+                    } else {
+                        jlink.go();
+                        // 复位后固件重新初始化 RTT 控制块,重挂 RTT 保证继续可读
+                        jlink.rtt_control(RTT_CMD_STOP);
+                        jlink.rtt_control(RTT_CMD_START);
+                        let _ = tx.send(WorkerMsg::Log("[目标已复位,RTT 已重挂]\r\n".into()));
                     }
                 }
                 WorkerCmd::Power(on) => {

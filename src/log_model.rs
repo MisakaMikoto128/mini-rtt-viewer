@@ -45,6 +45,8 @@ pub struct LogPump {
     new_lines: Vec<String>,
     /// 展示用带色行(全量,超出 [`MAX_LOG_ROWS`] 丢最旧)
     rows: Vec<Vec<Run>>,
+    /// 固定色整行(会话标记/发送回显):与数据行同队列上屏、同上限裁剪
+    marks: Vec<Vec<Run>>,
     /// 因行数上限被丢弃的行数(UI 侧行模型需同步移除同样数量)
     dropped: usize,
     /// ANSI 解析器(持久实例:颜色状态跨行跨块保持)
@@ -82,13 +84,21 @@ impl LogPump {
         }
     }
 
+    /// 插入一条固定颜色的整行(会话标记/发送回显)。绕过 ANSI 解析——
+    /// 不污染设备流的颜色状态;与数据行同队列,由下一次 [`Self::take_new_rows`]
+    /// 增量上屏,同样受 [`MAX_LOG_ROWS`] 裁剪。暂停接收不影响标记(标记是
+    /// 用户/应用动作,不是设备数据)。
+    pub fn push_colored_line(&mut self, text: &str, fg: (u8, u8, u8)) {
+        self.marks.push(vec![Run { text: text.to_string(), fg: Some(fg) }]);
+    }
+
     /// 把已切出的行经 ANSI 解析转为带色行;有新行返回它们(增量上屏)。
     /// 超出 [`MAX_LOG_ROWS`] 时丢最旧行,返回值仍只含**本次新增**的行。
     pub fn take_new_rows(&mut self) -> Option<Vec<Vec<Run>>> {
-        if self.new_lines.is_empty() {
+        if self.new_lines.is_empty() && self.marks.is_empty() {
             return None;
         }
-        let mut fresh: Vec<Vec<Run>> = Vec::with_capacity(self.new_lines.len());
+        let mut fresh: Vec<Vec<Run>> = self.marks.drain(..).collect();
         for l in self.new_lines.drain(..) {
             fresh.push(self.ansi.feed_line(&l));
         }
@@ -118,6 +128,7 @@ impl LogPump {
         self.pending.clear();
         self.new_lines.clear();
         self.rows.clear();
+        self.marks.clear();
         self.dropped = 0;
         self.ansi.reset();
     }
@@ -270,6 +281,53 @@ mod tests {
         let mut pump = LogPump::default();
         pump.absorb_text("a\r\n", 0);
         assert!(pump.take_new_rows().is_some());
+        pump.clear();
+        assert!(pump.take_new_rows().is_none());
+    }
+
+    #[test]
+    fn push_colored_line_flows_through_take_new_rows() {
+        let mut pump = LogPump::default();
+        pump.push_colored_line("── 标记 ──", (0x28, 0xaf, 0xe9));
+        pump.push_colored_line("» echo", (0x77, 0x77, 0x88));
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].text, "── 标记 ──");
+        assert_eq!(rows[0][0].fg, Some((0x28, 0xaf, 0xe9)));
+        assert_eq!(rows[1][0].fg, Some((0x77, 0x77, 0x88)));
+        assert!(pump.take_new_rows().is_none());
+    }
+
+    #[test]
+    fn marks_merge_with_data_rows_in_order() {
+        let mut pump = LogPump::default();
+        pump.push_colored_line("mark", (1, 2, 3));
+        pump.absorb_text("data\n", 0);
+        pump.enforce_line_cap();
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].text, "mark");
+        assert_eq!(rows[1][0].text, "data");
+    }
+
+    #[test]
+    fn marks_count_toward_row_cap() {
+        let mut pump = LogPump::default();
+        for _ in 0..(MAX_LOG_ROWS + 3) {
+            pump.push_colored_line("m", (1, 2, 3));
+        }
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows.len(), MAX_LOG_ROWS + 3); // 新增全部返回
+        assert_eq!(pump.test_rows_len(), MAX_LOG_ROWS); // 保留窗口裁掉最旧
+        assert_eq!(pump.take_dropped(), 3);
+    }
+
+    #[test]
+    fn marks_survive_pause_and_clear_wipes_them() {
+        let mut pump = LogPump::default();
+        pump.paused = true;
+        pump.push_colored_line("mark", (1, 2, 3));
+        assert!(pump.take_new_rows().is_some()); // 暂停只丢数据,不丢标记
         pump.clear();
         assert!(pump.take_new_rows().is_none());
     }

@@ -16,6 +16,108 @@ use std::time::{Duration, Instant};
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
 
+/// 会话标记行颜色(与主题强调色同系)
+const MARK_COLOR: (u8, u8, u8) = (0x28, 0xaf, 0xe9);
+/// 发送回显行颜色(中性灰,与设备数据一眼区分)
+const ECHO_COLOR: (u8, u8, u8) = (0x8f, 0x8f, 0x9a);
+
+// 本地时间(Win32 GetLocalTime,零依赖):标记行时间戳与导出文件名用。
+// std 不提供本地时区时间,单独为此引 chrono/time 不值当。
+#[repr(C)]
+struct WinSystemTime {
+    year: u16,
+    month: u16,
+    day_of_week: u16,
+    day: u16,
+    hour: u16,
+    minute: u16,
+    second: u16,
+    millis: u16,
+}
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetLocalTime(out: *mut WinSystemTime);
+}
+fn local_time() -> WinSystemTime {
+    let mut st = WinSystemTime {
+        year: 0, month: 0, day_of_week: 0, day: 0,
+        hour: 0, minute: 0, second: 0, millis: 0,
+    };
+    unsafe { GetLocalTime(&mut st) };
+    st
+}
+/// "HH:MM:SS"(标记行内嵌)
+fn now_hms() -> String {
+    let st = local_time();
+    format!("{:02}:{:02}:{:02}", st.hour, st.minute, st.second)
+}
+/// "YYYYMMDD_HHMMSS"(导出文件名)
+fn now_stamp() -> String {
+    let st = local_time();
+    format!("{:04}{:02}{:02}_{:02}{:02}{:02}", st.year, st.month, st.day, st.hour, st.minute, st.second)
+}
+
+/// HEX 发送模式输入解析:容忍空格/冒号/连字符分隔与 0x 前缀,按字节解析。
+/// 空、奇数长度、非法字符均报错(原文回显在状态栏)。
+fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
+    let cleaned: String = s
+        .trim()
+        .trim_start_matches("0x")
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':' && *c != '-')
+        .collect();
+    if cleaned.is_empty() {
+        return Err("空输入".into());
+    }
+    if !cleaned.len().is_multiple_of(2) {
+        return Err("十六进制位数为奇数".into());
+    }
+    let mut out = Vec::with_capacity(cleaned.len() / 2);
+    for pair in cleaned.as_bytes().chunks_exact(2) {
+        let hi = (pair[0] as char)
+            .to_digit(16)
+            .ok_or_else(|| format!("非法字符 '{}'", pair[0] as char))?;
+        let lo = (pair[1] as char)
+            .to_digit(16)
+            .ok_or_else(|| format!("非法字符 '{}'", pair[1] as char))?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Ok(out)
+}
+
+fn fmt_bytes(n: u64) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{:.1} KB", n as f64 / 1024.0)
+    } else {
+        format!("{:.2} MB", n as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn fmt_dur(d: Duration) -> String {
+    let s = d.as_secs();
+    if s < 3600 {
+        format!("{:02}:{:02}", s / 60, s % 60)
+    } else {
+        format!("{}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+    }
+}
+
+/// 收发统计(会话级:连接成功时清零,断开停止累计)
+struct Stats {
+    tx: u64,
+    rx: u64,
+    since: Option<Instant>,
+    /// 上次刷新统计栏文本的时刻(节流)
+    last_ui: Instant,
+}
+impl Default for Stats {
+    fn default() -> Self {
+        Self { tx: 0, rx: 0, since: None, last_ui: Instant::now() }
+    }
+}
+
 /// 默认日志前景色(Run.fg == None 时用)
 fn log_default_fg() -> slint::Color {
     slint::Color::from_rgb_u8(0xdd, 0xdd, 0xdd)
@@ -37,6 +139,8 @@ struct Ctx {
     jlinks: Rc<RefCell<Vec<(u32, String)>>>,
     log_rows: Rc<VecModel<LogRow>>,
     last_status: Rc<RefCell<SharedString>>,
+    /// 收发字节与会话时长统计
+    stats: RefCell<Stats>,
 }
 
 impl Ctx {
@@ -57,9 +161,16 @@ impl Ctx {
         // 1. 消化 worker 消息
         loop {
             match self.msg_rx.try_recv() {
-                Ok(WorkerMsg::Log(text) | WorkerMsg::Block(text)) => {
+                Ok(WorkerMsg::Log(text)) => {
+                    // 横幅提示(J-Link 报文)不是设备数据,不计 RX;暂停时同样丢弃
+                    if !pump.paused {
+                        pump.absorb_text(&text, rx_ending);
+                    }
+                }
+                Ok(WorkerMsg::Block(text)) => {
                     // 暂停接收:数据直接丢弃
                     if !pump.paused {
+                        self.stats.borrow_mut().rx += text.len() as u64;
                         pump.absorb_text(&text, rx_ending);
                     }
                 }
@@ -80,6 +191,18 @@ impl Ctx {
                     }
                     *self.last_status.borrow_mut() = status.clone().into();
                     ui.set_status_text(status.into());
+                    // 会话统计与自动标记:连接清零起算,断开只在确有会话时补一条
+                    // 标记(n<0 异常断开与正常断开都会发 State(false),take 去重)
+                    if connected {
+                        let mut st = self.stats.borrow_mut();
+                        st.tx = 0;
+                        st.rx = 0;
+                        st.since = Some(Instant::now());
+                        drop(st);
+                        self.insert_mark("已连接");
+                    } else if self.stats.borrow_mut().since.take().is_some() {
+                        self.insert_mark("已断开");
+                    }
                 }
                 Ok(WorkerMsg::DeviceInfo(info)) => self.apply_device_info(ui, info),
                 Ok(WorkerMsg::DeviceNames(names)) => self.apply_device_names(ui, names),
@@ -91,6 +214,7 @@ impl Ctx {
                     ui.set_connecting(false);
                     ui.set_connected(false);
                     ui.set_power_output(false);
+                    self.stats.borrow_mut().since = None;
                 }
                 Err(_) => break,
             }
@@ -118,6 +242,18 @@ impl Ctx {
                 self.log_rows.push(LogRow { runs: ModelRc::new(VecModel::from(spans)) });
             }
             ui.set_log_row_count(self.log_rows.row_count() as i32);
+        }
+        drop(pump);
+        // 4. 统计栏(500ms 节流:时长按秒变化,再快也是白画)
+        let mut st = self.stats.borrow_mut();
+        if st.last_ui.elapsed() >= Duration::from_millis(500) {
+            st.last_ui = Instant::now();
+            let (tx, rx, dur) = (st.tx, st.rx, st.since.map(|t| t.elapsed()));
+            drop(st);
+            let dur_text = dur.map(fmt_dur).unwrap_or_else(|| "--:--".into());
+            ui.set_stats_text(
+                format!("TX {} · RX {} · {}", fmt_bytes(tx), fmt_bytes(rx), dur_text).into(),
+            );
         }
     }
 
@@ -224,20 +360,89 @@ impl Ctx {
         ui.set_status_text("● 断开中…".into());
     }
 
-    /// 发送:按发送行尾拼接后交 worker
+    /// 发送:文本/HEX 两模式按发送行尾拼成原始字节交 worker;投递成功后回显
     fn send_text(&self, ui: &AppWindow) {
         let text = ui.get_send_text().to_string();
         if text.is_empty() {
             return;
         }
-        let ending = match ui.get_send_ending() {
-            1 => "\n",
-            2 => "\r",
-            3 => "",
-            _ => "\r\n",
+        let ending: &[u8] = match ui.get_send_ending() {
+            1 => b"\n",
+            2 => b"\r",
+            3 => b"",
+            _ => b"\r\n",
+        };
+        let payload = if ui.get_hex_send() {
+            match parse_hex_bytes(&text) {
+                Ok(mut b) => {
+                    b.extend_from_slice(ending);
+                    b
+                }
+                Err(e) => {
+                    ui.set_status_text(format!("● HEX 格式错误:{e}").into());
+                    return;
+                }
+            }
+        } else {
+            let mut b = text.clone().into_bytes();
+            b.extend_from_slice(ending);
+            b
         };
         if let Some(tx) = self.cmd_tx.borrow().as_ref() {
-            let _ = tx.send(WorkerCmd::Send(text + ending));
+            let _ = tx.send(WorkerCmd::Send(payload.clone()));
+            self.stats.borrow_mut().tx += payload.len() as u64;
+            // 回显显示用户输入原文(HEX 模式下原文即 hex 串),不写发送框
+            self.pump.borrow_mut().push_colored_line(&format!("» {text}"), ECHO_COLOR);
+        }
+    }
+
+    /// 插入一条会话标记行(自动带本地时间戳;label 为空则只有时间)
+    fn insert_mark(&self, label: &str) {
+        let text = if label.is_empty() {
+            format!("── {} ──", now_hms())
+        } else {
+            format!("── [{}] {label} ──", now_hms())
+        };
+        self.pump.borrow_mut().push_colored_line(&text, MARK_COLOR);
+    }
+
+    /// 复位目标并恢复运行(仅连接状态;复位后 worker 重挂 RTT 继续收)
+    fn reset_target(&self, ui: &AppWindow) {
+        if !ui.get_connected() {
+            return;
+        }
+        if let Some(tx) = self.cmd_tx.borrow().as_ref() {
+            let _ = tx.send(WorkerCmd::Reset);
+        }
+        self.insert_mark("复位目标");
+    }
+
+    /// 导出当前显示的全部日志为 .log(纯文本;对话取消/空日志只作状态栏提示)
+    fn save_log(&self, ui: &AppWindow) {
+        let n = self.log_rows.row_count();
+        if n == 0 {
+            ui.set_status_text("● 日志为空,无需保存".into());
+            return;
+        }
+        let mut body = String::new();
+        for i in 0..n {
+            let Some(row) = self.log_rows.row_data(i) else { continue };
+            for j in 0..row.runs.row_count() {
+                if let Some(seg) = row.runs.row_data(j) {
+                    body.push_str(&seg.text);
+                }
+            }
+            body.push_str("\r\n");
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(format!("rtt_{}.log", now_stamp()))
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, body) {
+            Ok(_) => ui.set_status_text(format!("● 已保存 {}", path.display()).into()),
+            Err(e) => ui.set_status_text(format!("● 保存失败:{e}").into()),
         }
     }
 
@@ -329,6 +534,7 @@ fn main() -> anyhow::Result<()> {
         jlinks: Rc::new(RefCell::new(Vec::new())),
         log_rows: Rc::new(VecModel::from(Vec::<LogRow>::new())),
         last_status: Rc::new(RefCell::new("● 未连接".into())),
+        stats: RefCell::default(),
     });
     app.set_log_rows(ModelRc::from(ctx.log_rows.clone()));
 
@@ -429,8 +635,61 @@ fn main() -> anyhow::Result<()> {
             }
         });
     }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_reset_clicked(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.reset_target(&ui);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        app.on_mark_clicked(move || {
+            ctx.insert_mark("");
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_save_clicked(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.save_log(&ui);
+            }
+        });
+    }
 
     app.run()?;
     ctx.wait_worker_shutdown();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_parse_tolerates_separators_and_prefix() {
+        assert_eq!(parse_hex_bytes("41 42 43").unwrap(), vec![0x41, 0x42, 0x43]);
+        assert_eq!(parse_hex_bytes("41:42-43").unwrap(), vec![0x41, 0x42, 0x43]);
+        assert_eq!(parse_hex_bytes("0x4142").unwrap(), vec![0x41, 0x42]);
+        assert_eq!(parse_hex_bytes("aabb").unwrap(), vec![0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn hex_parse_rejects_bad_input() {
+        assert!(parse_hex_bytes("abc").is_err()); // 奇数位
+        assert!(parse_hex_bytes("zz").is_err()); // 非法字符
+        assert!(parse_hex_bytes("  ").is_err()); // 空
+    }
+
+    #[test]
+    fn byte_and_duration_formatting() {
+        assert_eq!(fmt_bytes(999), "999 B");
+        assert_eq!(fmt_bytes(2048), "2.0 KB");
+        assert_eq!(fmt_bytes(3 * 1024 * 1024), "3.00 MB");
+        assert_eq!(fmt_dur(Duration::from_secs(65)), "01:05");
+        assert_eq!(fmt_dur(Duration::from_secs(3675)), "1:01:15");
+    }
 }

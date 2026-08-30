@@ -82,13 +82,15 @@ Slint 里 `length / length` 产出**无单位 float 比值**(探针实测 `floor
 
 **架构**(全部用现成件,不自造解析):
 - 解析:`vte` crate(Alacritty/WezTerm 同款状态机),`src/ansi.rs` 持有持久 Parser——**SGR 颜色状态跨行、跨读块保持**(序列被 RTT 块切断也能续上)。SGR 变色时必须先 flush 已累积文本再换色,否则整行并成一段
-- 数据:log_model 产出 `Vec<Run{ text, fg }>` 行,按行数(非字符数)裁剪上限;take_new_rows 增量返回
-- 渲染:ListView 虚拟化(只实例化可见行,长日志不全量重排)+ 每行 HorizontalLayout 逐段 Text 着色
-- 滚动:自建行格滚动继续生效——滚轮 TouchArea 放在 ListView **上层**拦截全部 scroll-event(不给 Flickable 原生像素滚动),量化后直接写 `viewport-y = -offset`(ListView 继承自 Flickable,viewport-y 公开)
+- 数据:log_model 产出 `Vec<Run{ text, fg }>` 行,按行数(非字符数)裁剪上限;take_new_rows 增量返回新行、take_dropped 返回被挤掉的行数(UI 行模型必须同步从头部 remove,否则无限增长)
+- 渲染:行模型 `for` 逐行逐段 Text 着色,**整块容器 `y = 8px - offset` 平移**
+- 滚动:自建行格滚动——滚轮 TouchArea 统一量化 offset,行容器 y 随动
 
-**已知取舍**:①行内不换行,超宽行从右侧整体裁切(终端语义);②彩色行模型下失去鼠标选中文本/Ctrl+C 复制(单 TextInput 时代的红利);③背景色/粗体斜体 v1 忽略,只解析前景色(16/256/RGB)。
+**Flickable/ListView 的 viewport-y 不能用绑定驱动(踩过,自动滚动全灭)**:Flickable 内部会自行对 viewport-y 赋值(首帧布局必然发生),而 Slint 里**赋值会永久顶掉外部绑定**——`viewport-y: -offset` 绑上即死,表现为滚轮与自动跟随全部失效。自建滚动一律用"容器 y = -offset"平移模式,不碰 Flickable。
 
 **HorizontalLayout 挤压坑**:各段 Text 必须显式 `width: self.preferred-width; horizontal-stretch: 0` 锁死固有宽度——不锁的话,总宽超出的长行会把中间的段**压缩变形**(位置漂移),`min-width` 锁不住。
+
+**已知取舍**:①行内不换行,超宽行从右侧整体裁切(终端语义);②彩色行模型下失去鼠标选中文本/Ctrl+C 复制(单 TextInput 时代的红利);③背景色/粗体斜体 v1 忽略,只解析前景色(16/256/RGB);④自动滚动关闭且行数触顶后,内容因头部裁剪整体前滑(无滚动锚定,与旧版 6 万字符丢最旧行为同类)。
 
 参考:`src/ansi.rs`、`src/log_model.rs`、`src/ui/log_view.slint`
 

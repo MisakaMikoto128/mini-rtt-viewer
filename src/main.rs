@@ -97,8 +97,12 @@ impl Ctx {
         }
         // 2. 单行长度兜底(超长帧/关闭自动断帧时的无换行流)
         pump.enforce_line_cap();
-        // 3. 增量上屏:新行 → 行模型 push(ANSI 已在 pump 内解析为带色段;
-        //    ListView 虚拟化只渲染可见行,长日志不全量重排)
+        // 3. 增量上屏:先同步头部裁剪(行模型只保留最新 MAX_LOG_ROWS 行,
+        //    不裁会无限增长),再 push 新行(ANSI 已在 pump 内解析为带色段)
+        let dropped = pump.take_dropped();
+        for _ in 0..dropped {
+            self.log_rows.remove(0);
+        }
         if let Some(rows) = pump.take_new_rows() {
             for runs in rows {
                 let spans: Vec<LogRun> = runs

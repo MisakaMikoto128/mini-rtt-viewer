@@ -1,5 +1,4 @@
 import { AppTheme } from "theme.slint";
-import { ListView } from "std-widgets.slint";
 
 // 一行日志里的一段同色文本
 export struct LogRun {
@@ -12,10 +11,14 @@ export struct LogRow {
     runs: [LogRun],
 }
 
-// 日志滚动区:ListView 虚拟化(只渲染可见行,长日志不全量重排);
-// 滚轮仍走自建的行高量化逻辑,直接驱动 ListView 的 viewport-y,
-// 手动滚动位置永远落在行高网格上(逐屏上翻行位稳定,不抖动);
+// 日志滚动区:滚轮位移按整数行量化对齐,手动滚动位置永远落在行高网格上
+// (逐屏上翻时上一行精确落进上一屏的位置,行位稳定不抖);
 // 贴底跟随用显式 follow 标志(滚离底部失随、滚回底部恢复),新数据不拉扯视口。
+//
+// 滚动实现必须用「行容器 y = 8px - offset」的平移模式,**不能用 ListView/Flickable**:
+// Flickable 的 viewport-y 是它内部托管并自行赋值的属性,初始布局时就会写入,
+// 外部绑定(`viewport-y: -offset`)随即被赋值永久破坏,整个视口冻结——
+// 踩过:彩色日志 v1 用 ListView 驱动,自动滚动与滚轮全部失效。
 export component LogView inherits Rectangle {
     in property <[LogRow]> rows;
     in property <int> row-count;      // 跟随逻辑的新行触发器
@@ -37,7 +40,7 @@ export component LogView inherits Rectangle {
     private property <length> grid-max: root.line-h > 0px
         ? floor(root.max-offset / root.line-h) * root.line-h
         : root.max-offset;
-    // 顶部卷走量(手动滚动时永远为行高整数倍;= -viewport-y)
+    // 顶部卷走量(手动滚动时永远为行高整数倍)
     private property <length> offset: 0px;
     // 滚轮/触摸板累积量(未量化;floor 取整后亚行残余自然保留在 raw 里,
     // 触摸板细粒度滚动凑满一行才动,滚轮大步长每格稳定前进整数行)
@@ -53,7 +56,7 @@ export component LogView inherits Rectangle {
         ? probe.preferred-height : line-fallback;
 
     // 统一滚动入口:像素 delta 进入未量化累积量,floor 到行高网格后夹进范围。
-    // 亚行残余留在 raw(触摸板细粒度凑满一行才动,滚轮每格稳定走整数行);
+    // 亚行残余留在 raw(触摸板细粒度凑满一行才动,滚轮大步长每格稳定走整数行);
     // 撞边界时累积量直接对齐,反向滚动立即响应(不消化攒量)。
     function scroll-by-px(delta: length) {
         root.raw = root.raw - delta;
@@ -66,8 +69,7 @@ export component LogView inherits Rectangle {
         root.auto-scroll = root.follow;
     }
 
-    // 滚轮层在最上:拦截全部滚轮事件(不给下层 Flickable 原生像素滚动抢走),
-    // 统一量化后驱动 viewport-y;鼠标拖选/复制在彩色行模型下不可用,无需放行
+    // 滚轮层在最上,统一量化驱动 offset(行容器 y 随动)
     wheel := TouchArea {
         width: 100%;
         height: 100%;
@@ -88,14 +90,11 @@ export component LogView inherits Rectangle {
         font-size: AppTheme.log-font-size;
     }
 
-    list := ListView {
+    // 行容器:整块随 offset 平移(与文本版滚动同一机制;不用 Flickable,见头部说明)
+    rows-layout := VerticalLayout {
         x: 8px;
-        y: 8px;
-        width: parent.width - 16px;
-        height: parent.height - 16px;
-        // offset 是我们量化的滚动量;Flickable 的原生滚动被顶层 wheel 屏蔽,
-        // viewport-y 只会由这里驱动
-        viewport-y: -root.offset;
+        y: 8px - root.offset;
+        spacing: 0px;
 
         for row in root.rows: Rectangle {
             // 每行严格一行高:内容超高部分裁掉(终端语义;行内不换行)

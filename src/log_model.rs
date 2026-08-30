@@ -17,8 +17,8 @@ pub const FLUSH_MS: u64 = 10;
 pub const DEFAULT_FRAME_TIMEOUT_MS: u32 = 20;
 /// 单行硬上限兜底(超长帧/关闭断行时的无换行流)
 pub const MAX_LINE_CHARS: usize = 512;
-/// 日志行数上限(ListView 虚拟化渲染,超限丢最旧行)
-pub const MAX_LOG_ROWS: usize = 1000;
+/// 日志行数上限(整体平移渲染,无虚拟化;超限丢最旧行,量级与旧版 6 万字符相当)
+pub const MAX_LOG_ROWS: usize = 500;
 
 /// 按接收行尾模式切行:0=自动(\n 断行、吞 \r) 1=CRLF 2=LF 3=CR 4=无(不断行)。
 /// 切出的行内容**一律不含行尾符**——行尾模式只决定"在哪断行",不改变内容。
@@ -45,6 +45,8 @@ pub struct LogPump {
     new_lines: Vec<String>,
     /// 展示用带色行(全量,超出 [`MAX_LOG_ROWS`] 丢最旧)
     rows: Vec<Vec<Run>>,
+    /// 因行数上限被丢弃的行数(UI 侧行模型需同步移除同样数量)
+    dropped: usize,
     /// ANSI 解析器(持久实例:颜色状态跨行跨块保持)
     ansi: AnsiLines,
     /// 暂停接收:置位后新数据直接丢弃(不进日志、不占缓冲)
@@ -94,8 +96,15 @@ impl LogPump {
         if self.rows.len() > MAX_LOG_ROWS {
             let drop = self.rows.len() - MAX_LOG_ROWS;
             self.rows.drain(..drop);
+            self.dropped += drop;
         }
         Some(fresh)
+    }
+
+    /// 取走"因行数上限被丢弃"的行数(UI 侧行模型需从头部移除同样数量,
+    /// 否则行模型无限增长)。每次调用后归零。
+    pub fn take_dropped(&mut self) -> usize {
+        std::mem::take(&mut self.dropped)
     }
 
     /// 测试专用:内部保留行数(裁剪断言用;仅 lib 测试编译)
@@ -109,6 +118,7 @@ impl LogPump {
         self.pending.clear();
         self.new_lines.clear();
         self.rows.clear();
+        self.dropped = 0;
         self.ansi.reset();
     }
 }
@@ -238,6 +248,21 @@ mod tests {
         let rows = pump.take_new_rows().unwrap();
         assert_eq!(rows[0][0].fg, Some((0xcd, 0x31, 0x31)));
         assert_eq!(rows[1][0].fg, Some((0xcd, 0x31, 0x31)));
+    }
+
+    #[test]
+    fn pump_take_dropped_tracks_trimmed_rows() {
+        let mut pump = LogPump::default();
+        for i in 0..(MAX_LOG_ROWS + 5) {
+            pump.absorb_text(&format!("line{i}\n"), 0);
+            pump.enforce_line_cap();
+        }
+        assert!(pump.take_new_rows().is_some());
+        assert_eq!(pump.take_dropped(), 5);
+        assert_eq!(pump.take_dropped(), 0); // 取一次即归零
+        pump.absorb_text("more\n", 0);
+        assert!(pump.take_new_rows().is_some());
+        assert_eq!(pump.take_dropped(), 1); // 每加一行挤掉一行
     }
 
     #[test]

@@ -112,16 +112,22 @@ fn run(
     } = config;
     let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLinkARM.dll…".into()));
     let jlink = JLinkDll::load()?;
-    // 刷新 J-Link 下拉列表(用户可能插拔过),顺带给连接前的选定提供依据
-    let _ = tx.send(WorkerMsg::JLinks(jlink.enumerate_emulators()));
+    // 抑制 DLL 模态弹窗必须最先做(调试器选择窗/固件升级提示都发生在 Open 内部),
+    // 否则 worker 会卡在无人应答的隐藏对话框上
+    jlink.disable_dialog_boxes();
+    // 刷新 J-Link 下拉列表(用户可能插拔过)
+    let emus = jlink.enumerate_emulators();
+    let _ = tx.send(WorkerMsg::JLinks(emus.clone()));
     let sn = jlink.serial_number();
     let _ = tx.send(WorkerMsg::Log(format!(
         "[J-Link] 序列号 {sn},建立连接…\r\n"
     )));
 
-    // 多台 J-Link:按用户选中的序列号选定,必须在 Open 之前(pylink open(serial) 同机制)
-    if let Some(sel) = selected_sn {
-        let rc = jlink.select_by_usb_sn(*sel);
+    // 调试器选定,绝不让 DLL 自己弹选择窗:用户下拉指定优先;
+    // 未指定但本机有 J-Link 时自动选第一台
+    let sn_to_use = selected_sn.or_else(|| emus.first().map(|(sn, _)| *sn));
+    if let Some(sel) = sn_to_use {
+        let rc = jlink.select_by_usb_sn(sel);
         if rc < 0 {
             jlink.close();
             anyhow::bail!("找不到序列号 {sel} 的 J-Link(可能已拔出,请重新选择)");
@@ -129,7 +135,6 @@ fn run(
     }
 
     jlink.open();
-    jlink.disable_dialog_boxes();
 
     // 序列遵循原项目验证过的 DLL 状态机要求:RTT START 必须在 connect 之前
     let tif = if *iface_index == 0 { TIF_SWD } else { TIF_JTAG };

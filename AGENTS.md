@@ -14,7 +14,8 @@ Rust + Slint + JLinkARM.dll FFI 的极简 RTT 查看器。本文件沉淀实际�
 2. 连接出错(设备名错/未供电)时 DLL 会弹**隐藏的模态对话框**等人点确认——worker 看起来就是卡死。
 
 **处理**:
-- 序列固定:`Open → disable_dialog_boxes() → RTT START → TIF_Select → SetSpeed → ExecCommand("Device = …") → Connect`
+- 序列固定:`disable_dialog_boxes() → (EMU 枚举/SelectByUSBSN 选定) → Open → RTT START → TIF_Select → SetSpeed → ExecCommand("Device = …") → Connect`
+- **disable_dialog_boxes 必须在 Open 之前**:调试器选择窗、固件升级提示都发生在 Open 内部,open 之后再抑制就晚了。`ShowEmuSelect = 0` 彻底禁止 DLL 的调试器选择窗(多台 J-Link 时由 UI 下拉显式选定,未选则自动选第一台,绝不让 DLL 弹窗)
 - open 后立刻 `disable_dialog_boxes()`(命令序列与 pylink-square 一致,见 `jlink_dll.rs`),错误改为快速返回错误码
 - 首次 connect 失败在 worker 内自动重试 3 次(间隔 400ms),不回退 UI 状态,避免按钮闪烁
 
@@ -159,7 +160,7 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 - **日志文本全量渲染**:`MAX_LOG_CHARS = 60_000` 上限,超出按行边界丢最旧,防长跑卡 UI;设备输出极快时(<30ms/条)偶发合批是整段重排的成本所致,根治要虚拟化渲染(未做)
 - **自动化测试注意**:桌面上有多个同名窗口时,raw 输入注入(滚轮/移动)的 frame 校验会失败——测试实例用 `--demo-log`(跳过单实例互斥),且保证桌面只有一个实例
 - **Segoe UI 没有 ▸/▾(U+25B8/25BE)小三角字形** → 渲染成方框乱码("设备信息"前出现长方形)。箭头/三角一律用 WGL4 集合:▼(U+25BC)/▲(U+25B2)/►(U+25BA)/◄(U+25C4)
-- **下拉选择一律 std ComboBox,不要自造弹层控件**(LineEdit+自绘候选/官方 PopupWindow 都被用户否决:"丑无法使用,还不如上次的")。认可形态:目标设备 = FieldLabel 行 + LineEdit(输入筛选)+ ComboBox(候选)堆叠。改 UI 前先问"上次认可的形态是什么",别在用户没要求时重构控件
+- **下拉选择一律 std 原生件,不要自绘弹层控件**(自绘 PopupWindow 候选列表被用户两次否决:"丑无法使用")。目标设备的"可输入+下拉"单控件 = `editable_combo.slint` 的覆盖拼合:ComboBox 全宽打底(原生箭头+原生弹层),LineEdit 覆盖左侧文本区(输入即筛选),右侧留 32px 露出原生箭头。限制:std ComboBox 的 popup 无法程序化展开,"输入自动弹出"做不到,点箭头呈现筛选后的候选。改 UI 前先问"上次认可的形态是什么",别在用户没要求时重构控件
 - **Bash 工具里 `&` 启动的 GUI 子进程会随命令结束被回收**——冒烟测试用 `powershell Start-Process`(分离启动)才能存活
 
 ---

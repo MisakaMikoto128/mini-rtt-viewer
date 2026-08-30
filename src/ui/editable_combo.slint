@@ -1,0 +1,40 @@
+import { AppTheme } from "theme.slint";
+import { LineEdit, ComboBox } from "std-widgets.slint";
+
+// 可输入+下拉合一的目标设备控件(全部用 std 原生件拼合,不自绘弹层):
+// - ComboBox 全宽打底:右侧露出原生箭头,点击弹原生样式的候选列表;
+// - LineEdit 覆盖左侧文本区:输入即筛选(Rust 端重建 candidates),Enter 取第一个候选。
+// 限制:std ComboBox 的 popup 无法程序化展开,所以"输入时自动弹出"做不到,
+// 筛选后的候选在点箭头时呈现。Segoe UI 无 ▸/▾ 字形,箭头字符用 WGL4 集合。
+export component EditableCombo inherits Rectangle {
+    in property <[string]> candidates;
+    in property <bool> enabled: true;
+    in-out property <string> text;
+    // 输入变化 → Rust 端重筛候选
+    callback filter-changed(string);
+    height: AppTheme.ctrl-h;
+
+    ComboBox {
+        width: 100%;
+        height: 100%;
+        model: root.candidates;
+        enabled: root.enabled;
+        // 选中候选 → 回填输入框(current-value 被 LineEdit 盖住,无视觉冲突)
+        selected(value) => { root.text = value; }
+    }
+    LineEdit {
+        x: 0;
+        y: 0;
+        width: parent.width - 32px;
+        height: 100%;
+        enabled: root.enabled;
+        text <=> root.text;
+        edited(t) => { root.filter-changed(t); }
+        accepted(t) => {
+            // Enter:取第一个候选全称(无候选保持输入原样)
+            if (root.candidates.length > 0) {
+                root.text = root.candidates[0];
+            }
+        }
+    }
+}

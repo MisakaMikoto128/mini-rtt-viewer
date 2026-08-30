@@ -21,8 +21,8 @@ slint::include_modules!();
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
 
-/// 重建设备下拉候选:按输入大小写不敏感过滤(候选列表由 DeviceSelect 的
-/// PopupWindow 展示,选中后直接回填输入框,Rust 无需维护选中态)
+/// 重建设备下拉候选:按输入大小写不敏感过滤(候选由 EditableCombo 的
+/// 原生下拉展示,选中后回填输入框,Rust 无需维护选中态)
 fn apply_device_filter(ui: &AppWindow, full: &[SharedString], needle: &str) {
     let n = needle.trim().to_uppercase();
     let list: Vec<SharedString> = if n.is_empty() {
@@ -34,7 +34,6 @@ fn apply_device_filter(ui: &AppWindow, full: &[SharedString], needle: &str) {
             .collect()
     };
     ui.set_device_names(slint::ModelRc::new(VecModel::from(list)));
-    ui.set_device_index(-1);
 }
 
 fn main() -> anyhow::Result<()> {

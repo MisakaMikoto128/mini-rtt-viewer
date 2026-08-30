@@ -1,6 +1,7 @@
 import { AppTheme } from "theme.slint";
 import { FieldLabel, PanelSection } from "components.slint";
 import { LogView } from "log_view.slint";
+import { EditableCombo } from "editable_combo.slint";
 import { Button, LineEdit, ComboBox, CheckBox, Palette } from "std-widgets.slint";
 
 export { AppTheme }
@@ -38,7 +39,6 @@ export component AppWindow inherits Window {
     // UI → Rust 输入
     in-out property <string> chip-name: "STM32F030C8";
     in-out property <int> jlink-index: 0;      // 选中的 J-Link
-    in-out property <int> device-index: -1;    // 设备下拉选中项;-1=未选(显示空)
     in-out property <int> iface-index: 0;      // 0=SWD 1=JTAG
     in-out property <int> speed-index: 5;      // 默认 4000kHz
     in-out property <int> channel: 0;
@@ -97,34 +97,16 @@ export component AppWindow inherits Window {
                                     enabled: !root.connected && !root.connecting;
                                 }
                             }
-                            // 目标设备:输入即筛选,也可从下拉候选选;两行堆叠布局(用户认可的形态)
+                            // 目标设备:合一控件——直接输入(即输入即筛选),点右侧箭头弹候选全称
                             HorizontalLayout {
                                 spacing: 6px;
                                 FieldLabel { text: "目标设备"; width: 58px; vertical-alignment: center; }
-                                chip-input := LineEdit {
+                                chip-input := EditableCombo {
                                     horizontal-stretch: 1;
                                     text <=> root.chip-name;
-                                    height: AppTheme.ctrl-h;
+                                    candidates: root.device-names;
                                     enabled: !root.connected && !root.connecting;
-                                    // 输入即筛选:可手动填任意型号,也可从下方下拉选
-                                    edited(t) => { root.chip-filtered(t); }
-                                }
-                            }
-                            HorizontalLayout {
-                                spacing: 6px;
-                                Rectangle { width: 58px; }
-                                ComboBox {
-                                    horizontal-stretch: 1;
-                                    // 候选由 Rust 端按 chip-name 过滤重建;选中回填输入框。
-                                    // current-index 复位 -1 = 不选中(显示空),不与输入框文本打架
-                                    model: root.device-names;
-                                    current-index <=> root.device-index;
-                                    height: AppTheme.ctrl-h;
-                                    enabled: !root.connected && !root.connecting;
-                                    selected(text) => {
-                                        root.chip-name = text;
-                                        root.device-index = -1;
-                                    }
+                                    filter-changed(t) => { root.chip-filtered(t); }
                                 }
                             }
                             HorizontalLayout {

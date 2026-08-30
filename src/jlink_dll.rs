@@ -57,11 +57,15 @@ impl JLinkDll {
         }
     }
 
-    /// 抑制 J-Link DLL 的所有模态弹窗(固件升级确认、设备选择框、连接错误框等)。
-    /// 不抑制的话,连接失败时 DLL 会弹隐藏对话框等待确认,worker 线程看起来
-    /// 像"卡在连接中"永远不返回(命令序列与 pylink-square disable_dialog_boxes 一致)。
+    /// 抑制 J-Link DLL 的所有模态弹窗(调试器选择、固件升级确认、设备选择框、
+    /// 连接错误框等)。不抑制的话,连接失败时 DLL 会弹隐藏对话框等待确认,worker 线程
+    /// 看起来像"卡在连接中"**;多台 J-Link 时 Open 还会弹调试器选择窗,有了 J-Link
+    /// 下拉后一律由我们显式选定,弹窗彻底禁止(ShowEmuSelect=0)。
+    /// 命令序列与 pylink-square disable_dialog_boxes 一致 + ShowEmuSelect。
+    /// 注意:必须在 Open **之前**调用——调试器选择窗/固件升级提示都发生在 Open 内部。
     pub fn disable_dialog_boxes(&self) {
         for cmd in [
+            "ShowEmuSelect = 0",
             "SilentUpdateFW",
             "SuppressInfoUpdateFW",
             "SetBatchMode = 1",

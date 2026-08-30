@@ -5,7 +5,11 @@ use std::thread;
 use std::time::Duration;
 
 pub enum WorkerMsg {
+    /// 独立提示行(横幅等,自带换行)
     Log(String),
+    /// 一次 RTT read 的解码输出。块尾是安全断行点:
+    /// 设备每次发送恰好产生一个 read 块,按块断行 = 按设备发送节奏断行。
+    Block(String),
     State(bool, String),
     /// worker 线程已完全退出(含 DLL close),UI 收到后才允许再次连接,
     /// 防止上一个 worker 还阻塞在 connect() 时 spawn 新 worker 并发抢 RTT。
@@ -76,7 +80,20 @@ fn run(
     if !resp.trim().is_empty() {
         let _ = tx.send(WorkerMsg::Log(format!("[J-Link] {resp}\r\n")));
     }
-    let rc = jlink.connect();
+    // 目标连接第一次常会失败(DLL 内部状态机/目标未就绪),自动重试而非回退 UI 状态,
+    // 避免按钮"断开→连接→断开"来回跳
+    let mut rc = jlink.connect();
+    for attempt in 1..4 {
+        if rc >= 0 || stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let _ = tx.send(WorkerMsg::State(
+            false,
+            format!("● 连接中…(第 {attempt} 次重试)"),
+        ));
+        thread::sleep(Duration::from_millis(400));
+        rc = jlink.connect();
+    }
     if rc < 0 {
         jlink.close();
         anyhow::bail!(
@@ -96,7 +113,7 @@ fn run(
         let n = jlink.rtt_read(channel as i32, &mut buf);
         if n > 0 {
             let text = decode_utf8_incremental(&mut carry, &buf[..n as usize]);
-            let _ = tx.send(WorkerMsg::Log(strip_ansi(&text)));
+            let _ = tx.send(WorkerMsg::Block(strip_ansi(&text)));
         } else if n < 0 {
             let _ = tx.send(WorkerMsg::State(false, format!("● RTT 读取失败 ({n}),已断开")));
             jlink.rtt_control(RTT_CMD_STOP);

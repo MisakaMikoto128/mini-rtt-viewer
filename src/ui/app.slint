@@ -94,26 +94,47 @@ export component AppWindow inherits Window {
 
     HorizontalLayout {
         // ============ 左侧配置面板 ============
-        // 整体可滚:Flickable 自管 viewport-y(滚动由它内部赋值,外部绝不做绑定驱动
-        // ——绑定会被首帧赋值劫持,见 log_view 头部说明)。不用 ScrollView 包裹:
-        // ScrollView 派生自 FocusScope,内部焦点链与外层断开,面板按钮 Tab 不可达
-        // (踩过);Flickable 无焦点语义,Tab 遍历直接穿过。右缘自画只读滚动
-        // 指示条(thumb 位置按 viewport-y 比例映射;不做拖动,面板以滚轮为主)。
-        Rectangle {
+        // 整体可滚,手动平移模式(与 log_view 同一套已验证机制):
+        //   - 内容容器 y = -offset,offset 由滚轮(TouchArea scroll-event)与
+        //     滑条拖动统一驱动,clamp 在 [0, 内容高-视口高]
+        //   - TouchArea 在 z 序下层(先声明),按钮等控件点击在上层不受影响;
+        //     控件不处理的滚轮事件落到这里统一滚动
+        //   - min-height 撑到视口高度:内容短时 offset 范围恒 0、滑条不出现,
+        //     布局与无滚动时一致
+        // 不用 ScrollView/Flickable:ScrollView 派生自 FocusScope,内部焦点链与
+        // 外层断开,面板按钮 Tab 不可达(踩过);Flickable 对子 layout 按**最小
+        // 尺寸**算 viewport,配合 min-height 撑满会令 viewport 恒等于视口——
+        // 永不可滚、滑条永不出现(真机踩过)。
+        panel-rect := Rectangle {
             width: AppTheme.panel-w;
             background: AppTheme.app-bg;
+            clip: true;
 
-            panel-scroll := Flickable {
+            // 顶部卷走量。内容短于视口时范围恒 0(滚轮空转、滑条隐藏)
+            in-out property <length> panel-offset: 0px;
+            // 可滚范围:内容高(layout,min-height 撑底) - 视口高
+            in-out property <length> panel-max: max(0px, panel-body.height - panel-rect.height);
+
+            // 滚轮层(z 序下层;控件不处理 scroll 时事件落到这里)
+            wheel := TouchArea {
                 width: 100%;
                 height: 100%;
+                scroll-event(e) => {
+                    panel-rect.panel-offset =
+                        clamp(panel-rect.panel-offset - e.delta-y, 0px, panel-rect.panel-max);
+                    return EventResult.accept;
+                }
+            }
 
-                VerticalLayout {
-                    // 内容短于视口时仍占满(底部 spacer 生效,布局与无滚动时一致),
-                    // 长于视口时可滚
-                    min-height: panel-scroll.height;
-                    padding: 10px;
-                    padding-right: 16px;
-                    spacing: AppTheme.gap;
+            panel-body := VerticalLayout {
+                y: -panel-rect.panel-offset;
+                // 高度必须显式声明:非布局父下 layout 高度会被解析成视口高度,
+                // panel-max 恒 0 → 滑条不出现、滚轮空转(真机踩过)。
+                // max(视口高, 内容自然高):内容短时撑满(spacer 生效),长时可滚
+                height: max(panel-rect.height, self.preferred-height);
+                padding: 10px;
+                padding-right: 16px;
+                spacing: AppTheme.gap;
 
                     // ---- 连接设置 ----
                     PanelSection {
@@ -378,25 +399,41 @@ export component AppWindow inherits Window {
 
                     Rectangle { vertical-stretch: 1; }
                 }
-            }
 
-            // 滚动指示条(只读):内容超出视口才出现;thumb 高按可视占比、
-            // y 按滚动比例映射(比值分母有守卫,元素仅在可滚时渲染)
-            if (panel-scroll.viewport-height > panel-scroll.height + 0.5px): Rectangle {
+            // 滚动条(可拖动):内容超出视口才出现。thumb 高按可视占比、y 按
+            // offset 比例映射(仅在可滚时渲染,分母 panel-max > 0 有守卫)
+            if (panel-rect.panel-max > 0px): track-rect := Rectangle {
                 x: parent.width - 5px;
                 y: 10px;
                 width: 3px;
                 height: parent.height - 20px;
                 background: transparent;
 
-                Rectangle {
+                thumb-rect := Rectangle {
                     width: 3px;
                     border-radius: 1.5px;
                     background: AppTheme.border-color;
-                    height: max(28px, parent.height * (panel-scroll.height / panel-scroll.viewport-height));
-                    y: (parent.height - self.height)
-                        * (-panel-scroll.viewport-y
-                            / (panel-scroll.viewport-height - panel-scroll.height));
+                    height: max(28px, track-rect.height * (panel-rect.height / panel-body.height));
+                    y: (track-rect.height - self.height) * (panel-rect.panel-offset / panel-rect.panel-max);
+
+                    // 拖动滑条:按 y 位移换算内容偏移(比例 = 可滚范围 / 可拖行程)
+                    TouchArea {
+                        property <length> last-y: 0px;
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down) {
+                                last-y = self.mouse-y;
+                            }
+                        }
+                        moved => {
+                            panel-rect.panel-offset = clamp(
+                                panel-rect.panel-offset
+                                    + (self.mouse-y - last-y)
+                                        * (panel-rect.panel-max / (track-rect.height - parent.height)),
+                                0px,
+                                panel-rect.panel-max);
+                            last-y = self.mouse-y;
+                        }
+                    }
                 }
             }
         }

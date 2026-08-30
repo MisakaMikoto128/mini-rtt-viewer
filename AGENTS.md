@@ -178,7 +178,7 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 
 - **TextInput 必须显式 `height`**(见上)
 - **std-widgets Button 优先**:自定义 TouchArea 按钮存在点击丢失/焦点怪癖;SpinBox 内部 FocusScope 困 Tab → 全部用 ComboBox
-- **面板整体滚动用 Flickable,不用 ScrollView**:ScrollView 派生自 FocusScope,内部焦点链与外层断开 → 面板按钮 Tab 不可达(踩过)。Flickable 无焦点语义,Tab 遍历直接穿过;滚动由 Flickable 内部自管 viewport-y(外部绝不做绑定驱动——绑定会被首帧赋值劫持,见 log_view 头部说明)。内容短于视口时用 `min-height: flk.height` 撑满,底部 spacer 才生效;右缘只读滚动指示条按 `viewport-y / (viewport-height - height)` 比例映射 thumb,比值仅在可滚时渲染(元素 if 守卫防除零)。验证滚动用 a11y 树对比:Slint 树按视口裁剪,滚出视口的元素从树里消失、缩窗口复现溢出、拉窗口看恢复
+- **面板整体滚动:手动平移模式(log_view 同款),不用 ScrollView 也不用 Flickable**。ScrollView 派生自 FocusScope,内部焦点链与外层断开 → 面板按钮 Tab 不可达(踩过)。Flickable 两个坑:① 官方文档明确其按子 layout 的**最小尺寸**算 viewport——配合 `min-height` 撑满时 viewport 恒等于视口,永不可滚、滑条永不出现(真机踩过);② Flickable 自管 viewport-y,外部绑定会被首帧赋值劫持(见 log_view 头部说明)。手动模式三件套:`in-out property <length> offset` + 下层 TouchArea(scroll-event,`offset = clamp(offset - delta-y, 0, max)`)+ 内容容器 `y: -offset`。**关键坑:非布局父下的 VerticalLayout 必须显式 `height: max(视口高, self.preferred-height)`**——不显式时高度被解析成视口高,滚动范围恒 0(现象同 Flickable 坑:滑条不出现、滚轮空转)。滑条可拖:thumb 上 TouchArea 用 pointer-event(down 记 last-y)+ moved(按 `panel-max / (track.height - thumb.height)` 比例换算)。自动化验证:窗口级截图(get_app_state include_screenshot)能直接看到滑条与布局;缩窗复现溢出、拉窗验证恢复;raw 滚轮注入在锁屏下不可用,手感留真机
 - **Slint 没有 `self.parent`**:引用宿主组件尺寸用组件根的属性(`root.height`)
 - **`visible:false` 元素的属性仍可求值**(行高探针利用了这一点)
 - **日志区滚轮**:TouchArea(scroll-event)在下层、TextInput 在上层——TextInput 优先吃鼠标拖选(复制用),滚轮落到 TouchArea 统一量化

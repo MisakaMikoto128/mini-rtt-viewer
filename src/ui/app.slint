@@ -1,6 +1,6 @@
 import { AppTheme } from "theme.slint";
 import { FieldLabel, PanelSection } from "components.slint";
-import { Button, LineEdit, ComboBox, ScrollView, Palette } from "std-widgets.slint";
+import { Button, LineEdit, ComboBox, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
 export { AppTheme }
 
@@ -31,10 +31,12 @@ export component AppWindow inherits Window {
     in-out property <int> speed-index: 5;      // 默认 4000kHz
     in-out property <int> channel: 0;
     in-out property <string> send-text: "";
-    // 接收选项:断行模式 0=关闭(仅换行符) 1=每数据块一行 2=按时间窗断行
-    in-out property <int> frame-mode: 1;
-    in-out property <string> frame-timeout: "100";   // 时间窗模式断行周期 ms
+    // 接收选项:自动断帧(原项目语义)——相邻数据到达间隔超过设定值判定一帧结束
+    in-out property <bool> auto-frame: true;
+    in-out property <string> frame-timeout: "20";    // 断帧间隔 1~200ms
     in-out property <bool> paused: false;            // 暂停接收
+    // 接收行尾 0=自动(LF 断行并吞 CR) 1=CRLF 2=LF 3=CR 4=无(仅靠断帧)
+    in-out property <int> rx-ending: 0;
     // 发送行尾 0=CRLF 1=LF 2=CR 3=无
     in-out property <int> send-ending: 0;
 
@@ -146,19 +148,16 @@ export component AppWindow inherits Window {
                         }
                         HorizontalLayout {
                             spacing: 6px;
-                            FieldLabel { text: "断行"; vertical-alignment: center; }
-                            ComboBox {
-                                width: 96px;
-                                height: AppTheme.ctrl-h;
-                                model: ["关闭", "每数据块一行", "按时间窗"];
-                                current-index <=> root.frame-mode;
-                                enabled: !root.paused;
+                            CheckBox {
+                                text: "自动断帧";
+                                checked <=> root.auto-frame;
+                                enabled: true;
                             }
                             LineEdit {
-                                width: 52px;
+                                width: 64px;
                                 height: AppTheme.ctrl-h;
                                 text <=> root.frame-timeout;
-                                enabled: root.frame-mode == 2;
+                                enabled: root.auto-frame;
                             }
                             Text {
                                 text: "ms";
@@ -166,6 +165,22 @@ export component AppWindow inherits Window {
                                 font-size: 11px;
                                 font-family: AppTheme.ui-font;
                                 vertical-alignment: center;
+                            }
+                        }
+                        Text {
+                            text: "相邻数据间隔超过设定值(1~200ms)判定一帧结束,自动换行";
+                            color: AppTheme.text-muted;
+                            font-size: 10px;
+                            font-family: AppTheme.ui-font;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            FieldLabel { text: "接收行尾"; vertical-alignment: center; }
+                            ComboBox {
+                                width: 118px;
+                                height: AppTheme.ctrl-h;
+                                model: ["自动", "CRLF", "LF", "CR", "无"];
+                                current-index <=> root.rx-ending;
                             }
                         }
                         HorizontalLayout {
@@ -226,19 +241,10 @@ export component AppWindow inherits Window {
                 spacing: AppTheme.gap;
                 height: 64px;
 
-                Rectangle {
-                    border-radius: AppTheme.radius;
-                    background: AppTheme.input-bg;
-                    border-width: 1px;
-                    border-color: AppTheme.border-color;
-
-                    LineEdit {
-                        x: 6px; y: (parent.height - self.height) / 2;
-                        width: parent.width - 12px;
-                        placeholder-text: "发送到通道 " + root.channel + "…(Enter 发送)";
-                        text <=> root.send-text;
-                        accepted => { root.send-clicked(); }
-                    }
+                LineEdit {
+                    placeholder-text: "发送到通道 " + root.channel + "…(Enter 发送)";
+                    text <=> root.send-text;
+                    accepted => { root.send-clicked(); }
                 }
                 Button {
                     width: 80px;

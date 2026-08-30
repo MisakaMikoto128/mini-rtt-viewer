@@ -1,15 +1,17 @@
 use crate::jlink_dll::{JLinkDll, RTT_CMD_START, RTT_CMD_STOP, TIF_JTAG, TIF_SWD};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub enum WorkerMsg {
     /// 独立提示行(横幅等,自带换行)
     Log(String),
-    /// 一次 RTT read 的解码输出。块尾是安全断行点:
-    /// 设备每次发送恰好产生一个 read 块,按块断行 = 按设备发送节奏断行。
+    /// 一次 RTT read 的解码输出(帧边界由 worker 按间隔判定后以 FrameEnd 发出)
     Block(String),
+    /// 帧结束标记:相邻数据到达间隔超过断帧超时,worker 判定一帧结束。
+    /// 断帧判定在 worker(5ms 轮询的真实时间戳)进行,UI 刷新粒度不影响精度。
+    FrameEnd,
     /// 连接/断开的**最终结果**:true=已连接,false=已断开或失败。
     /// 中间进度用 Progress(只刷状态栏文字,绝不改变连接标志,
     /// 否则按钮会在 连接/断开 之间来回跳)。
@@ -32,11 +34,13 @@ pub struct WorkerHandle {
 }
 
 /// 启动 RTT 工作线程:加载 DLL → 按验证过的序列连接 → 循环读通道。
+/// frame_timeout_ms:断帧间隔(毫秒)共享变量,UI 侧运行时可改。
 pub fn spawn(
     chip: String,
     iface_index: usize,
     speed_khz: u32,
     channel: u32,
+    frame_timeout_ms: Arc<AtomicU32>,
     tx: mpsc::Sender<WorkerMsg>,
     cmd_rx: mpsc::Receiver<String>,
 ) -> Arc<WorkerHandle> {
@@ -46,7 +50,16 @@ pub fn spawn(
     });
     let h = handle.clone();
     thread::spawn(move || {
-        let result = run(&chip, iface_index, speed_khz, channel, &tx, &cmd_rx, &h.stop);
+        let result = run(
+            &chip,
+            iface_index,
+            speed_khz,
+            channel,
+            &frame_timeout_ms,
+            &tx,
+            &cmd_rx,
+            &h.stop,
+        );
         if let Err(e) = result {
             let _ = tx.send(WorkerMsg::State(false, format!("● 错误: {e}")));
         }
@@ -62,6 +75,7 @@ fn run(
     iface_index: usize,
     speed_khz: u32,
     channel: u32,
+    frame_timeout_ms: &AtomicU32,
     tx: &mpsc::Sender<WorkerMsg>,
     cmd_rx: &mpsc::Receiver<String>,
     stop: &AtomicBool,
@@ -113,11 +127,27 @@ fn run(
     let mut buf = [0u8; 4096];
     // 跨块 UTF-8 增量解码:emoji 4 字节可能被 RTT 读块边界切断
     let mut carry: Vec<u8> = Vec::new();
+    // 帧边界判定(在 worker 用真实时间戳,不受 UI 刷新粒度影响):
+    // 相邻两次数据到达的间隔超过断帧超时 → 上一帧结束(FrameEnd)
+    let mut last_rx = Instant::now();
+    let mut frame_open = false;
     while !stop.load(Ordering::Relaxed) && !APP_SHUTDOWN.load(Ordering::Relaxed) {
         let n = jlink.rtt_read(channel as i32, &mut buf);
+        let now = Instant::now();
+        let to = Duration::from_millis(frame_timeout_ms.load(Ordering::Relaxed) as u64);
         if n > 0 {
+            if frame_open && now.duration_since(last_rx) > to {
+                let _ = tx.send(WorkerMsg::FrameEnd);
+                frame_open = false;
+            }
             let text = decode_utf8_incremental(&mut carry, &buf[..n as usize]);
             let _ = tx.send(WorkerMsg::Block(strip_ansi(&text)));
+            frame_open = true;
+            last_rx = now;
+        } else if frame_open && now.duration_since(last_rx) > to {
+            // 数据停了:补发帧结束
+            let _ = tx.send(WorkerMsg::FrameEnd);
+            frame_open = false;
         } else if n < 0 {
             let _ = tx.send(WorkerMsg::State(false, format!("● RTT 读取失败 ({n}),已断开")));
             jlink.rtt_control(RTT_CMD_STOP);
@@ -130,7 +160,8 @@ fn run(
                 let _ = tx.send(WorkerMsg::Log("[发送失败]\r\n".into()));
             }
         }
-        thread::sleep(Duration::from_millis(20));
+        // 5ms 轮询:自动断帧按"相邻数据间隔"判定,轮询间隔决定间隔测量的精度上限
+        thread::sleep(Duration::from_millis(5));
     }
 
     // 清理:逐个包 try,单次失败不阻断退出路径

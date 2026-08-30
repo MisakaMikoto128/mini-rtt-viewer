@@ -22,6 +22,8 @@ pub enum WorkerMsg {
     DeviceInfo(DeviceInfo),
     /// J-Link 设备库候选名(启动时后台枚举/磁盘缓存,用于目标设备下拉)
     DeviceNames(Vec<String>),
+    /// 本机已接入的 J-Link 调试器列表 (序列号, 显示名),后台线程 + 每次连接时刷新
+    JLinks(Vec<(u32, String)>),
     /// worker 线程已完全退出(含 DLL close),UI 收到后才允许再次连接,
     /// 防止上一个 worker 还阻塞在 connect() 时 spawn 新 worker 并发抢 RTT。
     Exited,
@@ -67,6 +69,8 @@ pub struct WorkerConfig {
     pub channel: u32,
     /// 断帧间隔(毫秒)共享变量,UI 侧运行时可改
     pub frame_timeout_ms: Arc<AtomicU32>,
+    /// 用户在「J-Link」下拉选中的调试器序列号;None = 交给 DLL 自动选(单机场景)
+    pub selected_sn: Option<u32>,
 }
 
 /// 启动 RTT 工作线程:加载 DLL → 按验证过的序列连接 → 循环读通道。
@@ -104,13 +108,25 @@ fn run(
         speed_khz,
         channel,
         frame_timeout_ms,
+        selected_sn,
     } = config;
     let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLinkARM.dll…".into()));
     let jlink = JLinkDll::load()?;
+    // 刷新 J-Link 下拉列表(用户可能插拔过),顺带给连接前的选定提供依据
+    let _ = tx.send(WorkerMsg::JLinks(jlink.enumerate_emulators()));
     let sn = jlink.serial_number();
     let _ = tx.send(WorkerMsg::Log(format!(
         "[J-Link] 序列号 {sn},建立连接…\r\n"
     )));
+
+    // 多台 J-Link:按用户选中的序列号选定,必须在 Open 之前(pylink open(serial) 同机制)
+    if let Some(sel) = selected_sn {
+        let rc = jlink.select_by_usb_sn(*sel);
+        if rc < 0 {
+            jlink.close();
+            anyhow::bail!("找不到序列号 {sel} 的 J-Link(可能已拔出,请重新选择)");
+        }
+    }
 
     jlink.open();
     jlink.disable_dialog_boxes();

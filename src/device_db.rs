@@ -12,6 +12,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// 设备库枚举进行中(仅首次启动无缓存时有窗口);连接前检查
 static DEVICE_DB_BUSY: AtomicBool = AtomicBool::new(false);
 
+/// 后台枚举结果:目标设备库候选 / 本机接入的 J-Link 列表
+pub enum DbResult {
+    DeviceNames(Vec<String>),
+    Emulators(Vec<(u32, String)>),
+}
+
 pub fn busy() -> bool {
     DEVICE_DB_BUSY.load(Ordering::Relaxed)
 }
@@ -51,31 +57,32 @@ fn normalize(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// 后台线程:缓存命中直接回传;未命中则枚举 DLL 设备库 → 写缓存 → 回传。
-/// 失败(无 DLL 等)静默结束:下拉为空,用户仍可手动输入型号。
-pub fn spawn_background(tx: std::sync::mpsc::Sender<Vec<String>>) {
+/// 后台线程:①目标设备库候选——磁盘缓存命中零 DLL 调用,未命中才枚举;
+/// ②本机接入的 J-Link 列表——每次启动都枚举(插拔会变)。失败静默:下拉为空,
+/// 用户仍可手动输入型号 / DLL 自动选调试器。
+pub fn spawn_background(tx: std::sync::mpsc::Sender<DbResult>) {
     std::thread::spawn(move || {
         if let Some(names) = load_cache() {
-            let _ = tx.send(names);
-            return;
+            let _ = tx.send(DbResult::DeviceNames(names));
         }
         DEVICE_DB_BUSY.store(true, Ordering::Relaxed);
-        let names = (|| {
-            let jlink = JLinkDll::load().ok()?;
-            let mut names = jlink.enumerate_device_names();
-            // 个别 DLL 版本 GetInfo 需要先 Open 才能读设备库:首轮为空则 Open 后重试一次
-            if names.is_empty() {
-                jlink.open();
-                names = jlink.enumerate_device_names();
+        if let Ok(jlink) = JLinkDll::load() {
+            if load_cache().is_none() {
+                let mut names = jlink.enumerate_device_names();
+                // 个别 DLL 版本 GetInfo 需要先 Open 才能读设备库:首轮为空则 Open 后重试一次
+                if names.is_empty() {
+                    jlink.open();
+                    names = jlink.enumerate_device_names();
+                }
+                if !names.is_empty() {
+                    let names = normalize(names);
+                    write_cache(&names);
+                    let _ = tx.send(DbResult::DeviceNames(names));
+                }
             }
-            (!names.is_empty()).then_some(names)
-        })();
-        DEVICE_DB_BUSY.store(false, Ordering::Relaxed);
-        if let Some(names) = names {
-            let names = normalize(names);
-            write_cache(&names);
-            let _ = tx.send(names);
+            let _ = tx.send(DbResult::Emulators(jlink.enumerate_emulators()));
         }
+        DEVICE_DB_BUSY.store(false, Ordering::Relaxed);
     });
 }
 

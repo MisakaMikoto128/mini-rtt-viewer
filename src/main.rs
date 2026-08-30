@@ -34,6 +34,7 @@ fn apply_device_filter(ui: &AppWindow, full: &[SharedString], needle: &str) {
             .collect()
     };
     ui.set_device_names(slint::ModelRc::new(VecModel::from(list)));
+    ui.set_device_index(-1);
 }
 
 fn main() -> anyhow::Result<()> {
@@ -53,6 +54,8 @@ fn main() -> anyhow::Result<()> {
     let worker: Rc<RefCell<Option<Arc<WorkerHandle>>>> = Rc::new(RefCell::new(None));
     // 设备库全量名单(后台线程枚举/磁盘缓存回传),筛选下拉按输入重建
     let device_names: Rc<RefCell<Vec<SharedString>>> = Rc::new(RefCell::new(Vec::new()));
+    // 本机接入的 J-Link (序列号, 显示名);下拉选中项在连接时换算成 selected_sn
+    let jlinks: Rc<RefCell<Vec<(u32, String)>>> = Rc::new(RefCell::new(Vec::new()));
 
     // 断帧间隔共享变量:UI 改输入框 → worker 实时读取(断帧判定在 worker,5ms 精度)
     let frame_timeout_ms = Arc::new(AtomicU32::new(DEFAULT_FRAME_TIMEOUT_MS));
@@ -64,14 +67,20 @@ fn main() -> anyhow::Result<()> {
     if demo_mode {
         demo::spawn(msg_tx.clone());
     } else {
-        // 目标设备下拉候选:后台枚举 J-Link 设备库(有磁盘缓存则零 DLL 调用)。
+        // 后台枚举:目标设备库候选(有磁盘缓存则零 DLL 调用)+ 本机接入的 J-Link 列表。
         // device_db 不依赖 WorkerMsg,这里用转发线程适配消息类型
-        let (db_tx, db_rx) = mpsc::channel::<Vec<String>>();
+        let (db_tx, db_rx) = mpsc::channel::<device_db::DbResult>();
         device_db::spawn_background(db_tx);
         let msg_tx = msg_tx.clone();
         std::thread::spawn(move || {
-            if let Ok(names) = db_rx.recv() {
-                let _ = msg_tx.send(WorkerMsg::DeviceNames(names));
+            while let Ok(r) = db_rx.recv() {
+                let msg = match r {
+                    device_db::DbResult::DeviceNames(names) => WorkerMsg::DeviceNames(names),
+                    device_db::DbResult::Emulators(list) => WorkerMsg::JLinks(list),
+                };
+                if msg_tx.send(msg).is_err() {
+                    break;
+                }
             }
         });
     }
@@ -84,6 +93,7 @@ fn main() -> anyhow::Result<()> {
         let last_status = last_status.clone();
         let frame_timeout_ms = frame_timeout_ms.clone();
         let device_names = device_names.clone();
+        let jlinks = jlinks.clone();
         timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
             let ui = match weak.upgrade() { Some(u) => u, None => return };
             // 0. 把输入框的断帧间隔同步给 worker(判定在 worker,精度 5ms)
@@ -146,6 +156,27 @@ fn main() -> anyhow::Result<()> {
                         apply_device_filter(&ui, &full, &ui.get_chip_name());
                         *device_names.borrow_mut() = full;
                     }
+                    Ok(WorkerMsg::JLinks(list)) => {
+                        // 更新 J-Link 下拉;选中索引夹回范围,显示名 "产品: 序列号"
+                        let mut descs: Vec<SharedString> = Vec::with_capacity(list.len());
+                        for (sn, product) in &list {
+                            if product.is_empty() {
+                                descs.push(format!("J-Link: {sn}").into());
+                            } else {
+                                descs.push(format!("{product}: {sn}").into());
+                            }
+                        }
+                        let cur = ui.get_jlink_index();
+                        ui.set_jlink_names(slint::ModelRc::new(VecModel::from(descs)));
+                        ui.set_jlink_index(if cur < list.len() as i32 && cur >= 0 {
+                            cur
+                        } else if list.is_empty() {
+                            -1
+                        } else {
+                            0
+                        });
+                        *jlinks.borrow_mut() = list;
+                    }
                     Ok(WorkerMsg::Exited) => {
                         // worker 真正退出(含 DLL close),解锁"再连接";
                         // 电源输出随连接一起失效(DLL close 会断电)
@@ -174,6 +205,7 @@ fn main() -> anyhow::Result<()> {
         let worker = worker.clone();
         let msg_tx = msg_tx.clone();
         let frame_timeout_ms = frame_timeout_ms.clone();
+        let jlinks = jlinks.clone();
         app.on_connect_clicked(move || {
             if worker.borrow().as_ref().is_some_and(|h| h.alive.load(Ordering::Relaxed)) {
                 return; // 上一个 worker 还活着(可能在阻塞 connect),严禁并发
@@ -194,6 +226,13 @@ fn main() -> anyhow::Result<()> {
             }
             ui.set_connecting(true);
             ui.set_status_text("● 连接中…".into());
+            // 多台 J-Link:把下拉选中的序列号交给 worker(Open 前选定);未选中/空列表 = 自动
+            let idx = ui.get_jlink_index();
+            let selected_sn = jlinks
+                .borrow()
+                .get(idx as usize)
+                .filter(|_| idx >= 0)
+                .map(|(sn, _)| *sn);
 
             let (tx, rx) = mpsc::channel::<WorkerCmd>();
             *cmd_tx.borrow_mut() = Some(tx);
@@ -204,6 +243,7 @@ fn main() -> anyhow::Result<()> {
                     speed_khz: SPEEDS_KHZ[ui.get_speed_index().clamp(0, 7) as usize],
                     channel: ui.get_channel() as u32,
                     frame_timeout_ms: frame_timeout_ms.clone(),
+                    selected_sn,
                 },
                 msg_tx.clone(),
                 rx,

@@ -159,8 +159,21 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 - **日志文本全量渲染**:`MAX_LOG_CHARS = 60_000` 上限,超出按行边界丢最旧,防长跑卡 UI;设备输出极快时(<30ms/条)偶发合批是整段重排的成本所致,根治要虚拟化渲染(未做)
 - **自动化测试注意**:桌面上有多个同名窗口时,raw 输入注入(滚轮/移动)的 frame 校验会失败——测试实例用 `--demo-log`(跳过单实例互斥),且保证桌面只有一个实例
 - **Segoe UI 没有 ▸/▾(U+25B8/25BE)小三角字形** → 渲染成方框乱码("设备信息"前出现长方形)。箭头/三角一律用 WGL4 集合:▼(U+25BC)/▲(U+25B2)/►(U+25BA)/◄(U+25C4)
-- **自绘弹层会被后续兄弟区块盖住**(Slint 无 z-index,后声明者后绘制)——下拉候选用官方 `PopupWindow`:渲染在窗口层不被遮挡,x/y 相对所在组件、`show()`/`close()`、点外部自动关闭。参考 `src/ui/device_select.slint`
+- **下拉选择一律 std ComboBox,不要自造弹层控件**(LineEdit+自绘候选/官方 PopupWindow 都被用户否决:"丑无法使用,还不如上次的")。认可形态:目标设备 = FieldLabel 行 + LineEdit(输入筛选)+ ComboBox(候选)堆叠。改 UI 前先问"上次认可的形态是什么",别在用户没要求时重构控件
 - **Bash 工具里 `&` 启动的 GUI 子进程会随命令结束被回收**——冒烟测试用 `powershell Start-Process`(分离启动)才能存活
+
+---
+
+## 多台 J-Link:EMU_GetList 枚举 + SelectByUSBSN 选定(都要在 Open 之前/之外)
+
+- 枚举:`JLINKARM_EMU_GetList(host, pInfo, MaxInfos)` 两段式:先 `(host, NULL, 0)` 拿数量,再传数组填充;host USB=1(pylink JLinkHost.USB)。**无需 Open**(纯 USB 扫描,参考项目连接前预查同款)。结构体 `JLinkConnectInfo` 字段顺序照抄 pylink structs.py(SerialNumber u32 / Connection u8 / … / acProduct[32] / acFWString[112] / aPadding[34]),repr(C) 自然对齐与 ctypes 未打包布局一致
+- 显示名:`"{acProduct}: {SerialNumber}"`(如 "J-Link PLUS: 602717758"),产品名空则退 acFWString,再空只显示序列号
+- 选定:`JLINKARM_EMU_SelectByUSBSN(sn)` 返回 <0 = 找不到;必须在 `JLINKARM_Open` **之前**调用(pylink open(serial) 内部就是这么做的)
+- 刷新时机:启动后台线程一次 + worker 每次连接时重发(用户可能插拔)
+
+参考:`src/jlink_dll.rs` `enumerate_emulators` / `select_by_usb_sn`、`examples/emu_check.rs`(无界面验证)
+
+---
 
 ---
 

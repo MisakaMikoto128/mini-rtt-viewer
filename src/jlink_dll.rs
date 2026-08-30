@@ -246,7 +246,6 @@ impl JLinkDll {
             }
         }
     }
-
     /// 枚举设备库全部设备名。独立于连接状态(只读设备数据库)。
     pub fn enumerate_device_names(&self) -> Vec<String> {
         let get_info = unsafe {
@@ -286,6 +285,88 @@ impl JLinkDll {
         }
         out
     }
+
+    // ============ 调试器枚举/选定(多台 J-Link 时选择用哪一台) ============
+
+    /// 枚举本机已连接的 J-Link(USB),返回 (序列号, 产品名) 列表。
+    /// `JLINKARM_EMU_GetList` 两段式调用:先 (host, null, 0) 取数量,再填充。
+    /// 无需 Open,纯 USB 扫描(pylink connected_emulators 同款用法)。
+    pub fn enumerate_emulators(&self) -> Vec<(u32, String)> {
+        let get_list = unsafe {
+            match self.lib.get::<unsafe extern "C" fn(c_uint, *mut c_void, c_int) -> c_int>(
+                b"JLINKARM_EMU_GetList",
+            ) {
+                Ok(f) => f,
+                Err(_) => return Vec::new(),
+            }
+        };
+        const HOST_USB: c_uint = 1; // pylink JLinkHost.USB = 1<<0
+        let n = unsafe { get_list(HOST_USB, std::ptr::null_mut(), 0) };
+        if n <= 0 {
+            return Vec::new();
+        }
+        let mut infos: Vec<EmuConnectInfo> = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            infos.push(EmuConnectInfo {
+                serial_number: 0,
+                connection: 0,
+                usb_addr: 0,
+                ip_addr: [0; 16],
+                time: 0,
+                time_us: 0,
+                hw_version: 0,
+                mac_addr: [0; 6],
+                product: [0; 32],
+                nickname: [0; 32],
+                fw_string: [0; 112],
+                is_dhcp_assigned_ip: 0,
+                is_dhcp_valid: 0,
+                num_ip_connections: 0,
+                num_ip_connections_valid: 0,
+                padding: [0; 34],
+            });
+        }
+        let got = unsafe { get_list(HOST_USB, infos.as_mut_ptr() as *mut c_void, n) };
+        if got <= 0 {
+            return Vec::new();
+        }
+        infos[..got as usize]
+            .iter()
+            .filter(|e| e.serial_number > 0)
+            .map(|e| {
+                // 产品名(acProduct)为空时退回固件串;两者都空就只显示序列号
+                let product = fixed_cstr(&e.product)
+                    .or_else(|| fixed_cstr(&e.fw_string))
+                    .unwrap_or_default();
+                (e.serial_number, product)
+            })
+            .collect()
+    }
+
+    /// 打开前按序列号选定要使用的 J-Link(多台接入时;pylink open(serial) 同款机制)。
+    /// 返回 <0 表示找不到该序列号的设备。
+    pub fn select_by_usb_sn(&self, sn: u32) -> c_int {
+        unsafe {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn(c_uint) -> c_int>(b"JLINKARM_EMU_SelectByUSBSN")
+            {
+                Ok(f) => f(sn),
+                Err(_) => -1,
+            }
+        }
+    }
+}
+
+/// 定长 char 数组 → 去尾部 NUL 的 String;全空返回 None
+fn fixed_cstr(buf: &[i8]) -> Option<String> {
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    if end == 0 {
+        return None;
+    }
+    let s: String = buf[..end].iter().map(|&b| b as u8 as char).collect();
+    let s = s.trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 /// i8 缓冲里的 NUL 结尾 ASCII/UTF-8 字符串 → String(空串原样返回)
@@ -303,6 +384,28 @@ fn cstr_to_string(buf: &[i8]) -> String {
 struct FlashAreaRaw {
     addr: u32,
     size: u32,
+}
+
+/// JLINKARM_EMU_GetList 的连接信息结构体,字段顺序与 pylink structs.JLinkConnectInfo
+/// 一一对应(repr(C) 自然对齐与 ctypes 未打包布局一致),不能改动。
+#[repr(C)]
+struct EmuConnectInfo {
+    serial_number: u32,
+    connection: u8,
+    usb_addr: u32,
+    ip_addr: [u8; 16],
+    time: i32,
+    time_us: u64,
+    hw_version: u32,
+    mac_addr: [u8; 6],
+    product: [i8; 32],
+    nickname: [i8; 32],
+    fw_string: [i8; 112],
+    is_dhcp_assigned_ip: i8,
+    is_dhcp_valid: i8,
+    num_ip_connections: i8,
+    num_ip_connections_valid: i8,
+    padding: [u8; 34],
 }
 
 /// JLINKARM_DEVICE_GetInfo 的设备信息结构体。

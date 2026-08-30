@@ -7,16 +7,24 @@ use slint::{ComponentHandle, SharedString, Timer, TimerMode};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 slint::include_modules!();
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
-const FLUSH_MS: u64 = 200;
+// UI 刷新周期:决定消息从到达(队列)到上屏的额外延迟。过大(如 200ms)会把
+// 均匀到达的多条消息攒成一批同时冒出来,视觉上"两条一次"。10ms 粒度下
+// 每 tick 通常 0~1 条,显示节奏与设备发送节奏一致。空 tick 只有一次
+// try_recv 的开销,可忽略。
+const FLUSH_MS: u64 = 10;
 const DEFAULT_FRAME_TIMEOUT_MS: u128 = 20; // 断帧间隔默认值(1~200ms)
 const MAX_LINE_CHARS: usize = 512; // 单行硬上限兜底
 const MAX_LOG_CHARS: usize = 60_000; // 日志文本上限(只读文本全量渲染,超限丢最旧)
+
+/// --demo-log 模式的时间基准(微秒时间戳测量用;非 demo 模式为空,零开销)
+static DEMO_T0: OnceLock<Instant> = OnceLock::new();
 
 /// 按接收行尾模式切行:0=自动(\n 断行、吞 \r) 1=CRLF 2=LF 3=CR 4=无(不断行)
 fn split_lines(p: &mut String, rx_ending: i32, out: &mut Vec<String>) {
@@ -112,9 +120,11 @@ fn main() -> anyhow::Result<()> {
     // 最近一次 worker 状态文案(清空日志后恢复用,避免状态栏退化成无参数的"已连接")
     let last_status: Rc<RefCell<SharedString>> = Rc::new(RefCell::new("● 未连接".into()));
 
-    // --demo-log:无设备自动化测试数据源(中英混排 + emoji,验证滚动/断行/UTF-8)
+    // --demo-log:无设备自动化测试数据源(中英混排 + emoji,验证滚动/断行/UTF-8)。
+    // 发送与上屏各打一行微秒时间戳(stderr),用于测量显示节奏是否与发送节奏一致
     if demo_mode {
         let tx = msg_tx.clone();
+        let _ = DEMO_T0.set(Instant::now());
         std::thread::spawn(move || {
             let mut i: u64 = 0;
             loop {
@@ -124,6 +134,9 @@ fn main() -> anyhow::Result<()> {
                 let _ = tx.send(WorkerMsg::Log(format!(
                     "[demo {i:04}] Heartbeat: {i} 😊🍟❤ 心跳 中文 English mixed padding text\r\n"
                 )));
+                if let Some(t0) = DEMO_T0.get() {
+                    eprintln!("[tx] i={i} t={}us", t0.elapsed().as_micros());
+                }
                 i += 1;
                 std::thread::sleep(Duration::from_millis(80));
             }
@@ -218,6 +231,9 @@ fn main() -> anyhow::Result<()> {
             if lines.is_empty() {
                 drop(lines);
                 return;
+            }
+            if let Some(t0) = DEMO_T0.get() {
+                eprintln!("[flush] lines={} t={}us", lines.len(), t0.elapsed().as_micros());
             }
             // 3. 追加到日志文本;超限按行丢最旧
             let mut buf = log_buf.borrow_mut();

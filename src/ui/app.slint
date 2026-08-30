@@ -216,6 +216,9 @@ export component AppWindow inherits Window {
                 log-scroll := ScrollView {
                     width: 100%;
                     height: 100%;
+                    // 锁死水平视口 = 面板宽度:内容随文本更新时不再因
+                    // 视口宽/滚动条/折行宽度的反馈回路而左右抖动
+                    viewport-width: log-scroll.width;
                     viewport-height: log-edit.preferred-height + 16px;
 
                     // 底层 TextInput(非 std TextEdit):颜色可控,同时保留鼠标拖选 + Ctrl+C

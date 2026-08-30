@@ -73,6 +73,49 @@ pub struct WorkerConfig {
     pub frame_timeout_ms: Arc<AtomicU32>,
     /// 用户在「J-Link」下拉选中的调试器序列号;None = 交给 DLL 自动选(单机场景)
     pub selected_sn: Option<u32>,
+    /// 字符集标签("utf-8"/"gbk"/"utf-16le"/"windows-1252"/"ascii");
+    /// 未知标签回落 UTF-8。UI 下拉顺序见 [`ENCODINGS`]
+    pub encoding: String,
+}
+
+/// 字符集下拉表:**与 app.slint 的「字符集」ComboBox 顺序严格一致**。
+/// (显示名, encoding_rs 标签)
+pub const ENCODINGS: [(&str, &str); 5] = [
+    ("UTF-8", "utf-8"),
+    ("GBK", "gbk"),
+    ("UTF-16 LE", "utf-16le"),
+    ("Latin-1", "windows-1252"),
+    ("ASCII", "ascii"),
+];
+
+/// 字符集增量解码器(encoding_rs 包装):跨读块的多字节边界由 decoder 内部
+/// 管理,替换原先手写的 UTF-8 carry 逻辑并额外支持 GBK/UTF-16 等
+pub struct CharsetDecoder {
+    decoder: encoding_rs::Decoder,
+}
+
+impl CharsetDecoder {
+    /// 按编码标签构建;未知标签回落 UTF-8
+    pub fn for_label(label: &str) -> Self {
+        let enc = encoding_rs::Encoding::for_label(label.as_bytes())
+            .unwrap_or(encoding_rs::UTF_8);
+        let decoder = enc.new_decoder();
+        Self { decoder }
+    }
+
+    /// 解码一块原始字节(块边界可落在任意多字节字符中间)
+    pub fn decode(&mut self, bytes: &[u8]) -> String {
+        // encoding_rs 的 decode_to_string 不自动扩容:容量不足时静默丢弃输出,
+        // 必须先按"每输入字节至多 3 个输出字节"预足容量
+        let cap = self
+            .decoder
+            .max_utf8_buffer_length(bytes.len())
+            .unwrap_or(bytes.len() * 3 + 4);
+        let mut out = String::with_capacity(cap);
+        // last=false:保留尾部截断的多字节序列到下一块;非法字节输出 U+FFFD
+        let (_, _, _) = self.decoder.decode_to_string(bytes, &mut out, false);
+        out
+    }
 }
 
 /// 启动 RTT 工作线程:加载 DLL → 按验证过的序列连接 → 循环读通道。
@@ -217,11 +260,12 @@ fn rtt_read_loop(
     cmd_rx: &mpsc::Receiver<WorkerCmd>,
     stop: &AtomicBool,
 ) {
-    let WorkerConfig { channel, frame_timeout_ms, .. } = config;
+    let WorkerConfig { channel, frame_timeout_ms, encoding, .. } = config;
 
     let mut buf = [0u8; 4096];
-    // 跨块 UTF-8 增量解码:emoji 4 字节可能被 RTT 读块边界切断
-    let mut carry: Vec<u8> = Vec::new();
+    // 按用户选定字符集增量解码:跨读块的多字节边界(emoji 4 字节/GBK 2 字节
+    // 被块切断)由 decoder 内部管理
+    let mut decoder = CharsetDecoder::for_label(encoding);
     // 帧边界判定(在 worker 用真实时间戳,不受 UI 刷新粒度影响):
     // 相邻两次数据到达的间隔超过断帧超时 → 上一帧结束(FrameEnd)
     let mut last_rx = Instant::now();
@@ -236,7 +280,7 @@ fn rtt_read_loop(
                 let _ = tx.send(WorkerMsg::FrameEnd);
             }
             // ANSI 转义序列原样透传,由 UI 端 vte 解析着色(本层不再剥掉)
-            let text = decode_utf8_incremental(&mut carry, &buf[..n as usize]);
+            let text = decoder.decode(&buf[..n as usize]);
             let _ = tx.send(WorkerMsg::Block(text));
             frame_open = true;
             last_rx = now;
@@ -298,39 +342,50 @@ fn rtt_read_loop(
     let _ = tx.send(WorkerMsg::State(false, "● 未连接".into()));
 }
 
-/// 跨块安全的 UTF-8 增量解码:
-/// - 尾部被截断的多字节序列保留到下次拼接(error_len() == None);
-/// - 真正非法的字节序列丢弃并输出替换符(error_len() == Some(n));
-/// - 解码循环结束后 carry 只可能是 <4 字节的合法截断尾,超限即垃圾,丢弃。
-pub fn decode_utf8_incremental(carry: &mut Vec<u8>, data: &[u8]) -> String {
-    carry.extend_from_slice(data);
-    let mut out = String::new();
-    loop {
-        match std::str::from_utf8(carry) {
-            Ok(s) => {
-                out.push_str(s);
-                carry.clear();
-                break;
-            }
-            Err(e) => {
-                let valid = e.valid_up_to();
-                if valid > 0 {
-                    out.push_str(unsafe { std::str::from_utf8_unchecked(&carry[..valid]) });
-                    carry.drain(..valid);
-                }
-                match e.error_len() {
-                    Some(bad_len) => {
-                        out.push('\u{FFFD}');
-                        carry.drain(..bad_len);
-                    }
-                    None => break, // 尾部截断,留给下一块
-                }
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gbk_two_byte_chars_split_across_chunks() {
+        // "你好" 的 GBK 编码:[C4 E3][BA C3],从中间切开
+        let mut d = CharsetDecoder::for_label("gbk");
+        let a = d.decode(&[0xC4, 0xE3]);
+        let b = d.decode(&[0xBA, 0xC3]);
+        assert_eq!(a, "你");
+        assert_eq!(b, "好");
+    }
+
+    #[test]
+    fn utf16le_surrogate_split_across_chunks() {
+        // "😀" UTF-16LE:[3D D8 00 DE](代理对),从中间切开
+        let mut d = CharsetDecoder::for_label("utf-16le");
+        let a = d.decode(&[0x3D, 0xD8]);
+        let b = d.decode(&[0x00, 0xDE]);
+        assert_eq!(format!("{a}{b}"), "😀");
+    }
+
+    #[test]
+    fn utf8_multibyte_split_matches_old_carry_behavior() {
+        // "你" UTF-8 = [E4 BD A0],切成三块逐字节喂
+        let mut d = CharsetDecoder::for_label("utf-8");
+        let mut s = String::new();
+        for b in [0xE4u8, 0xBD, 0xA0] {
+            s.push_str(&d.decode(&[b]));
+        }
+        assert_eq!(s, "你");
+    }
+
+    #[test]
+    fn unknown_label_falls_back_to_utf8() {
+        let mut d = CharsetDecoder::for_label("not-a-charset");
+        assert_eq!(d.decode("hello".as_bytes()), "hello");
+    }
+
+    #[test]
+    fn encodings_table_labels_are_all_resolvable() {
+        for (_, label) in ENCODINGS {
+            assert!(encoding_rs::Encoding::for_label(label.as_bytes()).is_some(), "{label}");
         }
     }
-    // 合法截断尾最多 3 字节;超限说明是垃圾数据,丢弃防止无限堆积
-    if carry.len() > 3 {
-        carry.clear();
-    }
-    out
 }

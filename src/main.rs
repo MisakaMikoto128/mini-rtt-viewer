@@ -4,9 +4,10 @@
 // 模块树统一在 lib(crate mini_rtt_viewer):UI 生成代码与业务模块都从那里来,
 // 本文件只是"装配层"——创建 AppWindow、把回调接到 Ctx 的方法上、起 timer 泵、
 // 管理退出编排。业务规则一律不在这里实现。
+use mini_rtt_viewer::config::{self, StoredPrefs};
 use mini_rtt_viewer::log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
-use mini_rtt_viewer::rtt::{self, WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN};
-use mini_rtt_viewer::{device_db, demo, single_instance, AppWindow, InfoRow, LogRun, LogRow};
+use mini_rtt_viewer::rtt::{self, WorkerCmd, WorkerHandle, WorkerMsg, ENCODINGS, APP_SHUTDOWN};
+use mini_rtt_viewer::{device_db, demo, single_instance, AppTheme, AppWindow, InfoRow, LogRun, LogRow};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -151,6 +152,11 @@ struct Ctx {
     last_status: Rc<RefCell<SharedString>>,
     /// 收发字节与会话时长统计
     stats: RefCell<Stats>,
+    /// 启动时从配置恢复的 J-Link 序列号:枚举列表里能找到就优先选中
+    /// (下拉索引随插拔顺序漂移,按序列号恢复才稳;之后由自动保存接管)
+    preferred_jlink: RefCell<Option<u32>>,
+    /// 上次落盘的偏好快照(与当前 UI 快照不同才写盘)
+    last_prefs: RefCell<Option<StoredPrefs>>,
 }
 
 impl Ctx {
@@ -266,6 +272,39 @@ impl Ctx {
             ui.set_stats_text(
                 format!("TX {} · RX {} · {}", fmt_bytes(tx), fmt_bytes(rx), dur_text).into(),
             );
+            // 5. 偏好自动保存:与上次落盘的快照不同才写(500ms 节流,单文件几 KB)
+            let snap = self.snapshot_prefs(ui);
+            if self.last_prefs.borrow().as_ref() != Some(&snap) {
+                config::save(&snap);
+                *self.last_prefs.borrow_mut() = Some(snap);
+            }
+        }
+    }
+
+    /// 从 UI 收集当前偏好快照(自动保存与退出落盘共用)
+    fn snapshot_prefs(&self, ui: &AppWindow) -> StoredPrefs {
+        let ji = ui.get_jlink_index();
+        let font_px = ui.global::<AppTheme>().get_log_font_size() as i32;
+        StoredPrefs {
+            chip_name: ui.get_chip_name().to_string(),
+            jlink_serial: self
+                .jlinks
+                .borrow()
+                .get(ji as usize)
+                .filter(|_| ji >= 0)
+                .map(|(sn, _)| *sn),
+            iface_index: ui.get_iface_index(),
+            speed_index: ui.get_speed_index(),
+            channel: ui.get_channel(),
+            rx_ending: ui.get_rx_ending(),
+            send_ending: ui.get_send_ending(),
+            auto_frame: ui.get_auto_frame(),
+            frame_timeout: ui.get_frame_timeout().to_string(),
+            auto_scroll: ui.get_auto_scroll(),
+            hex_send: ui.get_hex_send(),
+            encoding_index: ui.get_encoding_index(),
+            log_font_px: font_px,
+            info_expanded: ui.get_info_expanded(),
         }
     }
 
@@ -292,7 +331,8 @@ impl Ctx {
         *self.device_names.borrow_mut() = full;
     }
 
-    /// J-Link 下拉更新;选中索引夹回范围,显示名 "产品: 序列号"
+    /// J-Link 下拉更新;选中索引夹回范围,显示名 "产品: 序列号"。
+    /// 启动恢复的序列号优先:枚举列表里能找到就选它
     fn apply_jlinks(&self, ui: &AppWindow, list: Vec<(u32, String)>) {
         let descs: Vec<SharedString> = list
             .iter()
@@ -307,13 +347,16 @@ impl Ctx {
             .collect();
         let cur = ui.get_jlink_index();
         ui.set_jlink_names(ModelRc::new(VecModel::from(descs)));
-        ui.set_jlink_index(if cur < list.len() as i32 && cur >= 0 {
-            cur
-        } else if list.is_empty() {
-            -1
-        } else {
-            0
-        });
+        let idx = match
+            (*self.preferred_jlink.borrow())
+                .and_then(|sn| list.iter().position(|(s, _)| *s == sn))
+        {
+            Some(i) => i as i32,
+            None if cur < list.len() as i32 && cur >= 0 => cur,
+            None if list.is_empty() => -1,
+            None => 0,
+        };
+        ui.set_jlink_index(idx);
         *self.jlinks.borrow_mut() = list;
     }
 
@@ -345,6 +388,11 @@ impl Ctx {
 
         let (tx, rx) = mpsc::channel::<WorkerCmd>();
         *self.cmd_tx.borrow_mut() = Some(tx);
+        // 字符集:下拉索引 → encoding_rs 标签(越界回落 UTF-8)
+        let encoding = ENCODINGS
+            .get(ui.get_encoding_index().clamp(0, ENCODINGS.len() as i32 - 1) as usize)
+            .map(|(_, label)| label.to_string())
+            .unwrap_or_else(|| "utf-8".into());
         let handle = rtt::spawn(
             rtt::WorkerConfig {
                 chip,
@@ -353,6 +401,7 @@ impl Ctx {
                 channel: ui.get_channel() as u32,
                 frame_timeout_ms: self.frame_timeout_ms.clone(),
                 selected_sn,
+                encoding,
             },
             self.msg_tx.clone(),
             rx,
@@ -543,8 +592,34 @@ fn main() -> anyhow::Result<()> {
         log_rows: Rc::new(VecModel::from(Vec::<LogRow>::new())),
         last_status: Rc::new(RefCell::new("● 未连接".into())),
         stats: RefCell::default(),
+        preferred_jlink: RefCell::new(None),
+        last_prefs: RefCell::new(None),
     });
     app.set_log_rows(ModelRc::from(ctx.log_rows.clone()));
+
+    // 恢复上次会话的左侧面板配置(%APPDATA%/MiniRttViewer/prefs.json;
+    // 字段缺失/损坏回落默认,绝不阻塞启动)
+    let saved = config::load();
+    // 空串不覆盖 slint 默认值:首次启动(无配置)保持占位示例芯片名
+    if !saved.chip_name.is_empty() {
+        app.set_chip_name(saved.chip_name.clone().into());
+    }
+    app.set_iface_index(saved.iface_index.clamp(0, 1));
+    app.set_speed_index(saved.speed_index.clamp(0, SPEEDS_KHZ.len() as i32 - 1));
+    app.set_channel(saved.channel.clamp(0, 15));
+    app.set_rx_ending(saved.rx_ending.clamp(0, 4));
+    app.set_send_ending(saved.send_ending.clamp(0, 3));
+    app.set_auto_frame(saved.auto_frame);
+    app.set_frame_timeout(saved.frame_timeout.clone().into());
+    app.set_auto_scroll(saved.auto_scroll);
+    app.set_hex_send(saved.hex_send);
+    app.set_encoding_index(saved.encoding_index.clamp(0, ENCODINGS.len() as i32 - 1));
+    app.set_info_expanded(saved.info_expanded);
+    // 字号 9-30 之外的值视为坏值,不恢复(UI 端按钮本身也夹在这个范围)
+    if (9..=30).contains(&saved.log_font_px) {
+        app.global::<AppTheme>().set_log_font_size(saved.log_font_px as f32);
+    }
+    *ctx.preferred_jlink.borrow_mut() = saved.jlink_serial;
 
     if demo_mode {
         demo::spawn(ctx.msg_tx.clone());
@@ -669,6 +744,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     app.run()?;
+    // 退出前强制补一次落盘(节流窗口内最后的变更)
+    config::save(&ctx.snapshot_prefs(&app));
     ctx.wait_worker_shutdown();
     Ok(())
 }

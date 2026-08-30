@@ -2,7 +2,7 @@
 //! 用法: cargo run --example rtt_check -- [芯片型号] [秒数]
 
 use mini_rtt_viewer::jlink_dll::{JLinkDll, RTT_CMD_START, RTT_CMD_STOP, TIF_SWD};
-use mini_rtt_viewer::rtt::decode_utf8_incremental;
+use mini_rtt_viewer::rtt::CharsetDecoder;
 use std::time::{Duration, Instant};
 
 fn main() -> anyhow::Result<()> {
@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     println!("[ok] connected to {chip}");
 
     let mut buf = [0u8; 4096];
-    let mut carry: Vec<u8> = Vec::new();
+    let mut decoder = CharsetDecoder::for_label("utf-8");
     let start = Instant::now();
     let mut total = 0usize;
     println!("---- RTT 输出开始 ----");
@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
         let n = jlink.rtt_read(0, &mut buf);
         if n > 0 {
             total += n as usize;
-            print!("{}", decode_utf8_incremental(&mut carry, &buf[..n as usize]));
+            print!("{}", decoder.decode(&buf[..n as usize]));
             use std::io::Write;
             std::io::stdout().flush().ok();
         }

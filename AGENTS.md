@@ -236,7 +236,35 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 
 ---
 
-## 全局快捷键:外层 FocusScope 的 KeyBinding 靠按键冒泡捕获
+## encoding_rs 的 decode_to_string 不自动扩容:容量不足静默丢输出
+
+**现象**:CharsetDecoder 首版 `decode_to_string(bytes, &mut out, false)` 的 out 用 `String::new()` 空串起步,所有单测返回空字符串——无 panic、无错误标志。
+
+**原因**:encoding_rs 的 `decode_to_string` 家族**要求调用方预足容量**(每输入字节至多 3 个 UTF-8 输出字节),容量不够时返回 `OutputFull` 且不写入——没有 panic,只能靠结果里的 `DecoderResult` 判断。
+
+**处理**:
+```rust
+let cap = self.decoder.max_utf8_buffer_length(bytes.len()).unwrap_or(bytes.len() * 3 + 4);
+let mut out = String::with_capacity(cap);
+self.decoder.decode_to_string(bytes, &mut out, false);
+```
+另:新 nightly 语义下 `Encoding::new_decoder()` 只返回 `Decoder`(不是元组)。
+
+---
+
+## 偏好持久化:tick 快照比对方案(不挂钩子、天然节流)
+
+**设计**:每个 UI 属性变更挂 setter 太散;改为 tick(500ms 统计栏节流内)构建 `StoredPrefs` 快照,与上次落盘快照 `PartialEq` 比对,**不同才写盘**。退出时 `app.run()` 返回后再强制补一次(节流窗口内最后的变更)。要点:
+- `serde(default)` 全字段容错:旧配置缺新字段/坏 JSON/文件丢失一律回落默认,启动零阻塞
+- J-Link 按**序列号**恢复而非下拉索引(枚举顺序随插拔漂移,索引会错位)
+- 首启空配置(`chip_name == ""`)不覆盖 slint 默认占位值
+- 原子写:tmp → remove 旧文件 → rename(Windows 的 rename 不覆盖)
+
+参考:`src/config.rs`、main.rs `snapshot_prefs` / tick 第 5 步。
+
+---
+
+
 
 **现象**:想在 Window 级做 F2/F3 全局快捷键,但 Window 元素没有 key-pressed;而 KeyBinding/FocusScope 只有持焦时收键——焦点在内部 LineEdit 时按 F2 会不会丢?
 

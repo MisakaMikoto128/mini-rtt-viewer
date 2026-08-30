@@ -4,6 +4,7 @@
 //! 而且容易漏声明(踩过:bin 里漏 `mod ansi` 编译失败的坑)。
 
 pub mod ansi;
+pub mod config;
 pub mod demo;
 pub mod device_db;
 pub mod jlink_dll;

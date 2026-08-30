@@ -56,6 +56,8 @@ export component AppWindow inherits Window {
     in-out property <int> rx-ending: 0;
     // 发送行尾 0=CRLF 1=LF 2=CR 3=无
     in-out property <int> send-ending: 0;
+    // 字符集 0=UTF-8 1=GBK 2=UTF-16 LE 3=Latin-1 4=ASCII(与 rtt.rs ENCODINGS 顺序一致)
+    in-out property <int> encoding-index: 0;
     // HEX 发送模式:输入按 "41 42 43" / "0x4142" 解析为原始字节
     in-out property <bool> hex-send: false;
     // 收发统计栏(TX/RX 字节 + 会话时长,Rust 端 500ms 节流刷新)
@@ -383,6 +385,17 @@ export component AppWindow inherits Window {
                                 height: AppTheme.ctrl-h;
                                 model: ["自动", "CRLF", "LF", "CR", "无"];
                                 current-index <=> root.rx-ending;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            FieldLabel { text: "字符集"; vertical-alignment: center; }
+                            ComboBox {
+                                width: 118px;
+                                height: AppTheme.ctrl-h;
+                                // 顺序必须与 rtt.rs 的 ENCODINGS 表严格一致
+                                model: ["UTF-8", "GBK", "UTF-16 LE", "Latin-1", "ASCII"];
+                                current-index <=> root.encoding-index;
                             }
                         }
                         HorizontalLayout {

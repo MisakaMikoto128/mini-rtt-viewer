@@ -15,6 +15,11 @@ slint = { version = "1", default-features = false, features = [
 ] }
 libloading = "0.8"
 anyhow = "1"
+# 字符集解码(UTF-8/GBK/UTF-16 LE/Latin-1/ASCII;Firefox 同款,增量解码跨块安全)
+encoding_rs = "0.8"
+# 用户偏好持久化(%APPDATA%/MiniRttViewer/prefs.json)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # 原生文件对话框(保存日志用;Windows 走 IFileDialog,无额外运行时)
 rfd = "0.15"
 # ANSI/VT 转义序列解析(Alacritty/WezTerm 同款状态机;增量式,颜色状态跨块跨行保持)

@@ -87,7 +87,12 @@ fn enforce_single_instance() {
 fn enforce_single_instance() {}
 
 fn main() -> anyhow::Result<()> {
-    enforce_single_instance();
+    // --demo-log 是无设备的自动化测试模式:跳过单实例互斥,
+    // 允许与真实实例并存(它不加载 JLinkARM.dll,不会抢 J-Link)
+    let demo_mode = std::env::args().any(|a| a == "--demo-log");
+    if !demo_mode {
+        enforce_single_instance();
+    }
     let app = AppWindow::new()?;
 
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
@@ -106,6 +111,24 @@ fn main() -> anyhow::Result<()> {
     let paused: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     // 最近一次 worker 状态文案(清空日志后恢复用,避免状态栏退化成无参数的"已连接")
     let last_status: Rc<RefCell<SharedString>> = Rc::new(RefCell::new("● 未连接".into()));
+
+    // --demo-log:无设备自动化测试数据源(中英混排 + emoji,验证滚动/断行/UTF-8)
+    if demo_mode {
+        let tx = msg_tx.clone();
+        std::thread::spawn(move || {
+            let mut i: u64 = 0;
+            loop {
+                if APP_SHUTDOWN.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = tx.send(WorkerMsg::Log(format!(
+                    "[demo {i:04}] Heartbeat: {i} 😊🍟❤ 心跳 中文 English mixed padding text\r\n"
+                )));
+                i += 1;
+                std::thread::sleep(Duration::from_millis(80));
+            }
+        });
+    }
 
     let timer = Timer::default();
     {
@@ -197,8 +220,6 @@ fn main() -> anyhow::Result<()> {
                 return;
             }
             // 3. 追加到日志文本;超限按行丢最旧
-            let at_bottom = ui.get_log_viewport_y()
-                >= -(ui.get_log_viewport_height() - ui.get_log_area_height()) - 4.0;
             let mut buf = log_buf.borrow_mut();
             for l in lines.iter() {
                 buf.push_str(l);
@@ -217,12 +238,7 @@ fn main() -> anyhow::Result<()> {
             }
             ui.set_log_text(buf.clone().into());
             drop(buf);
-            // 4. 自动滚底:仅在插入前就位于底部时跟随(用户上翻不被拉回)
-            if at_bottom {
-                let area = ui.get_log_area_height();
-                let vh = ui.get_log_viewport_height();
-                ui.set_log_viewport_y((-(vh - area)).min(0.0) as f32);
-            }
+            // 4. 自动滚底由 LogView 内部闭环:贴底跟随者贴新底部,上翻者不被拉扯
         });
     }
 
@@ -314,7 +330,6 @@ fn main() -> anyhow::Result<()> {
         let last_status = last_status.clone();
         app.on_clear_clicked(move || {
             if let Some(ui) = weak.upgrade() {
-                ui.set_log_viewport_y(0.0);
                 ui.set_log_text("".into());
                 ui.set_status_text(last_status.borrow().clone());
             }

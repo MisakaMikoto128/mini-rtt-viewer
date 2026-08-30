@@ -177,7 +177,8 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 ## Slint 其他陷阱速查
 
 - **TextInput 必须显式 `height`**(见上)
-- **std-widgets Button 优先**:自定义 TouchArea 按钮存在点击丢失/焦点怪癖;面板不要用 ScrollView 包(内部焦点链与外层断开);SpinBox 内部 FocusScope 困 Tab → 全部用 ComboBox
+- **std-widgets Button 优先**:自定义 TouchArea 按钮存在点击丢失/焦点怪癖;SpinBox 内部 FocusScope 困 Tab → 全部用 ComboBox
+- **面板整体滚动用 Flickable,不用 ScrollView**:ScrollView 派生自 FocusScope,内部焦点链与外层断开 → 面板按钮 Tab 不可达(踩过)。Flickable 无焦点语义,Tab 遍历直接穿过;滚动由 Flickable 内部自管 viewport-y(外部绝不做绑定驱动——绑定会被首帧赋值劫持,见 log_view 头部说明)。内容短于视口时用 `min-height: flk.height` 撑满,底部 spacer 才生效;右缘只读滚动指示条按 `viewport-y / (viewport-height - height)` 比例映射 thumb,比值仅在可滚时渲染(元素 if 守卫防除零)。验证滚动用 a11y 树对比:Slint 树按视口裁剪,滚出视口的元素从树里消失、缩窗口复现溢出、拉窗口看恢复
 - **Slint 没有 `self.parent`**:引用宿主组件尺寸用组件根的属性(`root.height`)
 - **`visible:false` 元素的属性仍可求值**(行高探针利用了这一点)
 - **日志区滚轮**:TouchArea(scroll-event)在下层、TextInput 在上层——TextInput 优先吃鼠标拖选(复制用),滚轮落到 TouchArea 统一量化

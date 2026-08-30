@@ -94,14 +94,26 @@ export component AppWindow inherits Window {
 
     HorizontalLayout {
         // ============ 左侧配置面板 ============
-        // 不用 ScrollView 包裹:其内部焦点链与外层断开,导致面板按钮 Tab 不可达
+        // 整体可滚:Flickable 自管 viewport-y(滚动由它内部赋值,外部绝不做绑定驱动
+        // ——绑定会被首帧赋值劫持,见 log_view 头部说明)。不用 ScrollView 包裹:
+        // ScrollView 派生自 FocusScope,内部焦点链与外层断开,面板按钮 Tab 不可达
+        // (踩过);Flickable 无焦点语义,Tab 遍历直接穿过。右缘自画只读滚动
+        // 指示条(thumb 位置按 viewport-y 比例映射;不做拖动,面板以滚轮为主)。
         Rectangle {
             width: AppTheme.panel-w;
             background: AppTheme.app-bg;
 
-            VerticalLayout {
-                padding: 10px;
-                spacing: AppTheme.gap;
+            panel-scroll := Flickable {
+                width: 100%;
+                height: 100%;
+
+                VerticalLayout {
+                    // 内容短于视口时仍占满(底部 spacer 生效,布局与无滚动时一致),
+                    // 长于视口时可滚
+                    min-height: panel-scroll.height;
+                    padding: 10px;
+                    padding-right: 16px;
+                    spacing: AppTheme.gap;
 
                     // ---- 连接设置 ----
                     PanelSection {
@@ -365,6 +377,27 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle { vertical-stretch: 1; }
+                }
+            }
+
+            // 滚动指示条(只读):内容超出视口才出现;thumb 高按可视占比、
+            // y 按滚动比例映射(比值分母有守卫,元素仅在可滚时渲染)
+            if (panel-scroll.viewport-height > panel-scroll.height + 0.5px): Rectangle {
+                x: parent.width - 5px;
+                y: 10px;
+                width: 3px;
+                height: parent.height - 20px;
+                background: transparent;
+
+                Rectangle {
+                    width: 3px;
+                    border-radius: 1.5px;
+                    background: AppTheme.border-color;
+                    height: max(28px, parent.height * (panel-scroll.height / panel-scroll.viewport-height));
+                    y: (parent.height - self.height)
+                        * (-panel-scroll.viewport-y
+                            / (panel-scroll.viewport-height - panel-scroll.height));
+                }
             }
         }
 

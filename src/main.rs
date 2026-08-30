@@ -222,12 +222,8 @@ fn main() -> anyhow::Result<()> {
             // 3. 追加到日志文本;超限按行丢最旧
             let mut buf = log_buf.borrow_mut();
             for l in lines.iter() {
-                // 行间分隔式追加:文本永不以 \n 结尾,否则 TextInput 会把
-                // 尾部换行渲染成一个空行,贴底时底部垫出一条假空隙
-                if !buf.is_empty() {
-                    buf.push('\n');
-                }
                 buf.push_str(l);
+                buf.push('\n');
             }
             lines.clear();
             drop(lines);

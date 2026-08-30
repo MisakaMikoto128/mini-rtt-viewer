@@ -3,7 +3,7 @@
 
 use mini_rtt_viewer::rtt::{self, APP_SHUTDOWN, WorkerHandle};
 use rtt::WorkerMsg;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, SharedString, Timer, TimerMode};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 slint::include_modules!();
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
-const FLUSH_MS: u64 = 50;
-const DEFAULT_FRAME_TIMEOUT_MS: u128 = 100; // 设备不发换行符时,静默超时自动断帧
+const FLUSH_MS: u64 = 100;
+const DEFAULT_FRAME_TIMEOUT_MS: u128 = 100; // 设备不发换行符时,静默超时自动断行
 const MAX_LINE_CHARS: usize = 256; // 单行硬上限:积压数据批量到达时强制切行,防止超长行
-const MAX_LINES: usize = 3000;
+const MAX_LOG_CHARS: usize = 100_000; // 日志文本上限(TextEdit 全量渲染,超限丢最旧)
 
 /// 单实例互斥:第二个实例弹窗提示后退出。
 /// 不做互斥的话两个进程会同时连同一个 J-Link(数据各收一份,状态互相干扰)。
@@ -31,7 +31,6 @@ fn enforce_single_instance() {
     unsafe {
         // 先取齐函数指针:libloading 的 get() 内部会调 Win32 API 清掉 GetLastError,
         // 所以 GetLastError 必须在 CreateMutexW 之后立刻调用
-        // CreateMutexW(lpMutexAttributes, bInitialOwner, lpName) -> HANDLE
         let create: Symbol<unsafe extern "C" fn(*mut c_void, i32, *const u16) -> *mut c_void> =
             kernel32.get(b"CreateMutexW").unwrap();
         let last_err: Symbol<unsafe extern "C" fn() -> u32> =
@@ -77,11 +76,9 @@ fn main() -> anyhow::Result<()> {
     // 连接互斥门闩:worker 线程存活期间(含阻塞在 connect() 时)不允许 spawn 新 worker
     let worker: Rc<RefCell<Option<Arc<WorkerHandle>>>> = Rc::new(RefCell::new(None));
 
-    // 行式日志模型:worker 文本 → 断帧成行 → VecModel,ListView 虚拟化渲染
-    let lines: Rc<VecModel<SharedString>> = Rc::new(VecModel::default());
-    app.set_log_lines(ModelRc::from(Rc::clone(&lines) as Rc<VecModel<SharedString>>));
-
-    // 半行缓冲(等待换行符/断帧超时的未完成行)
+    // 日志文本缓冲:只读 TextEdit 全量渲染,超限丢最旧(按行边界)
+    let log_buf: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    // 半行缓冲(等待换行符/断行超时的未完成行)
     let pending: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     let last_data: Rc<RefCell<Instant>> = Rc::new(RefCell::new(Instant::now()));
     // 最近一次 worker 状态文案(清空日志后恢复用,避免状态栏退化成无参数的"已连接")
@@ -92,7 +89,7 @@ fn main() -> anyhow::Result<()> {
         let weak = app.as_weak();
         let pending = pending.clone();
         let last_data = last_data.clone();
-        let lines = lines.clone();
+        let log_buf = log_buf.clone();
         let worker = worker.clone();
         let last_status = last_status.clone();
         timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
@@ -121,47 +118,58 @@ fn main() -> anyhow::Result<()> {
                     Err(_) => break,
                 }
             }
-            // 2. 断帧:完整行立即入模型;半行超过静默超时或超过单行上限也入模型
+            // 2. 断行:完整行立即入缓冲;半行超过静默超时或超过单行上限也入缓冲
             let frame_timeout = if ui.get_auto_frame() {
                 ui.get_frame_timeout().trim().parse::<u128>().unwrap_or(DEFAULT_FRAME_TIMEOUT_MS)
             } else {
-                u128::MAX // 关闭自动断帧:半行一直等到换行符或单行上限
+                u128::MAX // 关闭自动断行:半行一直等到换行符或单行上限
             };
             let mut pending = pending.borrow_mut();
-            let mut new_lines: Vec<SharedString> = Vec::new();
+            let mut new_lines: Vec<String> = Vec::new();
             while let Some(pos) = pending.find('\n') {
                 let line: String = pending.drain(..pos + 1).collect();
                 new_lines.push(line.trim_end_matches(['\r', '\n']).into());
             }
-            // 半行:静默超时切行;或长度超上限立即切(积压数据单块到达的场景)
             if !pending.is_empty() {
                 let idle = last_data.borrow().elapsed().as_millis() > frame_timeout;
                 let mut chars: Vec<char> = pending.chars().collect();
                 if chars.len() > MAX_LINE_CHARS {
                     let tail: String = chars.split_off(MAX_LINE_CHARS).into_iter().collect();
                     let line = std::mem::replace(&mut *pending, tail);
-                    new_lines.push(line.into());
+                    new_lines.push(line);
                 } else if idle {
-                    new_lines.push(std::mem::take(&mut *pending).into());
+                    new_lines.push(std::mem::take(&mut *pending));
                 }
             }
             drop(pending);
 
-            if !new_lines.is_empty() {
-                // 自动滚动判断要在插入前做:插入后再判断,viewport 高度已更新,永远"在底部"
-                let at_bottom = ui.get_log_viewport_y()
-                    >= -(ui.get_log_viewport_height() - ui.get_log_area_height()) - 4.0;
-                for l in new_lines {
-                    lines.push(l);
-                }
-                while lines.row_count() > MAX_LINES {
-                    lines.remove(0);
-                }
-                if at_bottom {
-                    let area = ui.get_log_area_height();
-                    let vh = ui.get_log_viewport_height();
-                    ui.set_log_viewport_y((-(vh - area)).min(0.0) as f32);
-                }
+            if new_lines.is_empty() {
+                return;
+            }
+            // 3. 追加到日志文本;超限按行丢最旧
+            let at_bottom = ui.get_log_viewport_y()
+                >= -(ui.get_log_viewport_height() - ui.get_log_area_height()) - 4.0;
+            let mut buf = log_buf.borrow_mut();
+            for l in new_lines {
+                buf.push_str(&l);
+                buf.push('\n');
+            }
+            if buf.len() > MAX_LOG_CHARS {
+                // 按字符边界 + 行边界截断到上限以内
+                let cut = buf.len() - MAX_LOG_CHARS;
+                let boundary = (cut..buf.len())
+                    .find(|i| buf.is_char_boundary(*i) && buf.as_bytes()[*i] == b'\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(buf.len());
+                buf.drain(..boundary);
+            }
+            ui.set_log_text(buf.clone().into());
+            drop(buf);
+            // 4. 自动滚底:仅在插入前就位于底部时跟随(用户上翻不被拉回)
+            if at_bottom {
+                let area = ui.get_log_area_height();
+                let vh = ui.get_log_viewport_height();
+                ui.set_log_viewport_y((-(vh - area)).min(0.0) as f32);
             }
         });
     }
@@ -235,41 +243,22 @@ fn main() -> anyhow::Result<()> {
     // 清空
     {
         let weak = app.as_weak();
-        let lines = lines.clone();
+        let log_buf = log_buf.clone();
         let pending = pending.clone();
         let last_status = last_status.clone();
         app.on_clear_clicked(move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_log_viewport_y(0.0);
+                ui.set_log_text("".into());
                 ui.set_status_text(last_status.borrow().clone());
             }
             pending.borrow_mut().clear();
-            while lines.row_count() > 0 {
-                lines.remove(0);
-            }
-        });
-    }
-
-    // 复制全部日志到剪贴板
-    {
-        let weak = app.as_weak();
-        let lines = lines.clone();
-        app.on_copy_log_clicked(move || {
-            let ui = weak.unwrap();
-            let n = lines.row_count();
-            let mut text = String::new();
-            for i in 0..n {
-                text.push_str(lines.row_data(i).unwrap_or_default().as_str());
-                text.push('\n');
-            }
-            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-                Ok(()) => ui.set_status_text(format!("● 已复制 {n} 行到剪贴板").into()),
-                Err(e) => ui.set_status_text(format!("● 复制失败: {e}").into()),
-            }
+            log_buf.borrow_mut().clear();
         });
     }
 
     app.run()?;
+
     // 应用退出:通知 worker 停止,等它清理完 DLL;超时强制退出,不留僵尸进程
     APP_SHUTDOWN.store(true, Ordering::Relaxed);
     let deadline = Instant::now() + Duration::from_secs(3);

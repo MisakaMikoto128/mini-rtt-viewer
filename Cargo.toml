@@ -15,7 +15,6 @@ slint = { version = "1", default-features = false, features = [
 ] }
 libloading = "0.8"
 anyhow = "1"
-arboard = "3"
 
 [build-dependencies]
 slint-build = "1"

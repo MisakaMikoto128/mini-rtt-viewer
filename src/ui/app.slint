@@ -1,10 +1,11 @@
 import { AppTheme } from "theme.slint";
-import { AppButton, FieldLabel, PanelSection } from "components.slint";
-import { LineEdit, ComboBox, ListView, ScrollView, CheckBox, Palette } from "std-widgets.slint";
+import { FieldLabel, PanelSection } from "components.slint";
+import { Button, LineEdit, ComboBox, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
 export { AppTheme }
 
 // 单页布局:左配置面板(280px) + 右侧日志区/发送区,复刻原 PySide6 监控页骨架。
+// 按钮统一用 std Button(点击/焦点/无障碍行为由官方维护,自定义 TouchArea 有点击丢失怪癖)。
 export component AppWindow inherits Window {
     title: "Mini RTT Viewer";
     preferred-width: 960px;
@@ -19,10 +20,11 @@ export component AppWindow inherits Window {
     in property <bool> connected: false;
     in property <bool> connecting: false;
     in property <string> status-text: "● 未连接";
-    in-out property <[string]> log-lines;
-    in-out property <length> log-viewport-y <=> log-view.viewport-y;
-    out property <length> log-viewport-height <=> log-view.viewport-height;
-    out property <length> log-area-height <=> log-view.height;
+    // 日志整段文本(只读 TextEdit:支持鼠标选中 + Ctrl+C 复制)
+    in-out property <string> log-text: "";
+    in-out property <length> log-viewport-y <=> log-scroll.viewport-y;
+    out property <length> log-viewport-height <=> log-scroll.viewport-height;
+    out property <length> log-area-height <=> log-scroll.height;
     // UI → Rust 输入
     in-out property <string> chip-name: "STM32F030C8";
     in-out property <int> iface-index: 0;      // 0=SWD 1=JTAG
@@ -30,13 +32,12 @@ export component AppWindow inherits Window {
     in-out property <int> channel: 0;
     in-out property <string> send-text: "";
     // 接收选项
-    in-out property <bool> auto-frame: true;         // 无换行符时按静默超时断帧
-    in-out property <string> frame-timeout: "100";   // 断帧超时 ms
+    in-out property <bool> auto-frame: true;         // 无换行符时按静默超时断行
+    in-out property <string> frame-timeout: "100";   // 断行超时 ms
 
     callback connect-clicked();
     callback disconnect-clicked();
     callback send-clicked();
-    callback copy-log-clicked();
 
     forward-focus: chip-input;
 
@@ -108,14 +109,14 @@ export component AppWindow inherits Window {
                                 }
                             }
                             // 连接中可点击"取消"(走 disconnect),避免连接卡住时无出路
-                            AppButton {
+                            Button {
                                 primary: true;
                                 text: root.connecting ? "连接中…" : "连接";
                                 enabled: !root.connecting && !root.connected;
                                 visible: !root.connected && !root.connecting;
                                 clicked => { root.connect-clicked(); }
                             }
-                            AppButton {
+                            Button {
                                 text: root.connecting ? "取消连接" : "断开";
                                 visible: root.connected || root.connecting;
                                 clicked => { root.disconnect-clicked(); }
@@ -126,44 +127,31 @@ export component AppWindow inherits Window {
                     // ---- 接收设置 ----
                     PanelSection {
                         title: "接收";
-                        content-height: 128px;
+                        content-height: 60px;
 
-                        VerticalLayout {
+                        HorizontalLayout {
                             spacing: 6px;
-                            HorizontalLayout {
-                                spacing: 6px;
-                                AppButton {
-                                    text: "清空";
-                                    clicked => { root.clear-clicked(); }
-                                }
-                                AppButton {
-                                    text: "复制全部";
-                                    clicked => { root.copy-log-clicked(); }
-                                }
+                            Button {
+                                text: "清空";
+                                clicked => { root.clear-clicked(); }
                             }
-                            HorizontalLayout {
-                                spacing: 6px;
-                                CheckBox {
-                                    text: "自动断帧";
-                                    checked <=> root.auto-frame;
-                                    enabled: true;
-                                }
-                                Rectangle { width: 1px; }
-                                LineEdit {
-                                    width: 56px;
-                                    height: AppTheme.ctrl-h;
-                                    text <=> root.frame-timeout;
-                                    enabled: root.auto-frame;
-                                    // 不用 input-type: number —— 其 UIA 缺 ValuePattern,
-                                    // 自动化/辅助技术读不到值;非法输入由 Rust 侧 parse 兜底
-                                }
-                                Text {
-                                    text: "ms";
-                                    color: AppTheme.text-muted;
-                                    font-size: 11px;
-                                    font-family: AppTheme.ui-font;
-                                    vertical-alignment: center;
-                                }
+                            CheckBox {
+                                text: "自动断行";
+                                checked <=> root.auto-frame;
+                                enabled: true;
+                            }
+                            LineEdit {
+                                width: 48px;
+                                height: AppTheme.ctrl-h;
+                                text <=> root.frame-timeout;
+                                enabled: root.auto-frame;
+                            }
+                            Text {
+                                text: "ms";
+                                color: AppTheme.text-muted;
+                                font-size: 11px;
+                                font-family: AppTheme.ui-font;
+                                vertical-alignment: center;
                             }
                         }
                     }
@@ -175,7 +163,7 @@ export component AppWindow inherits Window {
             padding: 10px;
             spacing: AppTheme.gap;
 
-            // 日志区:行式 ListView,虚拟化只渲染可见行,大量日志不卡 UI
+            // 日志区:只读 TextEdit,支持鼠标拖选 + Ctrl+C 复制
             Rectangle {
                 vertical-stretch: 1;
                 border-radius: AppTheme.radius;
@@ -184,25 +172,25 @@ export component AppWindow inherits Window {
                 border-color: AppTheme.border-color;
                 clip: true;
 
-                log-view := ListView {
+                log-scroll := ScrollView {
                     width: 100%;
                     height: 100%;
+                    viewport-height: log-edit.preferred-height + 16px;
 
-                    // 行委托:不透明背景盖住局部重绘残影;自动换行 + 高度自适应,长行不再横向溢出
-                    for line in root.log-lines: Rectangle {
-                        height: l.preferred-height + 2px;
-                        background: AppTheme.log-bg;
-
-                        l := Text {
-                            x: 8px;
-                            width: parent.width - 16px;
-                            y: 1px;
-                            text: line;
-                            color: AppTheme.log-fg;
-                            font-family: AppTheme.mono-font;
-                            font-size: AppTheme.log-font-size;
-                            wrap: word-wrap;
-                        }
+                    // 底层 TextInput(非 std TextEdit):颜色可控,同时保留鼠标拖选 + Ctrl+C
+                    log-edit := TextInput {
+                        x: 8px;
+                        y: 8px;
+                        width: parent.width - 16px;
+                        read-only: true;
+                        single-line: false;
+                        text <=> root.log-text;
+                        font-family: AppTheme.mono-font;
+                        font-size: AppTheme.log-font-size;
+                        wrap: word-wrap;
+                        color: AppTheme.log-fg;
+                        selection-background-color: AppTheme.accent;
+                        selection-foreground-color: white;
                     }
                 }
             }
@@ -226,7 +214,7 @@ export component AppWindow inherits Window {
                         accepted => { root.send-clicked(); }
                     }
                 }
-                AppButton {
+                Button {
                     width: 80px;
                     primary: true;
                     text: "发送";

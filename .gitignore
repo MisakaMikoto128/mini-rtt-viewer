@@ -4,5 +4,6 @@
 /targetfix
 /targetmeasure
 /targettestbuild
+/targetui
 /tools
 timing_*.log

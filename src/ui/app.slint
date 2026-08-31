@@ -58,6 +58,8 @@ export component AppWindow inherits Window {
     in-out property <int> send-ending: 0;
     // 字符集 0=UTF-8 1=GBK 2=UTF-16 LE 3=Latin-1 4=ASCII(与 rtt.rs ENCODINGS 顺序一致)
     in-out property <int> encoding-index: 0;
+    // HEX 接收:原始字节按十六进制显示(动态生效,一帧一行)
+    in-out property <bool> hex-rx: false;
     // 保持屏幕常亮(长时间挂机采集)
     in-out property <bool> keep-awake: false;
     // 定时发送:间隔(秒)+ 开关
@@ -424,14 +426,51 @@ export component AppWindow inherits Window {
                                 current-index <=> root.encoding-index;
                             }
                         }
-                        HorizontalLayout {
+                        CheckBox {
+                            text: "HEX 接收(原始字节十六进制,动态生效)";
+                            checked <=> root.hex-rx;
+                        }
+                    }
+
+                    // ---- 发送设置 ----
+                    PanelSection {
+                        title: "发送";
+
+                        VerticalLayout {
                             spacing: 6px;
-                            FieldLabel { text: "发送行尾"; vertical-alignment: center; }
-                            ComboBox {
-                                width: 118px;
-                                height: AppTheme.ctrl-h;
-                                model: ["CRLF (\\r\\n)", "LF (\\n)", "CR (\\r)", "无"];
-                                current-index <=> root.send-ending;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                FieldLabel { text: "发送行尾"; vertical-alignment: center; }
+                                ComboBox {
+                                    width: 118px;
+                                    height: AppTheme.ctrl-h;
+                                    model: ["CRLF (\\r\\n)", "LF (\\n)", "CR (\\r)", "无"];
+                                    current-index <=> root.send-ending;
+                                }
+                            }
+                            CheckBox {
+                                text: "HEX 发送(输入按十六进制字节)";
+                                checked <=> root.hex-send;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                CheckBox {
+                                    text: "定时发送";
+                                    checked <=> root.timer-send;
+                                }
+                                LineEdit {
+                                    width: 64px;
+                                    height: AppTheme.ctrl-h;
+                                    text <=> root.timer-interval;
+                                    enabled: root.timer-send;
+                                }
+                                Text {
+                                    text: "s";
+                                    color: AppTheme.text-muted;
+                                    font-size: 10px;
+                                    font-family: AppTheme.ui-font;
+                                    vertical-alignment: center;
+                                }
                             }
                         }
                     }
@@ -490,37 +529,11 @@ export component AppWindow inherits Window {
                 auto-scroll <=> root.auto-scroll;
             }
 
-            // 定时发送行:连接中按间隔循环发送当前输入(未连接时挂起)
-            HorizontalLayout {
-                spacing: 8px;
-                CheckBox {
-                    text: "定时发送";
-                    checked <=> root.timer-send;
-                }
-                LineEdit {
-                    width: 64px;
-                    height: AppTheme.ctrl-h;
-                    text <=> root.timer-interval;
-                    enabled: root.timer-send;
-                }
-                Text {
-                    text: "s · 按间隔循环发送当前输入";
-                    color: AppTheme.text-muted;
-                    font-size: 10px;
-                    font-family: AppTheme.ui-font;
-                    vertical-alignment: center;
-                }
-            }
-
             // 发送区
             HorizontalLayout {
                 spacing: AppTheme.gap;
                 height: 64px;
 
-                CheckBox {
-                    text: "HEX";
-                    checked <=> root.hex-send;
-                }
                 send-input := LineEdit {
                     placeholder-text: root.hex-send
                         ? "HEX 字节,如 41 42 43 / 0x4142(Enter 发送)"

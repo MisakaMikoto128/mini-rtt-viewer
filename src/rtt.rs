@@ -76,6 +76,9 @@ pub struct WorkerConfig {
     /// 字符集下拉索引(ENCODINGS 下标)共享变量,UI 侧运行时可改——读循环每块
     /// 检测变化并热重建解码器,切换**动态生效**(无需重连)
     pub encoding_index: Arc<AtomicU32>,
+    /// HEX 接收模式共享变量:开启后原始字节直接转十六进制文本(跳过字符集解码,
+    /// 切换动态生效;行语义退化为断帧——一帧一行 hex)
+    pub hex_rx: Arc<AtomicBool>,
 }
 
 /// 字符集下拉表:**与 app.slint 的「字符集」ComboBox 顺序严格一致**。
@@ -265,13 +268,15 @@ fn rtt_read_loop(
     cmd_rx: &mpsc::Receiver<WorkerCmd>,
     stop: &AtomicBool,
 ) {
-    let WorkerConfig { channel, frame_timeout_ms, encoding_index, .. } = config;
+    let WorkerConfig { channel, frame_timeout_ms, encoding_index, hex_rx, .. } = config;
 
     let mut buf = [0u8; 4096];
     // 按用户选定字符集增量解码:跨读块的多字节边界(emoji 4 字节/GBK 2 字节
     // 被块切断)由 decoder 内部管理
     let mut current_enc = encoding_index.load(Ordering::Relaxed);
     let mut decoder = CharsetDecoder::for_label(enc_label(current_enc));
+    // HEX 接收开关(切换时发横幅提示)
+    let mut current_hex = hex_rx.load(Ordering::Relaxed);
     // 帧边界判定(在 worker 用真实时间戳,不受 UI 刷新粒度影响):
     // 相邻两次数据到达的间隔超过断帧超时 → 上一帧结束(FrameEnd)
     let mut last_rx = Instant::now();
@@ -299,8 +304,27 @@ fn rtt_read_loop(
                         .unwrap_or("UTF-8")
                 )));
             }
-            // ANSI 转义序列原样透传,由 UI 端 vte 解析着色(本层不再剥掉)
-            let text = decoder.decode(&buf[..n as usize]);
+            // HEX 接收动态生效:切换时发横幅
+            let want_hex = hex_rx.load(Ordering::Relaxed);
+            if want_hex != current_hex {
+                current_hex = want_hex;
+                let _ = tx.send(WorkerMsg::Log(format!(
+                    "[HEX 接收 {}]\r\n",
+                    if current_hex { "开" } else { "关" }
+                )));
+            }
+            // ANSI 转义序列原样透传,由 UI 端 vte 解析着色(本层不再剥掉);
+            // HEX 接收模式:原始字节直接转十六进制文本(跳过字符集解码保真),
+            // 行语义退化为断帧——一帧一行 hex
+            let text = if current_hex {
+                let mut s = String::with_capacity(n as usize * 3);
+                for b in &buf[..n as usize] {
+                    s.push_str(&format!("{b:02X} "));
+                }
+                s
+            } else {
+                decoder.decode(&buf[..n as usize])
+            };
             let _ = tx.send(WorkerMsg::Block(text));
             frame_open = true;
             last_rx = now;

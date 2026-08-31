@@ -11,7 +11,7 @@ use mini_rtt_viewer::{device_db, demo, single_instance, AppTheme, AppWindow, Inf
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -217,6 +217,8 @@ struct Ctx {
     frame_timeout_ms: Arc<AtomicU32>,
     /// 字符集下拉索引共享变量:UI 改 → worker 读循环实时检测并热重建解码器
     encoding_index: Arc<AtomicU32>,
+    /// HEX 接收开关共享变量:UI 改 → worker 每块实时切换(原始字节转 hex)
+    hex_rx: Arc<AtomicBool>,
     /// 设备库全量名单(后台枚举/磁盘缓存回传),筛选下拉按输入重建
     device_names: Rc<RefCell<Vec<SharedString>>>,
     /// 本机接入的 J-Link (序列号, 显示名);下拉选中项在连接时换算成 selected_sn
@@ -255,6 +257,8 @@ impl Ctx {
         // 字符集动态生效:UI 下拉 → 共享变量(worker 每块检测变化热切换)
         self.encoding_index
             .store(ui.get_encoding_index().clamp(0, ENCODINGS.len() as i32 - 1) as u32, Ordering::Relaxed);
+        // HEX 接收动态生效
+        self.hex_rx.store(ui.get_hex_rx(), Ordering::Relaxed);
         // 接收行尾:0=自动 1=CRLF 2=LF 3=CR 4=无
         let rx_ending = ui.get_rx_ending();
         let mut pump = self.pump.borrow_mut();
@@ -397,6 +401,7 @@ impl Ctx {
             frame_timeout: ui.get_frame_timeout().to_string(),
             auto_scroll: ui.get_auto_scroll(),
             hex_send: ui.get_hex_send(),
+            hex_rx: ui.get_hex_rx(),
             encoding_index: ui.get_encoding_index(),
             log_font_px: font_px,
             info_expanded: ui.get_info_expanded(),
@@ -501,6 +506,7 @@ impl Ctx {
                 frame_timeout_ms: self.frame_timeout_ms.clone(),
                 selected_sn,
                 encoding_index: self.encoding_index.clone(),
+                hex_rx: self.hex_rx.clone(),
             },
             self.msg_tx.clone(),
             rx,
@@ -719,6 +725,8 @@ fn main() -> anyhow::Result<()> {
     let frame_timeout_ms = Arc::new(AtomicU32::new(DEFAULT_FRAME_TIMEOUT_MS));
     // 字符集共享变量(初始 0=UTF-8;配置恢复段按保存值 store)
     let encoding_index = Arc::new(AtomicU32::new(0));
+    // HEX 接收共享变量(初始关;配置恢复段按保存值 store)
+    let hex_rx = Arc::new(AtomicBool::new(false));
     let ctx = Rc::new(Ctx {
         pump: Rc::new(RefCell::new(LogPump::default())),
         worker: Rc::new(RefCell::new(None)),
@@ -738,6 +746,7 @@ fn main() -> anyhow::Result<()> {
         draft: RefCell::new(String::new()),
         last_timer_send: RefCell::new(Instant::now()),
         encoding_index,
+        hex_rx,
     });
     app.set_log_rows(ModelRc::from(ctx.log_rows.clone()));
 
@@ -757,6 +766,7 @@ fn main() -> anyhow::Result<()> {
     app.set_frame_timeout(saved.frame_timeout.clone().into());
     app.set_auto_scroll(saved.auto_scroll);
     app.set_hex_send(saved.hex_send);
+    app.set_hex_rx(saved.hex_rx);
     app.set_encoding_index(saved.encoding_index.clamp(0, ENCODINGS.len() as i32 - 1));
     app.set_info_expanded(saved.info_expanded);
     // 字号 9-30 之外的值视为坏值,不恢复(UI 端按钮本身也夹在这个范围)
@@ -768,6 +778,7 @@ fn main() -> anyhow::Result<()> {
         saved.encoding_index.clamp(0, ENCODINGS.len() as i32 - 1) as u32,
         Ordering::Relaxed,
     );
+    ctx.hex_rx.store(saved.hex_rx, Ordering::Relaxed);
     // 发送历史 / 定时发送 / 屏幕常亮 / 窗口几何
     *ctx.send_history.borrow_mut() = saved.send_history.clone();
     app.set_timer_send(saved.timer_send);

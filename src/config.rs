@@ -35,6 +35,8 @@ pub struct StoredPrefs {
     pub auto_scroll: bool,
     /// HEX 发送模式
     pub hex_send: bool,
+    /// HEX 接收模式(原始字节十六进制显示)
+    pub hex_rx: bool,
     /// 字符集下拉索引(0=UTF-8 1=GBK 2=UTF-16 LE 3=Latin-1 4=ASCII)
     pub encoding_index: i32,
     /// 日志字号(px;9-30 之外视为坏值不恢复)
@@ -70,6 +72,7 @@ impl Default for StoredPrefs {
             frame_timeout: "20".into(),
             auto_scroll: true,
             hex_send: false,
+            hex_rx: false,
             encoding_index: 0,
             log_font_px: 13,
             info_expanded: false,
@@ -154,6 +157,7 @@ mod tests {
             frame_timeout: "55".into(),
             auto_scroll: false,
             hex_send: true,
+            hex_rx: true,
             encoding_index: 1,
             log_font_px: 16,
             info_expanded: true,

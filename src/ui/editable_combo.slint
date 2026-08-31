@@ -22,6 +22,16 @@ export component EditableCombo inherits Rectangle {
         // 选中候选 → 回填输入框(current-value 被 LineEdit 盖住,无视觉冲突)
         selected(value) => { root.text = value; }
     }
+    // 不透明遮罩:盖住 ComboBox 自己渲染的文字(LineEdit 深色底 70% 半透明,
+    // 不遮会两层文字叠影显粗);留出右侧 32px 原生箭头与 1px 描边
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 33px;
+        height: parent.height - 2px;
+        background: AppTheme.input-bg;
+        visible: root.enabled;
+    }
     LineEdit {
         x: 0;
         y: 0;

@@ -182,6 +182,12 @@ export component AppWindow inherits Window {
             wheel := TouchArea {
                 width: 100%;
                 height: 100%;
+                pointer-event(e) => {
+                    // 点面板空白收走焦点,清掉 ComboBox 残留的焦点环
+                    if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                        keys.focus();
+                    }
+                }
                 scroll-event(e) => {
                     panel-rect.panel-offset =
                         clamp(panel-rect.panel-offset - e.delta-y, 0px, panel-rect.panel-max);
@@ -624,6 +630,8 @@ export component AppWindow inherits Window {
                 sel-b-row <=> root.sel-b-row;
                 sel-b-col <=> root.sel-b-col;
                 copy-request => { root.copy-selected(); }
+                // 点日志区收走焦点:ComboBox 的焦点环随焦点转移消失
+                focus-request => { keys.focus(); }
             }
 
             // 发送区

@@ -609,11 +609,37 @@ impl Ctx {
             return;
         }
         // chip 名去首尾空白;空名直接拒绝(空设备名会让 J-Link DLL 沿用上一次设备,行为不可预期)
-        let chip = ui.get_chip_name().trim().to_string();
-        if chip.is_empty() {
+        let chip_raw = ui.get_chip_name().trim().to_string();
+        if chip_raw.is_empty() {
             ui.set_status_text("● 请先填写目标芯片型号".into());
             return;
         }
+        // 设备名自动补全:输入不是库内精确型号时,取筛选候选的第一个全称
+        // (用户输 "STM32G474V" → 连接 "STM32G474VE…" 首个匹配;残缺型号会让
+        // DLL 弹设备选择框)。无任何候选 = 库里没有,拒绝连接并提示
+        let full = self.device_names.borrow();
+        let exact = full.iter().any(|n| n.as_str().eq_ignore_ascii_case(&chip_raw));
+        let chip: String = if exact {
+            drop(full);
+            chip_raw
+        } else {
+            let needle = chip_raw.to_uppercase();
+            let found = full
+                .iter()
+                .find(|s| s.as_str().to_uppercase().contains(&needle))
+                .map(|s| s.to_string());
+            drop(full);
+            match found {
+                Some(c) => {
+                    ui.set_chip_name(c.clone().into());
+                    c
+                }
+                None => {
+                    ui.set_status_text(format!("● 设备库无匹配型号:{chip_raw}").into());
+                    return;
+                }
+            }
+        };
         ui.set_connecting(true);
         ui.set_status_text("● 连接中…".into());
         // 多台 J-Link:把下拉选中的序列号交给 worker(Open 前选定);未选中/空列表 = 自动

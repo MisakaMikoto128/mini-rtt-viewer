@@ -35,6 +35,8 @@ export component LogView inherits Rectangle {
     in-out property <int> sel-b-col: -1;
     // 拖选松手自动复制 / 右键菜单"复制"请求( Rust 侧同一处理器)
     callback copy-request();
+    // 指针按下(点击日志区)→ 宿主把焦点收走,清掉 ComboBox 残留的焦点环
+    callback focus-request();
     // 右键菜单位置(LogView 坐标)
     private property <length> menu-x: 0px;
     private property <length> menu-y: 0px;
@@ -120,6 +122,7 @@ export component LogView inherits Rectangle {
         property <bool> dragging: false;
         pointer-event(e) => {
             if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                root.focus-request();
                 root.sel-a-row = root.row-at-y(self.mouse-y);
                 root.sel-a-col = root.col-at-x(self.mouse-x);
                 root.sel-b-row = root.sel-a-row;

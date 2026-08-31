@@ -67,9 +67,13 @@ export component AppWindow inherits Window {
     in property <bool> search-error: false;
     in property <int> search-highlight-row: -1;
     in property <int> search-jump-row: -1;
-    // 日志行级选中(LogView 镜像,Rust Ctrl+C 读取)
-    in-out property <int> sel-start: -1;
-    in-out property <int> sel-end: -1;
+    // 日志列级选中(LogView 镜像,Rust Ctrl+C 读取;行+显示列,-1 = 无)
+    in-out property <int> sel-a-row: -1;
+    in-out property <int> sel-a-col: -1;
+    in-out property <int> sel-b-row: -1;
+    in-out property <int> sel-b-col: -1;
+    // 每行换行列数(LogView 等宽探针测出;0 = 未测出,不换行)
+    in property <int> wrap-columns: log-view.columns;
     // 保持屏幕常亮(长时间挂机采集)
     in-out property <bool> keep-awake: false;
     // 定时发送:间隔(秒)+ 开关
@@ -609,8 +613,10 @@ export component AppWindow inherits Window {
                 auto-scroll <=> root.auto-scroll;
                 highlight-row: root.search-highlight-row;
                 jump-row: root.search-jump-row;
-                sel-start <=> root.sel-start;
-                sel-end <=> root.sel-end;
+                sel-a-row <=> root.sel-a-row;
+                sel-a-col <=> root.sel-a-col;
+                sel-b-row <=> root.sel-b-row;
+                sel-b-col <=> root.sel-b-col;
             }
 
             // 发送区

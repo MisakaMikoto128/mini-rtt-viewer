@@ -303,6 +303,8 @@ struct Ctx {
     last_timer_send: RefCell<Instant>,
     /// 正则搜索状态
     search: RefCell<SearchState>,
+    /// 上次换行重排时刻(节流)
+    last_rewrap: RefCell<Instant>,
 }
 
 impl Ctx {
@@ -459,6 +461,44 @@ impl Ctx {
         if need {
             self.search_run(ui);
         }
+        // 8. 换行列数:LogView 等宽探针测出,变化时全量重排 + 整体刷新
+        //    (250ms 节流;拖拽窗口宽度时连续触发也只按节流频率重排)
+        let cols = ui.get_wrap_columns();
+        if cols > 0 && self.last_rewrap.borrow().elapsed() >= Duration::from_millis(250) {
+            let changed = self.pump.borrow_mut().set_wrap_cols(cols as usize);
+            if changed {
+                *self.last_rewrap.borrow_mut() = Instant::now();
+                self.refresh_all_rows(ui);
+                ui.set_sel_a_row(-1);
+                ui.set_sel_a_col(-1);
+                ui.set_sel_b_row(-1);
+                ui.set_sel_b_col(-1);
+                self.search.borrow_mut().dirty = true;
+            }
+        }
+    }
+
+    /// 全量刷新 UI 行模型(重排后调用;行数同步搜索/统计)
+    fn refresh_all_rows(&self, ui: &AppWindow) {
+        let default_fg = ui.global::<AppTheme>().get_log_fg();
+        let snapshot = self.pump.borrow().snapshot_rows();
+        let mut fresh: Vec<LogRow> = Vec::with_capacity(snapshot.len());
+        for runs in snapshot {
+            let spans: Vec<LogRun> = runs
+                .into_iter()
+                .map(|r| LogRun {
+                    text: r.text.into(),
+                    color: r
+                        .fg
+                        .map(|(r8, g8, b8)| slint::Color::from_rgb_u8(r8, g8, b8))
+                        .unwrap_or(default_fg),
+                })
+                .collect();
+            fresh.push(LogRow { runs: ModelRc::new(VecModel::from(spans)) });
+        }
+        let n = fresh.len();
+        self.log_rows.set_vec(fresh);
+        ui.set_log_row_count(n as i32);
     }
 
     /// 从 UI 收集当前偏好快照(自动保存与退出落盘共用)
@@ -838,28 +878,53 @@ impl Ctx {
     }
 
     /// 清空:行模型清空 + 状态栏恢复(不退化为无参数的"已连接")
-    /// 复制日志选中行(Ctrl+C;行级选中,拼接各段纯文本)
+    /// 复制日志选中(Ctrl+C;列级:行+显示列,宽度列切文本,CJK 记 2 列)
     fn copy_selected(&self, ui: &AppWindow) {
-        let (a, b) = (ui.get_sel_start(), ui.get_sel_end());
-        if a < 0 || b < 0 {
+        let (ar, ac, br, bc) =
+            (ui.get_sel_a_row(), ui.get_sel_a_col(), ui.get_sel_b_row(), ui.get_sel_b_col());
+        if ar < 0 || br < 0 {
             return;
         }
-        let (lo, hi) = (a.min(b) as usize, a.max(b) as usize);
+        // 归一化:字典序 (row, col)
+        let ((lo_r, lo_c), (hi_r, hi_c)) = if (ar, ac) <= (br, bc) {
+            ((ar as usize, ac as usize), (br as usize, bc as usize))
+        } else {
+            ((br as usize, bc as usize), (ar as usize, ac as usize))
+        };
         let mut text = String::new();
-        for i in lo..=hi {
+        for i in lo_r..=hi_r {
             let Some(row) = self.log_rows.row_data(i) else { continue };
+            // 该行截取列区间:首行从 lo_c 起,尾行到 hi_c 止(含),中间整行
+            let start_col = if i == lo_r { lo_c } else { 0 };
+            let end_col = if i == hi_r { hi_c.saturating_add(1) } else { usize::MAX };
+            // 按显示宽度列从带色段提取纯文本
+            let mut col = 0usize;
+            let mut line = String::new();
             for j in 0..row.runs.row_count() {
-                if let Some(seg) = row.runs.row_data(j) {
-                    text.push_str(&seg.text);
+                let Some(seg) = row.runs.row_data(j) else { continue };
+                for ch in seg.text.chars() {
+                    let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+                    if col + w > end_col {
+                        break;
+                    }
+                    if col >= start_col {
+                        line.push(ch);
+                    }
+                    col += w;
+                }
+                if col > end_col {
+                    break;
                 }
             }
+            text.push_str(&line);
             text.push_str("\r\n");
         }
         if text.is_empty() {
             return;
         }
+        let lines = hi_r - lo_r + 1;
         ui.set_status_text(if set_clipboard_text(&text) {
-            format!("● 已复制 {} 行", hi - lo + 1).into()
+            format!("● 已复制 {lines} 行").into()
         } else {
             "● 复制失败(剪贴板被占用)".into()
         });
@@ -870,8 +935,10 @@ impl Ctx {
         ui.set_log_row_count(0);
         ui.set_status_text(self.last_status.borrow().clone());
         self.pump.borrow_mut().clear();
-        ui.set_sel_start(-1);
-        ui.set_sel_end(-1);
+        ui.set_sel_a_row(-1);
+        ui.set_sel_a_col(-1);
+        ui.set_sel_b_row(-1);
+        ui.set_sel_b_col(-1);
     }
 
     /// 暂停/继续接收:暂停期间 worker 读到的新数据直接丢弃(不进日志、不占缓冲)
@@ -955,6 +1022,7 @@ fn main() -> anyhow::Result<()> {
         draft: RefCell::new(String::new()),
         last_timer_send: RefCell::new(Instant::now()),
         search: RefCell::default(),
+        last_rewrap: RefCell::new(Instant::now() - Duration::from_millis(1000)),
         encoding_index,
         hex_rx,
     });

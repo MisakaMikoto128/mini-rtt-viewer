@@ -7,6 +7,41 @@
 //!    (ListView 虚拟化,只渲染可见行,长日志不再全量重排)
 
 use crate::ansi::{AnsiLines, Run};
+use unicode_width::UnicodeWidthChar;
+
+/// 按显示宽度把一行(带色段)硬切成多行:每段切到 cols 列为止,续行继承
+/// 当前颜色状态。切分单位是**显示列**(ASCII/半角 1 列,CJK/全角 2 列)——
+/// 与等宽字体渲染宽度对齐,UI 按列数换算像素即可。
+fn wrap_runs(runs: &[Run], cols: usize) -> Vec<Vec<Run>> {
+    let mut out: Vec<Vec<Run>> = Vec::new();
+    let mut cur: Vec<Run> = Vec::new();
+    let mut cur_w: usize = 0;
+    for run in runs {
+        let mut seg = String::new();
+        for ch in run.text.chars() {
+            // 控制字符宽度按 0 处理会卡死切分循环,兜底按 1 列
+            let w = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+            if cur_w + w > cols && cur_w > 0 {
+                cur.push(Run { text: std::mem::take(&mut seg), fg: run.fg });
+                out.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            seg.push(ch);
+            cur_w += w;
+        }
+        if !seg.is_empty() {
+            cur.push(Run { text: seg, fg: run.fg });
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        // 空行保留(纯 \n 场景)
+        out.push(vec![Run { text: String::new(), fg: runs.first().and_then(|r| r.fg) }]);
+    }
+    out
+}
 
 /// UI 刷新周期:决定消息从到达(队列)到上屏的额外延迟。过大(如 200ms)会把
 /// 均匀到达的多条消息攒成一批同时冒出来,视觉上"两条一次"。10ms 粒度下
@@ -53,6 +88,8 @@ pub struct LogPump {
     ansi: AnsiLines,
     /// 暂停接收:置位后新数据直接丢弃(不进日志、不占缓冲)
     pub paused: bool,
+    /// 换行列数(等宽显示列,CJK 记 2 列;0 = 不换行)。变更时全量重排
+    wrap_cols: usize,
 }
 
 impl LogPump {
@@ -102,6 +139,10 @@ impl LogPump {
         for l in self.new_lines.drain(..) {
             fresh.push(self.ansi.feed_line(&l));
         }
+        // 按当前列数硬换行(0 = 不换行):每行仍是单视觉行,UI 滚动数学不变
+        if self.wrap_cols > 0 {
+            fresh = fresh.iter().flat_map(|r| wrap_runs(r, self.wrap_cols)).collect();
+        }
         self.rows.extend(fresh.iter().cloned());
         if self.rows.len() > MAX_LOG_ROWS {
             let drop = self.rows.len() - MAX_LOG_ROWS;
@@ -115,6 +156,25 @@ impl LogPump {
     /// 否则行模型无限增长)。每次调用后归零。
     pub fn take_dropped(&mut self) -> usize {
         std::mem::take(&mut self.dropped)
+    }
+
+    /// 设置换行列数(0 = 不换行)。变更时全量重排既有行,返回 true 表示
+    /// 行集已变(调用方需全量刷新 UI 行模型)。
+    pub fn set_wrap_cols(&mut self, cols: usize) -> bool {
+        let cols = cols.min(512); // 荒谬大列数等同不换行,防 resize 抖动出天文数字
+        if cols == self.wrap_cols {
+            return false;
+        }
+        self.wrap_cols = cols;
+        if cols > 0 {
+            self.rows = self.rows.iter().flat_map(|r| wrap_runs(r, cols)).collect();
+        }
+        true
+    }
+
+    /// 全量行快照(重排后整体刷新 UI 行模型用)
+    pub fn snapshot_rows(&self) -> Vec<Vec<Run>> {
+        self.rows.clone()
     }
 
     /// 测试专用:内部保留行数(裁剪断言用;仅 lib 测试编译)
@@ -330,5 +390,63 @@ mod tests {
         assert!(pump.take_new_rows().is_some()); // 暂停只丢数据,不丢标记
         pump.clear();
         assert!(pump.take_new_rows().is_none());
+    }
+
+    fn joined(runs: &[Run]) -> String {
+        runs.iter().map(|r| r.text.clone()).collect()
+    }
+
+    #[test]
+    fn wrap_runs_splits_ascii_by_columns() {
+        let runs = vec![Run { text: "abcdefghij".into(), fg: None }];
+        let out = wrap_runs(&runs, 4);
+        assert_eq!(out.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["abcd", "efgh", "ij"]);
+    }
+
+    #[test]
+    fn wrap_runs_counts_cjk_as_two_columns() {
+        // "你好啊" 每字 2 列:4 列宽 → "你好" | "啊"
+        let runs = vec![Run { text: "你好啊".into(), fg: None }];
+        let out = wrap_runs(&runs, 4);
+        assert_eq!(out.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["你好", "啊"]);
+    }
+
+    #[test]
+    fn wrap_runs_carries_color_into_continuation() {
+        // 红色长行切两段:续行仍为红色
+        let runs = vec![Run { text: "abcdef".into(), fg: Some((0xcc, 0x33, 0x44)) }];
+        let out = wrap_runs(&runs, 3);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1][0].fg, Some((0xcc, 0x33, 0x44)));
+    }
+
+    #[test]
+    fn wrap_runs_keeps_empty_line() {
+        let out = wrap_runs(&[], 10);
+        assert_eq!(out.len(), 1);
+        assert_eq!(joined(&out[0]), "");
+    }
+
+    #[test]
+    fn pump_rewrap_reflows_all_rows() {
+        let mut pump = LogPump::default();
+        pump.absorb_text("abcdefghij\n", 0);
+        pump.enforce_line_cap();
+        assert!(pump.take_new_rows().is_some());
+        assert!(pump.set_wrap_cols(4)); // 行集已变
+        let rows = pump.snapshot_rows();
+        assert_eq!(rows.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["abcd", "efgh", "ij"]);
+        assert!(!pump.set_wrap_cols(4)); // 同值不重排
+        assert!(pump.set_wrap_cols(0)); // 关闭换行不重排既有行(增量按新行生效)
+    }
+
+    #[test]
+    fn pump_wraps_new_lines_at_current_cols() {
+        let mut pump = LogPump::default();
+        pump.set_wrap_cols(4);
+        pump.absorb_text("abcdefghij\n", 0);
+        pump.enforce_line_cap();
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["abcd", "efgh", "ij"]);
     }
 }

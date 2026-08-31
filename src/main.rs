@@ -200,11 +200,6 @@ impl Default for Stats {
     }
 }
 
-/// 默认日志前景色(Run.fg == None 时用)
-fn log_default_fg() -> slint::Color {
-    slint::Color::from_rgb_u8(0xdd, 0xdd, 0xdd)
-}
-
 /// UI 侧全部共享状态。回调闭包与 timer 只克隆这一个 Rc;
 /// 方法即业务规则,main() 不出现任何 if 业务判断。
 struct Ctx {
@@ -334,6 +329,8 @@ impl Ctx {
             self.log_rows.remove(0);
         }
         if let Some(rows) = pump.take_new_rows() {
+            // 无色段兜底前景读主题 token(浅色模式下跟随变深,不硬编码)
+            let default_fg = ui.global::<AppTheme>().get_log_fg();
             for runs in rows {
                 let spans: Vec<LogRun> = runs
                     .into_iter()
@@ -342,7 +339,7 @@ impl Ctx {
                         color: r
                             .fg
                             .map(|(r8, g8, b8)| slint::Color::from_rgb_u8(r8, g8, b8))
-                            .unwrap_or_else(log_default_fg),
+                            .unwrap_or(default_fg),
                     })
                     .collect();
                 self.log_rows.push(LogRow { runs: ModelRc::new(VecModel::from(spans)) });
@@ -402,6 +399,7 @@ impl Ctx {
             auto_scroll: ui.get_auto_scroll(),
             hex_send: ui.get_hex_send(),
             hex_rx: ui.get_hex_rx(),
+            dark_theme: ui.global::<AppTheme>().get_dark(),
             encoding_index: ui.get_encoding_index(),
             log_font_px: font_px,
             info_expanded: ui.get_info_expanded(),
@@ -773,6 +771,8 @@ fn main() -> anyhow::Result<()> {
     if (9..=30).contains(&saved.log_font_px) {
         app.global::<AppTheme>().set_log_font_size(saved.log_font_px as f32);
     }
+    // 主题:恢复深/浅(Palette 同步由 UI 的 changed checked 链自动完成)
+    app.global::<AppTheme>().set_dark(saved.dark_theme);
     *ctx.preferred_jlink.borrow_mut() = saved.jlink_serial;
     ctx.encoding_index.store(
         saved.encoding_index.clamp(0, ENCODINGS.len() as i32 - 1) as u32,

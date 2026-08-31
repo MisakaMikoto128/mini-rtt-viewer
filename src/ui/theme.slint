@@ -1,33 +1,37 @@
 // 设计令牌唯一真源:所有组件从这里取值,不散落硬编码颜色。
+// dark 开关一键切换深/浅色:每个 token 一行三元绑定,Slint 响应式自动全 UI 重绘。
 export global AppTheme {
-    // 强调色(沿用原项目 #28afe9)
+    // 深色模式开关(持久化在 prefs.dark_theme;Rust 启动恢复后调 apply-color-scheme)
+    in-out property <bool> dark: true;
+
+    // 强调色(沿用原项目 #28afe9,深浅通用)
     out property <color> accent: #28afe9;
     out property <color> accent-hover: #4fc1f5;
     out property <color> accent-press: #1c8cc4;
 
     // 背景层级
-    out property <color> app-bg: #1b1b1f;
-    out property <color> panel-bg: #222228;
-    out property <color> card-bg: #2a2a31;
-    out property <color> hover-bg: #34343c;
-    out property <color> input-bg: #26262c;
+    out property <color> app-bg: dark ? #1b1b1f : #f2f3f5;
+    out property <color> panel-bg: dark ? #222228 : #ffffff;
+    out property <color> card-bg: dark ? #2a2a31 : #eceef1;
+    out property <color> hover-bg: dark ? #34343c : #dfe2e7;
+    out property <color> input-bg: dark ? #26262c : #ffffff;
 
-    // 日志区(沿用原项目 #222222 底 / #dddddd 字)
-    out property <color> log-bg: #222222;
-    out property <color> log-fg: #dddddd;
+    // 日志区(深色沿用原项目 #222222 底 / #dddddd 字;浅色反转)
+    out property <color> log-bg: dark ? #222222 : #ffffff;
+    out property <color> log-fg: dark ? #dddddd : #222222;
 
     // 文本
-    out property <color> text-primary: #e8e8ea;
-    out property <color> text-secondary: #a0a0a8;
-    out property <color> text-muted: #6a6a72;
+    out property <color> text-primary: dark ? #e8e8ea : #1a1a1e;
+    out property <color> text-secondary: dark ? #a0a0a8 : #55555e;
+    out property <color> text-muted: dark ? #6a6a72 : #8a8a94;
 
     // 描边
-    out property <color> border-color: #3a3a42;
+    out property <color> border-color: dark ? #3a3a42 : #d0d3d9;
 
-    // 状态色
+    // 状态色(深浅通用;橙在浅底稍加深保可读)
     out property <color> ok-green: #2e7d32;
-    out property <color> warn-orange: #ff8c00;
-    out property <color> err-red: #cc4455;
+    out property <color> warn-orange: dark ? #ff8c00 : #d97706;
+    out property <color> err-red: dark ? #cc4455 : #cc3344;
 
     // 尺寸
     out property <length> ctrl-h: 33px;

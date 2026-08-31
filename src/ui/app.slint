@@ -87,7 +87,12 @@ export component AppWindow inherits Window {
     callback power-toggled(bool);
 
     init => {
-        Palette.color-scheme = ColorScheme.dark;
+        root.apply-color-scheme();
+    }
+
+    // std 组件配色跟随主题开关(Rust 启动恢复 dark 后也调此函数保持同步)
+    public function apply-color-scheme() {
+        Palette.color-scheme = AppTheme.dark ? ColorScheme.dark : ColorScheme.light;
     }
 
     // 全局快捷键:外层 FocusScope 包围持有焦点的子元素时也能收键——
@@ -160,6 +165,15 @@ export component AppWindow inherits Window {
                 padding: 10px;
                 padding-right: 16px;
                 spacing: AppTheme.gap;
+
+                    // ---- 外观 ----
+                    CheckBox {
+                        text: "深色模式";
+                        checked <=> AppTheme.dark;
+                        // changed(而非 toggled):Rust 启动恢复 set_dark 的变化也会
+                        // 触发,Palette(std 组件配色)与主题开关始终同步
+                        changed checked => { root.apply-color-scheme(); }
+                    }
 
                     // ---- 连接设置 ----
                     PanelSection {

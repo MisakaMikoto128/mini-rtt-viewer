@@ -617,6 +617,7 @@ export component AppWindow inherits Window {
                 sel-a-col <=> root.sel-a-col;
                 sel-b-row <=> root.sel-b-row;
                 sel-b-col <=> root.sel-b-col;
+                copy-request => { root.copy-selected(); }
             }
 
             // 发送区

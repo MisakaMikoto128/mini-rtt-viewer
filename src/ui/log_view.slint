@@ -30,6 +30,11 @@ export component LogView inherits Rectangle {
     in-out property <int> sel-a-col: -1;
     in-out property <int> sel-b-row: -1;
     in-out property <int> sel-b-col: -1;
+    // 拖选松手自动复制 / 右键菜单"复制"请求( Rust 侧同一处理器)
+    callback copy-request();
+    // 右键菜单位置(LogView 坐标)
+    private property <length> menu-x: 0px;
+    private property <length> menu-y: 0px;
     // 每行渲染列数(等宽字符单元换算,Rust 侧换行用;0 = 尚未测出)
     out property <int> columns: cell-w > 0px ? max(1, floor((self.width - 16px) / cell-w)) : 0;
     // 等宽字符单元宽(Consolas 半角宽;探针 "00" 实测取半)
@@ -119,6 +124,15 @@ export component LogView inherits Rectangle {
                 self.dragging = true;
             } else if (e.button == PointerEventButton.left && e.kind == PointerEventKind.up) {
                 self.dragging = false;
+                // 拖选松手即复制(PuTTY 惯例;单击 a==b 无选中不触发)
+                if (root.has-selection()) {
+                    root.copy-request();
+                }
+            } else if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
+                // 右键菜单:贴边收拢防出屏
+                root.menu-x = min(self.mouse-x, root.width - 128px);
+                root.menu-y = min(self.mouse-y, root.height - 72px);
+                sel-menu.show();
             }
         }
         moved => {
@@ -209,15 +223,9 @@ export component LogView inherits Rectangle {
         }
     }
 
-    // 新行追加:跟随者贴到新底部。行数变化同时使选中行号失稳(旋转/裁剪/
-    // 重排都会移行):选中直接失效,下次拖选重建
+    // 新行追加:跟随者贴到新底部。行**追加**不动既有行号,选中保持;
+    // 行号真正失稳(裁剪移位/重排/清空)由 Rust 侧主动清选中
     changed row-count => {
-        if (root.sel-a-row >= 0 || root.sel-b-row >= 0) {
-            root.sel-a-row = -1;
-            root.sel-a-col = -1;
-            root.sel-b-row = -1;
-            root.sel-b-col = -1;
-        }
         if (root.follow) {
             root.offset = root.max-offset;
             root.raw = root.offset;
@@ -241,6 +249,72 @@ export component LogView inherits Rectangle {
     changed jump-row => {
         if (root.jump-row >= 0) {
             root.scroll-to-row(root.jump-row);
+        }
+    }
+
+    // 右键菜单:复制 / 全选(选中全部行)
+    sel-menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 120px;
+        height: 64px;
+        Rectangle {
+            background: AppTheme.card-bg;
+            border-radius: AppTheme.radius;
+            border-width: 1px;
+            border-color: AppTheme.border-color;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                Rectangle {
+                    height: 26px;
+                    border-radius: 4px;
+                    copy-t := TouchArea {
+                        clicked => {
+                            root.copy-request();
+                            sel-menu.close();
+                        }
+                        Rectangle {
+                            background: copy-t.has-hover ? AppTheme.hover-bg : transparent;
+                            Text {
+                                text: "复制";
+                                color: AppTheme.text-primary;
+                                font-family: AppTheme.ui-font;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                x: 10px;
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 26px;
+                    border-radius: 4px;
+                    all-t := TouchArea {
+                        clicked => {
+                            root.sel-a-row = 0;
+                            root.sel-a-col = 0;
+                            root.sel-b-row = root.row-count - 1;
+                            root.sel-b-col = 999999;
+                            root.copy-request();
+                            sel-menu.close();
+                        }
+                        Rectangle {
+                            background: all-t.has-hover ? AppTheme.hover-bg : transparent;
+                            Text {
+                                text: "全选";
+                                color: AppTheme.text-primary;
+                                font-family: AppTheme.ui-font;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                x: 10px;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

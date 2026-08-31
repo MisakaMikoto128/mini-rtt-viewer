@@ -399,8 +399,12 @@ impl Ctx {
             self.log_rows.remove(0);
         }
         if dropped > 0 {
-            // 行号整体前移,搜索命中集合失效待重算
+            // 行号整体前移:搜索失效待重算;选中行号失稳直接清除
             self.search.borrow_mut().dirty = true;
+            ui.set_sel_a_row(-1);
+            ui.set_sel_a_col(-1);
+            ui.set_sel_b_row(-1);
+            ui.set_sel_b_col(-1);
         }
         if let Some(rows) = pump.take_new_rows() {
             // 无色段兜底前景读主题 token(浅色模式下跟随变深,不硬编码)

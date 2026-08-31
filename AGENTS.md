@@ -1,5 +1,18 @@
 # Mini RTT Viewer — 项目经验笔记
 
+## 项目现状速览(2026-08-31,v0.1.9 发版时)
+
+**功能地图**(全部在左面板配置 + 右侧日志/发送的极简单窗):
+- 连接:`src/rtt.rs`(worker 线程,`connect_target`+`rtt_read_loop`;消息协议 WorkerMsg/WorkerCmd)→ `src/jlink_dll.rs`(JLinkARM.dll FFI,连接序列/SuppressGUI/多台选定三件套)
+- 日志管线:worker → mpsc → `main.rs Ctx::tick`(10ms 泵)→ `log_model.rs LogPump`(断行/ANSI/换行/裁剪)→ `log_view.slint`(行容器平移滚动,详见其头部注释)
+- 已实现:设备信息/电源输出/重置目标/标记/发送回显/发送历史↑↓/HEX 收发/字符集(5 种,共享原子动态生效)/定时发送/屏幕常亮/统计栏/保存日志/深浅主题(`theme.slint` 单开关)/正则搜索(Ctrl+F,regex-lite)/按显示列换行+reflow/列级选中复制(拖选即复制+右键菜单+Ctrl+C,Win32 FFI 剪贴板)/偏好持久化(`config.rs`,tick 快照比对 500ms 节流+退出补写,%APPDATA%/MiniRttViewer/prefs.json)/左面板手动平移滚动(Flickable 坑,见陷阱条目)/浅色边框压平(style-override 单文件覆盖)
+- 关键模式:**UI→worker 运行时参数走 Arc<AtomicU32/Bool> 共享变量**(断帧间隔/字符集索引/HEX 接收),tick 里 store,worker 每块检测变化;**偏好自动保存走快照比对**,不挂钩子
+- 实验分支 `feat/probe-rs-backend`(worktree mini-rtt-viewer-probe-rs):probe-rs 0.32 后端已实现,枚举/SN 选定真机走通,RTT 卡在 Windows 需 Zadig 换 WinUSB 驱动(UAC 人工),双后端路线待用户决策;体积 +55%,供参考
+- 已知取舍见文末「已知未修」;换行/reflow/选中的坐标系是**显示宽度列**(unicode-width,CJK=2),与等宽渲染对齐
+
+---
+
+
 Rust + Slint + JLinkARM.dll FFI 的极简 RTT 查看器。本文件沉淀实际踩过的坑,
 改代码前先扫一遍,别再交一遍学费。
 

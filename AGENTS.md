@@ -192,6 +192,7 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 - **TextInput 必须显式 `height`**(见上)
 - **std-widgets Button 优先**:自定义 TouchArea 按钮存在点击丢失/焦点怪癖;SpinBox 内部 FocusScope 困 Tab → 全部用 ComboBox
 - **面板整体滚动:手动平移模式(log_view 同款),不用 ScrollView 也不用 Flickable**。ScrollView 派生自 FocusScope,内部焦点链与外层断开 → 面板按钮 Tab 不可达(踩过)。Flickable 两个坑:① 官方文档明确其按子 layout 的**最小尺寸**算 viewport——配合 `min-height` 撑满时 viewport 恒等于视口,永不可滚、滑条永不出现(真机踩过);② Flickable 自管 viewport-y,外部绑定会被首帧赋值劫持(见 log_view 头部说明)。手动模式三件套:`in-out property <length> offset` + 下层 TouchArea(scroll-event,`offset = clamp(offset - delta-y, 0, max)`)+ 内容容器 `y: -offset`。**关键坑:非布局父下的 VerticalLayout 必须显式 `height: max(视口高, self.preferred-height)`**——不显式时高度被解析成视口高,滚动范围恒 0(现象同 Flickable 坑:滑条不出现、滚轮空转)。滑条可拖:thumb 上 TouchArea 用 pointer-event(down 记 last-y)+ moved(按 `panel-max / (track.height - thumb.height)` 比例换算)。自动化验证:窗口级截图(get_app_state include_screenshot)能直接看到滑条与布局;缩窗复现溢出、拉窗验证恢复;raw 滚轮注入在锁屏下不可用,手感留真机
+- **布局收缩语义不可靠:空间不足时子元素不会缩到首选宽以下**——HorizontalLayout 两列各放一个 ComboBox,去掉固定宽改 horizontal-stretch 后,组合框仍按首选宽(160)渲染并溢出容器,min-width: 0 也无效。可靠做法:**显式数学宽度** `width: (parent.width - 6px) / 2`(两列对半分,右缘天然对齐);标签行对齐同理——FieldLabel 不定宽会随文字长短把后面的控件推得参差,定宽 58px + 控件 stretch 填满,整列右缘一条线。验证对齐用 get_app_state detail=full 的 bounds 数值(记得 DPI 2x),比目测截图准
 - **Slint 没有 `self.parent`**:引用宿主组件尺寸用组件根的属性(`root.height`)
 - **`visible:false` 元素的属性仍可求值**(行高探针利用了这一点)
 - **日志区滚轮**:TouchArea(scroll-event)在下层、TextInput 在上层——TextInput 优先吃鼠标拖选(复制用),滚轮落到 TouchArea 统一量化

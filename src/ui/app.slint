@@ -241,9 +241,11 @@ export component AppWindow inherits Window {
                                 spacing: 6px;
                                 VerticalLayout {
                                     spacing: 6px;
+                                    width: (parent.width - 6px) / 2;
                                     FieldLabel { text: "接口"; }
                                     ComboBox {
-                                        horizontal-stretch: 1;
+                                        width: 100%;
+                                        min-width: 0px;
                                         height: AppTheme.ctrl-h;
                                         model: ["SWD", "JTAG"];
                                         current-index <=> root.iface-index;
@@ -252,10 +254,11 @@ export component AppWindow inherits Window {
                                 }
                                 VerticalLayout {
                                     spacing: 6px;
+                                    width: (parent.width - 6px) / 2;
                                     FieldLabel { text: "速度 (kHz)"; }
                                     ComboBox {
-                                        // 与接口均分整行:右缘对齐全宽行(J-Link/目标设备)
-                                        horizontal-stretch: 1;
+                                        width: 100%;
+                                        min-width: 0px;
                                         height: AppTheme.ctrl-h;
                                         model: ["100", "200", "500", "1000", "2000", "4000", "8000", "12000"];
                                         current-index <=> root.speed-index;
@@ -393,7 +396,8 @@ export component AppWindow inherits Window {
                                 enabled: true;
                             }
                             LineEdit {
-                                width: 64px;
+                                horizontal-stretch: 1;
+                                min-width: 0px;
                                 height: AppTheme.ctrl-h;
                                 text <=> root.frame-timeout;
                                 enabled: root.auto-frame;
@@ -455,9 +459,9 @@ export component AppWindow inherits Window {
                         }
                         HorizontalLayout {
                             spacing: 6px;
-                            FieldLabel { text: "接收行尾"; vertical-alignment: center; }
+                            FieldLabel { text: "接收行尾"; width: 58px; vertical-alignment: center; }
                             ComboBox {
-                                width: 118px;
+                                horizontal-stretch: 1;
                                 height: AppTheme.ctrl-h;
                                 model: ["自动", "CRLF", "LF", "CR", "无"];
                                 current-index <=> root.rx-ending;
@@ -465,9 +469,9 @@ export component AppWindow inherits Window {
                         }
                         HorizontalLayout {
                             spacing: 6px;
-                            FieldLabel { text: "字符集"; vertical-alignment: center; }
+                            FieldLabel { text: "字符集"; width: 58px; vertical-alignment: center; }
                             ComboBox {
-                                width: 118px;
+                                horizontal-stretch: 1;
                                 height: AppTheme.ctrl-h;
                                 // 顺序必须与 rtt.rs 的 ENCODINGS 表严格一致
                                 model: ["UTF-8", "GBK", "UTF-16 LE", "Latin-1", "ASCII"];
@@ -488,9 +492,9 @@ export component AppWindow inherits Window {
                             spacing: 6px;
                             HorizontalLayout {
                                 spacing: 6px;
-                                FieldLabel { text: "发送行尾"; vertical-alignment: center; }
+                                FieldLabel { text: "发送行尾"; width: 58px; vertical-alignment: center; }
                                 ComboBox {
-                                    width: 118px;
+                                    horizontal-stretch: 1;
                                     height: AppTheme.ctrl-h;
                                     model: ["CRLF (\\r\\n)", "LF (\\n)", "CR (\\r)", "无"];
                                     current-index <=> root.send-ending;
@@ -507,7 +511,8 @@ export component AppWindow inherits Window {
                                     checked <=> root.timer-send;
                                 }
                                 LineEdit {
-                                    width: 64px;
+                                    horizontal-stretch: 1;
+                                    min-width: 0px;
                                     height: AppTheme.ctrl-h;
                                     text <=> root.timer-interval;
                                     enabled: root.timer-send;

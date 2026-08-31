@@ -17,6 +17,9 @@ use std::time::{Duration, Instant};
 
 const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
 
+/// 发送历史上限(去重后最新在前)
+const SEND_HISTORY_CAP: usize = 50;
+
 /// 会话标记行颜色(与主题强调色同系)
 const MARK_COLOR: (u8, u8, u8) = (0x28, 0xaf, 0xe9);
 /// 发送回显行颜色(中性灰,与设备数据一眼区分)
@@ -38,7 +41,24 @@ struct WinSystemTime {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetLocalTime(out: *mut WinSystemTime);
+    fn SetThreadExecutionState(es_flags: u32) -> u32;
 }
+#[link(name = "user32")]
+extern "system" {
+    fn GetSystemMetrics(n_index: i32) -> i32;
+}
+const ES_CONTINUOUS: u32 = 0x8000_0000;
+const ES_DISPLAY_REQUIRED: u32 = 0x0000_0001;
+const SM_CXSCREEN: i32 = 0;
+const SM_CYSCREEN: i32 = 1;
+
+/// 屏幕"常亮"开关:阻止系统熄屏(不影响睡眠策略的其他部分)。
+/// 进程退出后 ES_CONTINUOUS 随之失效,系统自动恢复。
+fn set_display_keep_awake(on: bool) {
+    let flags = if on { ES_CONTINUOUS | ES_DISPLAY_REQUIRED } else { ES_CONTINUOUS };
+    unsafe { SetThreadExecutionState(flags) };
+}
+
 fn local_time() -> WinSystemTime {
     let mut st = WinSystemTime {
         year: 0, month: 0, day_of_week: 0, day: 0,
@@ -56,6 +76,57 @@ fn now_hms() -> String {
 fn now_stamp() -> String {
     let st = local_time();
     format!("{:04}{:02}{:02}_{:02}{:02}{:02}", st.year, st.month, st.day, st.hour, st.minute, st.second)
+}
+
+/// 发送历史入队:去重(同项移到最前),超上限丢最旧
+fn history_push(history: &mut Vec<String>, item: &str, cap: usize) {
+    history.retain(|h| h != item);
+    history.insert(0, item.to_string());
+    history.truncate(cap);
+}
+
+/// ↑:游标向更旧移动;浏览态外(None)起步返回最新一条下标 0;空历史返回 None
+fn history_step_prev(len: usize, cursor: Option<usize>) -> Option<usize> {
+    match cursor {
+        Some(i) if i + 1 < len => Some(i + 1),
+        Some(i) => Some(i),
+        None if len > 0 => Some(0),
+        None => None,
+    }
+}
+
+/// ↓:游标向更新移动;越过最新一条返回 None(调用方恢复用户输入草稿)
+fn history_step_next(cursor: Option<usize>) -> Option<usize> {
+    match cursor {
+        Some(0) | None => None,
+        Some(i) => Some(i - 1),
+    }
+}
+
+/// 读取窗口几何(物理像素)
+fn window_geom(app: &AppWindow) -> (i32, i32, i32, i32) {
+    let pos = app.window().position();
+    let size = app.window().size();
+    (pos.x, pos.y, size.width as i32, size.height as i32)
+}
+
+/// 恢复窗口几何并夹回主屏:标题条至少 200/100px 可见(多显示器负坐标仍可落在
+/// 左侧屏);w/h 全 0 或非法 = 无保存,不动作
+fn restore_window(app: &AppWindow, x: i32, y: i32, w: i32, h: i32) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    if sw <= 0 || sh <= 0 {
+        return;
+    }
+    let x = x.clamp(200 - w, sw - 200);
+    let y = y.clamp(0, sh - 100);
+    let w = w.clamp(400, sw) as u32;
+    let h = h.clamp(300, sh) as u32;
+    let win = app.window();
+    win.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(x, y)));
+    win.set_size(slint::WindowSize::Physical(slint::PhysicalSize::new(w, h)));
 }
 
 /// HEX 发送模式输入解析:容忍空格/冒号/连字符分隔与 0x 前缀,按字节解析。
@@ -159,6 +230,14 @@ struct Ctx {
     preferred_jlink: RefCell<Option<u32>>,
     /// 上次落盘的偏好快照(与当前 UI 快照不同才写盘)
     last_prefs: RefCell<Option<StoredPrefs>>,
+    /// 发送历史(最新在前)
+    send_history: RefCell<Vec<String>>,
+    /// 历史浏览游标(None = 浏览态外,输入框是用户自己的输入)
+    history_cursor: RefCell<Option<usize>>,
+    /// 进入浏览态前暂存的用户输入(↓ 回到最新时恢复)
+    draft: RefCell<String>,
+    /// 上次定时发送时刻
+    last_timer_send: RefCell<Instant>,
 }
 
 impl Ctx {
@@ -284,6 +363,17 @@ impl Ctx {
                 *self.last_prefs.borrow_mut() = Some(snap);
             }
         }
+        // 6. 定时发送:开关 + 连接中 + 间隔合法 → 周期触发(复用发送管线,
+        //    含回显/历史/计数);未连接时挂起,恢复连接后因 elapsed 已超时立即发
+        if ui.get_timer_send() && ui.get_connected() {
+            let secs = ui.get_timer_interval().trim().parse::<f64>().unwrap_or(0.0);
+            if (0.001..=999.0).contains(&secs)
+                && self.last_timer_send.borrow().elapsed() >= Duration::from_secs_f64(secs)
+            {
+                *self.last_timer_send.borrow_mut() = Instant::now();
+                self.send_text(ui);
+            }
+        }
     }
 
     /// 从 UI 收集当前偏好快照(自动保存与退出落盘共用)
@@ -310,6 +400,15 @@ impl Ctx {
             encoding_index: ui.get_encoding_index(),
             log_font_px: font_px,
             info_expanded: ui.get_info_expanded(),
+            send_history: self.send_history.borrow().clone(),
+            // 窗口几何仅退出时保存(拖动窗口不该触发写盘)
+            window_x: 0,
+            window_y: 0,
+            window_w: 0,
+            window_h: 0,
+            keep_awake: ui.get_keep_awake(),
+            timer_send: ui.get_timer_send(),
+            timer_interval: ui.get_timer_interval().to_string(),
         }
     }
 
@@ -452,8 +551,46 @@ impl Ctx {
         if let Some(tx) = self.cmd_tx.borrow().as_ref() {
             let _ = tx.send(WorkerCmd::Send(payload.clone()));
             self.stats.borrow_mut().tx += payload.len() as u64;
+            // 入发送历史(去重置顶),浏览态与草稿复位
+            history_push(&mut self.send_history.borrow_mut(), &text, SEND_HISTORY_CAP);
+            *self.history_cursor.borrow_mut() = None;
+            self.draft.borrow_mut().clear();
             // 回显显示用户输入原文(HEX 模式下原文即 hex 串),不写发送框
             self.pump.borrow_mut().push_colored_line(&format!("» {text}"), ECHO_COLOR);
+        }
+    }
+
+    /// ↑ 翻历史:首次进入浏览态时暂存当前输入为草稿,填入上一条
+    fn send_history_prev(&self, ui: &AppWindow) {
+        let Some(i) = history_step_prev(
+            self.send_history.borrow().len(),
+            *self.history_cursor.borrow(),
+        ) else {
+            return;
+        };
+        if self.history_cursor.borrow().is_none() {
+            *self.draft.borrow_mut() = ui.get_send_text().to_string();
+        }
+        *self.history_cursor.borrow_mut() = Some(i);
+        if let Some(item) = self.send_history.borrow().get(i) {
+            ui.set_send_text(item.clone().into());
+        }
+    }
+
+    /// ↓ 翻历史:向更新一条移动;越过最新一条恢复用户输入草稿
+    fn send_history_next(&self, ui: &AppWindow) {
+        let Some(i) = *self.history_cursor.borrow() else { return };
+        match history_step_next(Some(i)) {
+            Some(j) => {
+                *self.history_cursor.borrow_mut() = Some(j);
+                if let Some(item) = self.send_history.borrow().get(j) {
+                    ui.set_send_text(item.clone().into());
+                }
+            }
+            None => {
+                *self.history_cursor.borrow_mut() = None;
+                ui.set_send_text(self.draft.borrow().clone().into());
+            }
         }
     }
 
@@ -596,6 +733,10 @@ fn main() -> anyhow::Result<()> {
         stats: RefCell::default(),
         preferred_jlink: RefCell::new(None),
         last_prefs: RefCell::new(None),
+        send_history: RefCell::new(Vec::new()),
+        history_cursor: RefCell::new(None),
+        draft: RefCell::new(String::new()),
+        last_timer_send: RefCell::new(Instant::now()),
         encoding_index,
     });
     app.set_log_rows(ModelRc::from(ctx.log_rows.clone()));
@@ -627,6 +768,15 @@ fn main() -> anyhow::Result<()> {
         saved.encoding_index.clamp(0, ENCODINGS.len() as i32 - 1) as u32,
         Ordering::Relaxed,
     );
+    // 发送历史 / 定时发送 / 屏幕常亮 / 窗口几何
+    *ctx.send_history.borrow_mut() = saved.send_history.clone();
+    app.set_timer_send(saved.timer_send);
+    app.set_timer_interval(saved.timer_interval.clone().into());
+    if saved.keep_awake {
+        set_display_keep_awake(true);
+        app.set_keep_awake(true);
+    }
+    restore_window(&app, saved.window_x, saved.window_y, saved.window_w, saved.window_h);
 
     if demo_mode {
         demo::spawn(ctx.msg_tx.clone());
@@ -749,10 +899,44 @@ fn main() -> anyhow::Result<()> {
             }
         });
     }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_send_history_prev(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.send_history_prev(&ui);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_send_history_next(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.send_history_next(&ui);
+            }
+        });
+    }
+    {
+        let weak = app.as_weak();
+        app.on_keep_awake_toggled(move |on| {
+            set_display_keep_awake(on);
+            if let Some(ui) = weak.upgrade() {
+                ui.set_keep_awake(on);
+            }
+        });
+    }
 
     app.run()?;
-    // 退出前强制补一次落盘(节流窗口内最后的变更)
-    config::save(&ctx.snapshot_prefs(&app));
+    // 退出前强制补一次落盘,并保存窗口几何(仅退出时保存,拖动窗口不触发写盘)
+    let mut final_prefs = ctx.snapshot_prefs(&app);
+    let (wx, wy, ww, wh) = window_geom(&app);
+    final_prefs.window_x = wx;
+    final_prefs.window_y = wy;
+    final_prefs.window_w = ww;
+    final_prefs.window_h = wh;
+    config::save(&final_prefs);
+    set_display_keep_awake(false);
     ctx.wait_worker_shutdown();
     Ok(())
 }
@@ -783,5 +967,30 @@ mod tests {
         assert_eq!(fmt_bytes(3 * 1024 * 1024), "3.00 MB");
         assert_eq!(fmt_dur(Duration::from_secs(65)), "01:05");
         assert_eq!(fmt_dur(Duration::from_secs(3675)), "1:01:15");
+    }
+
+    #[test]
+    fn history_push_dedupes_moves_to_front_and_caps() {
+        let mut h = vec!["a".into(), "b".into(), "c".into()];
+        history_push(&mut h, "b", 50);
+        assert_eq!(h, vec!["b", "a", "c"]); // 重复项移到最前,无副本
+        for i in 0..60 {
+            history_push(&mut h, &format!("x{i}"), SEND_HISTORY_CAP);
+        }
+        assert_eq!(h.len(), SEND_HISTORY_CAP); // 上限截断
+        assert_eq!(h[0], "x59");
+        history_push(&mut h, "", 50); // 空串也入历史(用户可能发纯行尾)
+        assert_eq!(h[0], "");
+    }
+
+    #[test]
+    fn history_steps() {
+        assert_eq!(history_step_prev(3, None), Some(0)); // 起步 = 最新
+        assert_eq!(history_step_prev(3, Some(0)), Some(1));
+        assert_eq!(history_step_prev(3, Some(2)), Some(2)); // 到最旧停住
+        assert_eq!(history_step_prev(0, None), None); // 空历史
+        assert_eq!(history_step_next(Some(2)), Some(1));
+        assert_eq!(history_step_next(Some(0)), None); // 越过最新恢复草稿
+        assert_eq!(history_step_next(None), None);
     }
 }

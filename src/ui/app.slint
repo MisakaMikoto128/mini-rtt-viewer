@@ -58,6 +58,11 @@ export component AppWindow inherits Window {
     in-out property <int> send-ending: 0;
     // 字符集 0=UTF-8 1=GBK 2=UTF-16 LE 3=Latin-1 4=ASCII(与 rtt.rs ENCODINGS 顺序一致)
     in-out property <int> encoding-index: 0;
+    // 保持屏幕常亮(长时间挂机采集)
+    in-out property <bool> keep-awake: false;
+    // 定时发送:间隔(秒)+ 开关
+    in-out property <bool> timer-send: false;
+    in-out property <string> timer-interval: "1";
     // HEX 发送模式:输入按 "41 42 43" / "0x4142" 解析为原始字节
     in-out property <bool> hex-send: false;
     // 收发统计栏(TX/RX 字节 + 会话时长,Rust 端 500ms 节流刷新)
@@ -70,6 +75,10 @@ export component AppWindow inherits Window {
     callback reset-clicked();   // 复位目标并恢复运行(连接后可用)
     callback mark-clicked();    // 插入会话标记行(带时间戳)
     callback save-clicked();    // 保存当前日志为 .log 文件
+    callback keep-awake-toggled(bool);
+    // 发送历史:↑ 上一条 / ↓ 下一条(游标管理在 Rust 侧)
+    callback send-history-prev();
+    callback send-history-next();
     // 设备输入框文字变化 → Rust 端重筛候选列表
     callback chip-filtered(string);
     // 电源输出开关(仅连接状态下 Rust 端会真正下发)
@@ -80,11 +89,23 @@ export component AppWindow inherits Window {
     }
 
     // 全局快捷键:外层 FocusScope 包围持有焦点的子元素时也能收键——
-    // 内部 LineEdit 等不处理的按键(F2/F3)冒泡上来由 KeyBinding 命中
+    // 内部 LineEdit 等不处理的按键(F2/F3)冒泡上来由 KeyBinding 命中;
+    // ↑/↓ 同理在发送框持焦时翻历史(LineEdit 不消费方向键,事件冒泡到此)
     forward-focus: send-input;
     keys := FocusScope {
         width: 100%;
         height: 100%;
+        key-pressed(e) => {
+            if (send-input.has-focus && e.text == Key.UpArrow) {
+                root.send-history-prev();
+                return EventResult.accept;
+            }
+            if (send-input.has-focus && e.text == Key.DownArrow) {
+                root.send-history-next();
+                return EventResult.accept;
+            }
+            EventResult.reject
+        }
         KeyBinding {
             keys: @keys(F2);
             activated => { if (!root.connected && !root.connecting) { root.connect-clicked(); } }
@@ -370,6 +391,11 @@ export component AppWindow inherits Window {
                                 clicked => { AppTheme.log-font-size = min(30px, AppTheme.log-font-size + 1px); }
                             }
                         }
+                        CheckBox {
+                            text: "屏幕常亮";
+                            checked <=> root.keep-awake;
+                            toggled => { root.keep-awake-toggled(self.checked); }
+                        }
                         Text {
                             text: "相邻数据间隔超过设定值(1~200ms)判定一帧结束,自动换行";
                             color: AppTheme.text-muted;
@@ -462,6 +488,28 @@ export component AppWindow inherits Window {
                 rows: root.log-rows;
                 row-count: root.log-row-count;
                 auto-scroll <=> root.auto-scroll;
+            }
+
+            // 定时发送行:连接中按间隔循环发送当前输入(未连接时挂起)
+            HorizontalLayout {
+                spacing: 8px;
+                CheckBox {
+                    text: "定时发送";
+                    checked <=> root.timer-send;
+                }
+                LineEdit {
+                    width: 64px;
+                    height: AppTheme.ctrl-h;
+                    text <=> root.timer-interval;
+                    enabled: root.timer-send;
+                }
+                Text {
+                    text: "s · 按间隔循环发送当前输入";
+                    color: AppTheme.text-muted;
+                    font-size: 10px;
+                    font-family: AppTheme.ui-font;
+                    vertical-alignment: center;
+                }
             }
 
             // 发送区

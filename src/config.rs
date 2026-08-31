@@ -41,6 +41,19 @@ pub struct StoredPrefs {
     pub log_font_px: i32,
     /// 设备信息折叠展开态
     pub info_expanded: bool,
+    /// 发送历史(最新在前,去重,上限 50 条)
+    pub send_history: Vec<String>,
+    /// 窗口位置/尺寸(物理像素;全 0 = 不恢复)
+    pub window_x: i32,
+    pub window_y: i32,
+    pub window_w: i32,
+    pub window_h: i32,
+    /// 保持屏幕常亮(SetThreadExecutionState)
+    pub keep_awake: bool,
+    /// 定时发送开关
+    pub timer_send: bool,
+    /// 定时发送间隔文本(秒,保持用户输入原样)
+    pub timer_interval: String,
 }
 
 impl Default for StoredPrefs {
@@ -60,6 +73,14 @@ impl Default for StoredPrefs {
             encoding_index: 0,
             log_font_px: 13,
             info_expanded: false,
+            send_history: Vec::new(),
+            window_x: 0,
+            window_y: 0,
+            window_w: 0,
+            window_h: 0,
+            keep_awake: false,
+            timer_send: false,
+            timer_interval: "1".into(),
         }
     }
 }
@@ -136,6 +157,14 @@ mod tests {
             encoding_index: 1,
             log_font_px: 16,
             info_expanded: true,
+            send_history: vec!["read 3".into(), "led on".into()],
+            window_x: -1920,
+            window_y: 40,
+            window_w: 1280,
+            window_h: 800,
+            keep_awake: true,
+            timer_send: true,
+            timer_interval: "0.5".into(),
         };
         save_to(&p, &prefs).unwrap();
         let back = load_from(&p);

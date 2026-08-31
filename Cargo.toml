@@ -19,6 +19,7 @@ anyhow = "1"
 rfd = "0.15"
 # ANSI/VT 转义序列解析(Alacritty/WezTerm 同款状态机;增量式,颜色状态跨块跨行保持)
 vte = "0.13"
+probe-rs = "0.32.0"
 
 [build-dependencies]
 slint-build = "1"

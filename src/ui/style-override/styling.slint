@@ -58,7 +58,7 @@ export global FluentPalette {
     out property <brush> text-secondary: dark-color-scheme ? #FFFFFFC9 : #00000099;
     out property <brush> text-tertiary: dark-color-scheme ? #FFFFFF8A : #00000073;
     out property <brush> text-disabled: dark-color-scheme ? #FFFFFF5E : #0000005E;
-    out property <brush> text-control-border: dark-color-scheme ? @linear-gradient(180deg, #FFFFFF14 99.98%, #FFFFFF8A 100%, #FFFFFF8A 100%) : transparent;
+    out property <brush> text-control-border: dark-color-scheme ? @linear-gradient(180deg, #FFFFFF14 99.98%, #FFFFFF8A 100%, #FFFFFF8A 100%) : @linear-gradient(180deg, #0000000F 99.99%, #00000073 100%, #00000073 100%);
     // 浅色控件底色改**实心**浅灰(描边已透明,结构全靠色块);
     // 深浅层级:常态 < 悬停/次要 < 三级,disabled 独立可辨
     out property <brush> control-secondary: dark-color-scheme ? #FFFFFF14 : #EDEEF2;

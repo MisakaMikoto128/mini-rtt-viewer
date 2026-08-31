@@ -236,6 +236,26 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 
 ---
 
+## 浅色下 std 组件灰边框:include-path 覆盖 fluent 单文件
+
+**现象**:浅色模式 Button/ComboBox/LineEdit 外一圈明显灰边,来自 fluent 样式私有 global `FluentPalette.control-border` 的黑色线性渐变(#0000000F→#00000029)——它在样式内部文件定义,`Palette.border`(公开)覆盖不了它。
+
+**处理**:slint-build 的 `CompilerConfiguration::with_include_paths` 指向项目内 `src/ui/style-override/`,把内置 `widgets/fluent/styling.slint` 拷来改边框三变量(`control-border`/`accent-control-border`/`text-control-border` 浅色分支渐变 → `#0000000A` 单色)与 `border`(#00000073→#0000001A)。编译器优先从 include path 解析,未覆盖的文件(如 button.slint)仍回落内置样式库——单文件覆盖,不 fork 整个样式目录。注意:slint 1.17 `EmbedResourcesKind` 无 `EmbedForSoftware` 变体(编译报错即删该配置);同一属性写两个 `changed` 回调会报 Duplicated change callback,且常连带一个假的 forward-focus 报错(先修前者)。
+
+参考:`build.rs`、`src/ui/style-override/styling.slint`(注明是内置文件的手改副本,升级 slint 后需对齐)。
+
+---
+
+## 自绘行模型的文字选中:行级粒度 + Win32 FFI 剪贴板
+
+**取舍**:Slint 无富文本、无子串宽度测量 API,字符级选中做不了;行级选中(拖选/单击选整行)够日志复制场景。实现:LogView 的 wheel TouchArea 兼任指针交互(pointer-event down 起选/moved 扩选/up 提交;`row-at-y = (offset + mouse-y - 8px) / line-h`,行高固定所以 y→行号是纯算术),选中区间高亮叠底,Ctrl+C 经根属性镜像(sel-start/sel-end <=>)读区间拼纯文本。
+
+**剪贴板**:slint 1.17 没有自由函数级剪贴板 API(`Clipboard` 只在 `platform::Platform` trait 钩子里,给自定义平台实现用的),走 Win32 FFI:`OpenClipboard/EmptyClipboard/SetClipboardData(CF_UNICODETEXT)` + `GlobalAlloc(GMEM_MOVEABLE)/GlobalLock/copy_nonoverlapping(UTF-16)/GlobalUnlock`,约 30 行,项目 Windows-only 无负担。
+
+**行号失稳**:行模型 500 上限旋转/清空都会移行——`changed row-count` 里选中直接失效(-1/-1),下次拖选重建,不做偏移补偿。
+
+---
+
 ## encoding_rs 的 decode_to_string 不自动扩容:容量不足静默丢输出
 
 **现象**:CharsetDecoder 首版 `decode_to_string(bytes, &mut out, false)` 的 out 用 `String::new()` 空串起步,所有单测返回空字符串——无 panic、无错误标志。

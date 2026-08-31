@@ -67,6 +67,9 @@ export component AppWindow inherits Window {
     in property <bool> search-error: false;
     in property <int> search-highlight-row: -1;
     in property <int> search-jump-row: -1;
+    // 日志行级选中(LogView 镜像,Rust Ctrl+C 读取)
+    in-out property <int> sel-start: -1;
+    in-out property <int> sel-end: -1;
     // 保持屏幕常亮(长时间挂机采集)
     in-out property <bool> keep-awake: false;
     // 定时发送:间隔(秒)+ 开关
@@ -93,6 +96,8 @@ export component AppWindow inherits Window {
     callback search-next();
     callback search-prev();
     callback search-closed();
+    // 复制日志选中行(Ctrl+C)
+    callback copy-selected();
     // 设备输入框文字变化 → Rust 端重筛候选列表
     callback chip-filtered(string);
     // 电源输出开关(仅连接状态下 Rust 端会真正下发)
@@ -128,6 +133,10 @@ export component AppWindow inherits Window {
         KeyBinding {
             keys: @keys(Control+F);
             activated => { root.search-visible = true; }
+        }
+        KeyBinding {
+            keys: @keys(Control+C);
+            activated => { root.copy-selected(); }
         }
         KeyBinding {
             keys: @keys(Escape);
@@ -593,13 +602,15 @@ export component AppWindow inherits Window {
             }
 
             // 日志区:ListView 虚拟化 + ANSI 带色行;滚轮行对齐/贴底跟随在 LogView 内闭环
-            LogView {
+            log-view := LogView {
                 vertical-stretch: 1;
                 rows: root.log-rows;
                 row-count: root.log-row-count;
                 auto-scroll <=> root.auto-scroll;
                 highlight-row: root.search-highlight-row;
                 jump-row: root.search-jump-row;
+                sel-start <=> root.sel-start;
+                sel-end <=> root.sel-end;
             }
 
             // 发送区

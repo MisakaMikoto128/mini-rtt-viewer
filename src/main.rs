@@ -11,6 +11,7 @@ use mini_rtt_viewer::{device_db, demo, single_instance, AppTheme, AppWindow, Inf
 use regex_lite::Regex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
@@ -47,11 +48,47 @@ extern "system" {
 #[link(name = "user32")]
 extern "system" {
     fn GetSystemMetrics(n_index: i32) -> i32;
+    fn OpenClipboard(owner: *mut c_void) -> i32;
+    fn CloseClipboard() -> i32;
+    fn EmptyClipboard() -> i32;
+    fn SetClipboardData(format: u32, handle: *mut c_void) -> *mut c_void;
+    fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
+    fn GlobalLock(mem: *mut c_void) -> *mut c_void;
+    fn GlobalUnlock(mem: *mut c_void) -> *mut c_void;
 }
 const ES_CONTINUOUS: u32 = 0x8000_0000;
 const ES_DISPLAY_REQUIRED: u32 = 0x0000_0001;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
+const GMEM_MOVEABLE: u32 = 0x0002;
+const CF_UNICODETEXT: u32 = 13;
+
+/// 写系统剪贴板(CF_UNICODETEXT)。slint 1.17 未暴露自由函数级剪贴板 API,
+/// 走 Win32 FFI(项目 Windows-only)。失败静默返回 false(调用方在状态栏提示)。
+fn set_clipboard_text(text: &str) -> bool {
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    wide.push(0);
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return false;
+        }
+        let ok = EmptyClipboard() != 0
+            && {
+                let bytes = wide.len() * 2;
+                let mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+                if mem.is_null() {
+                    false
+                } else {
+                    let p = GlobalLock(mem) as *mut u16;
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+                    GlobalUnlock(mem);
+                    !SetClipboardData(CF_UNICODETEXT, mem).is_null()
+                }
+            };
+        CloseClipboard();
+        ok
+    }
+}
 
 /// 屏幕"常亮"开关:阻止系统熄屏(不影响睡眠策略的其他部分)。
 /// 进程退出后 ES_CONTINUOUS 随之失效,系统自动恢复。
@@ -801,11 +838,40 @@ impl Ctx {
     }
 
     /// 清空:行模型清空 + 状态栏恢复(不退化为无参数的"已连接")
+    /// 复制日志选中行(Ctrl+C;行级选中,拼接各段纯文本)
+    fn copy_selected(&self, ui: &AppWindow) {
+        let (a, b) = (ui.get_sel_start(), ui.get_sel_end());
+        if a < 0 || b < 0 {
+            return;
+        }
+        let (lo, hi) = (a.min(b) as usize, a.max(b) as usize);
+        let mut text = String::new();
+        for i in lo..=hi {
+            let Some(row) = self.log_rows.row_data(i) else { continue };
+            for j in 0..row.runs.row_count() {
+                if let Some(seg) = row.runs.row_data(j) {
+                    text.push_str(&seg.text);
+                }
+            }
+            text.push_str("\r\n");
+        }
+        if text.is_empty() {
+            return;
+        }
+        ui.set_status_text(if set_clipboard_text(&text) {
+            format!("● 已复制 {} 行", hi - lo + 1).into()
+        } else {
+            "● 复制失败(剪贴板被占用)".into()
+        });
+    }
+
     fn clear_log(&self, ui: &AppWindow) {
         self.log_rows.set_vec(vec![]);
         ui.set_log_row_count(0);
         ui.set_status_text(self.last_status.borrow().clone());
         self.pump.borrow_mut().clear();
+        ui.set_sel_start(-1);
+        ui.set_sel_end(-1);
     }
 
     /// 暂停/继续接收:暂停期间 worker 读到的新数据直接丢弃(不进日志、不占缓冲)
@@ -1113,6 +1179,15 @@ fn main() -> anyhow::Result<()> {
         app.on_search_closed(move || {
             if let Some(ui) = weak.upgrade() {
                 ctx.search_close(&ui);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_copy_selected(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.copy_selected(&ui);
             }
         });
     }

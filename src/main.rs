@@ -920,8 +920,11 @@ impl Ctx {
                     break;
                 }
             }
+            // 行与行之间才加换行,末行不带(粘贴不引入多余空行)
+            if !text.is_empty() {
+                text.push_str("\r\n");
+            }
             text.push_str(&line);
-            text.push_str("\r\n");
         }
         if text.is_empty() {
             return;

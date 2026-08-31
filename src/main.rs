@@ -407,17 +407,17 @@ impl Ctx {
             ui.set_sel_b_col(-1);
         }
         if let Some(rows) = pump.take_new_rows() {
-            // 无色段兜底前景读主题 token(浅色模式下跟随变深,不硬编码)
-            let default_fg = ui.global::<AppTheme>().get_log_fg();
             for runs in rows {
                 let spans: Vec<LogRun> = runs
                     .into_iter()
                     .map(|r| LogRun {
                         text: r.text.into(),
+                        // 无色段 default_fg=true,颜色由 Slint 绑定主题即时换算
                         color: r
                             .fg
                             .map(|(r8, g8, b8)| slint::Color::from_rgb_u8(r8, g8, b8))
-                            .unwrap_or(default_fg),
+                            .unwrap_or_default(),
+                        default_fg: r.fg.is_none(),
                     })
                     .collect();
                 self.log_rows.push(LogRow { runs: ModelRc::new(VecModel::from(spans)) });
@@ -484,7 +484,6 @@ impl Ctx {
 
     /// 全量刷新 UI 行模型(重排后调用;行数同步搜索/统计)
     fn refresh_all_rows(&self, ui: &AppWindow) {
-        let default_fg = ui.global::<AppTheme>().get_log_fg();
         let snapshot = self.pump.borrow().snapshot_rows();
         let mut fresh: Vec<LogRow> = Vec::with_capacity(snapshot.len());
         for runs in snapshot {
@@ -495,7 +494,8 @@ impl Ctx {
                     color: r
                         .fg
                         .map(|(r8, g8, b8)| slint::Color::from_rgb_u8(r8, g8, b8))
-                        .unwrap_or(default_fg),
+                        .unwrap_or_default(),
+                    default_fg: r.fg.is_none(),
                 })
                 .collect();
             fresh.push(LogRow { runs: ModelRc::new(VecModel::from(spans)) });

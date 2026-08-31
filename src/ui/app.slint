@@ -243,7 +243,7 @@ export component AppWindow inherits Window {
                                     spacing: 6px;
                                     FieldLabel { text: "接口"; }
                                     ComboBox {
-                                        width: 118px;
+                                        horizontal-stretch: 1;
                                         height: AppTheme.ctrl-h;
                                         model: ["SWD", "JTAG"];
                                         current-index <=> root.iface-index;
@@ -254,7 +254,8 @@ export component AppWindow inherits Window {
                                     spacing: 6px;
                                     FieldLabel { text: "速度 (kHz)"; }
                                     ComboBox {
-                                        width: 118px;
+                                        // 与接口均分整行:右缘对齐全宽行(J-Link/目标设备)
+                                        horizontal-stretch: 1;
                                         height: AppTheme.ctrl-h;
                                         model: ["100", "200", "500", "1000", "2000", "4000", "8000", "12000"];
                                         current-index <=> root.speed-index;

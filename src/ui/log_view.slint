@@ -4,6 +4,9 @@ import { AppTheme } from "theme.slint";
 export struct LogRun {
     text: string,
     color: color,
+    // true = 设备流的无色段:color 值忽略,渲染时绑定 AppTheme.log-fg——
+    // 切换深/浅主题时存量行也跟随变色(烘焙 RGB 会导致浅底残留深底浅字)
+    default-fg: bool,
 }
 
 // 一行日志 = 若干同色段(ANSI 转义由 Rust 端 vte 解析,这里只渲染)
@@ -199,7 +202,8 @@ export component LogView inherits Rectangle {
             row-line := HorizontalLayout {
                 for run in row.runs: Text {
                     text: run.text;
-                    color: run.color;
+                    // 无色段跟随主题(切换即时变色),带色段用烘焙 ANSI 颜色
+                    color: run.default-fg ? AppTheme.log-fg : run.color;
                     font-family: AppTheme.mono-font;
                     font-size: AppTheme.log-font-size;
                     vertical-alignment: center;

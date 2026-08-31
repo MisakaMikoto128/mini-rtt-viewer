@@ -8,6 +8,7 @@ use mini_rtt_viewer::config::{self, StoredPrefs};
 use mini_rtt_viewer::log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
 use mini_rtt_viewer::rtt::{self, WorkerCmd, WorkerHandle, WorkerMsg, ENCODINGS, APP_SHUTDOWN};
 use mini_rtt_viewer::{device_db, demo, single_instance, AppTheme, AppWindow, InfoRow, LogRun, LogRow};
+use regex_lite::Regex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -200,6 +201,34 @@ impl Default for Stats {
     }
 }
 
+/// 正则搜索状态(行模型上扫描;编译/计算按 150ms 节流)
+struct SearchState {
+    /// 编译成功的正则;None = 输入非法
+    regex: Option<Regex>,
+    /// 编译错误提示(显示在搜索条,红色)
+    error: String,
+    /// 匹配行号升序(UI 行模型下标,含标记/回显行)
+    matches: Vec<usize>,
+    /// 当前命中在 matches 里的下标
+    current: usize,
+    /// 输入已变待重算
+    dirty: bool,
+    /// 上次计算时刻(节流)
+    last_run: Instant,
+}
+impl Default for SearchState {
+    fn default() -> Self {
+        Self {
+            regex: None,
+            error: String::new(),
+            matches: Vec::new(),
+            current: 0,
+            dirty: false,
+            last_run: Instant::now(),
+        }
+    }
+}
+
 /// UI 侧全部共享状态。回调闭包与 timer 只克隆这一个 Rc;
 /// 方法即业务规则,main() 不出现任何 if 业务判断。
 struct Ctx {
@@ -235,6 +264,8 @@ struct Ctx {
     draft: RefCell<String>,
     /// 上次定时发送时刻
     last_timer_send: RefCell<Instant>,
+    /// 正则搜索状态
+    search: RefCell<SearchState>,
 }
 
 impl Ctx {
@@ -328,6 +359,10 @@ impl Ctx {
         for _ in 0..dropped {
             self.log_rows.remove(0);
         }
+        if dropped > 0 {
+            // 行号整体前移,搜索命中集合失效待重算
+            self.search.borrow_mut().dirty = true;
+        }
         if let Some(rows) = pump.take_new_rows() {
             // 无色段兜底前景读主题 token(浅色模式下跟随变深,不硬编码)
             let default_fg = ui.global::<AppTheme>().get_log_fg();
@@ -374,6 +409,18 @@ impl Ctx {
                 *self.last_timer_send.borrow_mut() = Instant::now();
                 self.send_text(ui);
             }
+        }
+        // 7. 正则搜索:输入变化或行被裁剪(行号漂移)→ 150ms 节流重算
+        let need = {
+            let mut st = self.search.borrow_mut();
+            let due = st.dirty && st.last_run.elapsed() >= Duration::from_millis(150);
+            if due {
+                st.last_run = Instant::now();
+            }
+            due
+        };
+        if need {
+            self.search_run(ui);
         }
     }
 
@@ -598,6 +645,104 @@ impl Ctx {
         }
     }
 
+    /// 编译当前输入并扫描全部 UI 行(含标记/回显行);编译错误显示在搜索条
+    fn search_run(&self, ui: &AppWindow) {
+        let query = ui.get_search_query().to_string();
+        let re = match Regex::new(&query) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                let mut st = self.search.borrow_mut();
+                st.regex = None;
+                st.matches.clear();
+                st.current = 0;
+                st.error = format!("正则错误:{e}");
+                st.dirty = false;
+                st.last_run = Instant::now();
+                drop(st);
+                ui.set_search_error(true);
+                ui.set_search_highlight_row(-1);
+                return;
+            }
+        };
+        let n = self.log_rows.row_count();
+        let re = re.unwrap();
+        let mut matches = Vec::new();
+        for i in 0..n {
+            let Some(row) = self.log_rows.row_data(i) else { continue };
+            let mut text = String::new();
+            for j in 0..row.runs.row_count() {
+                if let Some(seg) = row.runs.row_data(j) {
+                    text.push_str(&seg.text);
+                }
+            }
+            if re.is_match(&text) {
+                matches.push(i);
+            }
+        }
+        let count = matches.len();
+        {
+            let mut st = self.search.borrow_mut();
+            st.regex = Some(re);
+            st.error.clear();
+            st.matches = matches;
+            st.current = 0;
+            st.dirty = false;
+            st.last_run = Instant::now();
+        }
+        ui.set_search_error(false);
+        if count == 0 {
+            ui.set_search_status("无匹配".into());
+            ui.set_search_highlight_row(-1);
+        } else {
+            ui.set_search_status(format!("1/{count}").into());
+            self.search_jump_to(ui, 0);
+        }
+    }
+
+    fn search_next(&self, ui: &AppWindow) {
+        if self.search.borrow().dirty {
+            self.search_run(ui);
+        }
+        let line = {
+            let mut st = self.search.borrow_mut();
+            if st.matches.is_empty() {
+                return;
+            }
+            st.current = (st.current + 1) % st.matches.len();
+            ui.set_search_status(format!("{}/{}", st.current + 1, st.matches.len()).into());
+            st.matches[st.current]
+        };
+        self.search_jump_to(ui, line);
+    }
+
+    fn search_prev(&self, ui: &AppWindow) {
+        if self.search.borrow().dirty {
+            self.search_run(ui);
+        }
+        let line = {
+            let mut st = self.search.borrow_mut();
+            if st.matches.is_empty() {
+                return;
+            }
+            st.current = (st.current + st.matches.len() - 1) % st.matches.len();
+            ui.set_search_status(format!("{}/{}", st.current + 1, st.matches.len()).into());
+            st.matches[st.current]
+        };
+        self.search_jump_to(ui, line);
+    }
+
+    /// 高亮 + 跳到指定行(经 jump-row 属性链驱动 LogView 定位)
+    fn search_jump_to(&self, ui: &AppWindow, line: usize) {
+        ui.set_search_highlight_row(line as i32);
+        ui.set_search_jump_row(line as i32);
+    }
+
+    fn search_close(&self, ui: &AppWindow) {
+        ui.set_search_visible(false);
+        ui.set_search_highlight_row(-1);
+        ui.set_search_status("".into());
+    }
+
     /// 插入一条会话标记行。**只能在 UI 回调上下文调用**(此时不持 pump 的
     /// borrow);tick 内持 borrow 期间必须直接 `pump.push_colored_line(...)`
     fn insert_mark(&self, label: &str) {
@@ -743,6 +888,7 @@ fn main() -> anyhow::Result<()> {
         history_cursor: RefCell::new(None),
         draft: RefCell::new(String::new()),
         last_timer_send: RefCell::new(Instant::now()),
+        search: RefCell::default(),
         encoding_index,
         hex_rx,
     });
@@ -934,6 +1080,39 @@ fn main() -> anyhow::Result<()> {
             set_display_keep_awake(on);
             if let Some(ui) = weak.upgrade() {
                 ui.set_keep_awake(on);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        app.on_search_edited(move || {
+            ctx.search.borrow_mut().dirty = true;
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_search_next(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.search_next(&ui);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_search_prev(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.search_prev(&ui);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_search_closed(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.search_close(&ui);
             }
         });
     }

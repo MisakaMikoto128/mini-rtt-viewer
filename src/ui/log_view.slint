@@ -22,6 +22,9 @@ export struct LogRow {
 export component LogView inherits Rectangle {
     in property <[LogRow]> rows;
     in property <int> row-count;      // 跟随逻辑的新行触发器
+    // 搜索命中:当前高亮行(-1 = 无)与跳转目标(Rust 侧 set 后经 changed 驱动)
+    in property <int> highlight-row: -1;
+    in property <int> jump-row: -1;
     // 自动滚动状态(follow 的对外呈现):滚离底部自动变 false,滚回底部/用户勾选变 true。
     // AppWindow 的「自动滚动」checkbox 与它 <=> 双向绑定——checkbox 是状态呈现也是开关。
     in-out property <bool> auto-scroll: true;
@@ -69,6 +72,15 @@ export component LogView inherits Rectangle {
         root.auto-scroll = root.follow;
     }
 
+    // 跳转到指定行(置顶显示):手动定位解除跟随(checkbox 经 auto-scroll 同步);
+    // 结构化行模型的红利——目标 offset 就是 行号 × 行高
+    public function scroll-to-row(row: int) {
+        root.follow = false;
+        root.auto-scroll = false;
+        root.raw = min(max(row * root.line-h, 0px), root.grid-max);
+        root.offset = root.raw;
+    }
+
     // 滚轮层在最上,统一量化驱动 offset(行容器 y 随动)
     wheel := TouchArea {
         width: 100%;
@@ -96,10 +108,14 @@ export component LogView inherits Rectangle {
         y: 8px - root.offset;
         spacing: 0px;
 
-        for row in root.rows: Rectangle {
+        for row[i] in root.rows: Rectangle {
             // 每行严格一行高:内容超高部分裁掉(终端语义;行内不换行)
             height: root.line-h;
             clip: true;
+            // 当前搜索命中行高亮(强调色 30% 透明叠底)
+            if (i == root.highlight-row): Rectangle {
+                background: #28afe94d;
+            }
             HorizontalLayout {
                 for run in row.runs: Text {
                     text: run.text;
@@ -146,6 +162,12 @@ export component LogView inherits Rectangle {
         if (root.follow) {
             root.offset = root.max-offset;
             root.raw = root.offset;
+        }
+    }
+    // 搜索跳转:Rust 侧 set jump-row 后驱动定位(属性变化链,不经函数调用)
+    changed jump-row => {
+        if (root.jump-row >= 0) {
+            root.scroll-to-row(root.jump-row);
         }
     }
 }

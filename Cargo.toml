@@ -20,6 +20,9 @@ encoding_rs = "0.8"
 # 用户偏好持久化(%APPDATA%/MiniRttViewer/prefs.json)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 正则搜索(轻量回溯引擎:支持字符类/分组/锚点/(?i),无环视/反向引用;
+# 完整 regex DFA 版体积约多 10 倍,日志搜索场景用 lite 足够)
+regex-lite = "0.1"
 # 原生文件对话框(保存日志用;Windows 走 IFileDialog,无额外运行时)
 rfd = "0.15"
 # ANSI/VT 转义序列解析(Alacritty/WezTerm 同款状态机;增量式,颜色状态跨块跨行保持)

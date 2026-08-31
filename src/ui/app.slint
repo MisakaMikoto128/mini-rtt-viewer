@@ -60,6 +60,13 @@ export component AppWindow inherits Window {
     in-out property <int> encoding-index: 0;
     // HEX 接收:原始字节按十六进制显示(动态生效,一帧一行)
     in-out property <bool> hex-rx: false;
+    // 正则搜索条(Ctrl+F 呼出):状态由 Rust 侧节流编译/计算
+    in-out property <bool> search-visible: false;
+    in-out property <string> search-query: "";
+    in property <string> search-status: "";
+    in property <bool> search-error: false;
+    in property <int> search-highlight-row: -1;
+    in property <int> search-jump-row: -1;
     // 保持屏幕常亮(长时间挂机采集)
     in-out property <bool> keep-awake: false;
     // 定时发送:间隔(秒)+ 开关
@@ -81,6 +88,11 @@ export component AppWindow inherits Window {
     // 发送历史:↑ 上一条 / ↓ 下一条(游标管理在 Rust 侧)
     callback send-history-prev();
     callback send-history-next();
+    // 正则搜索
+    callback search-edited();
+    callback search-next();
+    callback search-prev();
+    callback search-closed();
     // 设备输入框文字变化 → Rust 端重筛候选列表
     callback chip-filtered(string);
     // 电源输出开关(仅连接状态下 Rust 端会真正下发)
@@ -112,6 +124,14 @@ export component AppWindow inherits Window {
                 return EventResult.accept;
             }
             EventResult.reject
+        }
+        KeyBinding {
+            keys: @keys(Control+F);
+            activated => { root.search-visible = true; }
+        }
+        KeyBinding {
+            keys: @keys(Escape);
+            activated => { if (root.search-visible) { root.search-closed(); } }
         }
         KeyBinding {
             keys: @keys(F2);
@@ -535,12 +555,51 @@ export component AppWindow inherits Window {
             padding: 10px;
             spacing: AppTheme.gap;
 
+            // 正则搜索条(Ctrl+F 呼出,Esc 关闭)
+            if (root.search-visible): HorizontalLayout {
+                spacing: 8px;
+                height: 30px;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: AppTheme.input-bg;
+                    border-radius: AppTheme.radius;
+                    border-width: 1px;
+                    border-color: root.search-error ? AppTheme.err-red : AppTheme.border-color;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        TextInput {
+                            text <=> root.search-query;
+                            color: root.search-error ? AppTheme.err-red : AppTheme.text-primary;
+                            font-family: AppTheme.mono-font;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            edited => { root.search-edited(); }
+                            accepted => { root.search-next(); }
+                        }
+                    }
+                }
+                Text {
+                    text: root.search-status;
+                    color: root.search-error ? AppTheme.err-red : AppTheme.text-muted;
+                    font-size: 11px;
+                    font-family: AppTheme.ui-font;
+                    vertical-alignment: center;
+                }
+                Button { width: 30px; text: "↑"; clicked => { root.search-prev(); } }
+                Button { width: 30px; text: "↓"; clicked => { root.search-next(); } }
+                Button { width: 30px; text: "×"; clicked => { root.search-closed(); } }
+            }
+
             // 日志区:ListView 虚拟化 + ANSI 带色行;滚轮行对齐/贴底跟随在 LogView 内闭环
             LogView {
                 vertical-stretch: 1;
                 rows: root.log-rows;
                 row-count: root.log-row-count;
                 auto-scroll <=> root.auto-scroll;
+                highlight-row: root.search-highlight-row;
+                jump-row: root.search-jump-row;
             }
 
             // 发送区

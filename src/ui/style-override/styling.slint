@@ -73,8 +73,10 @@ export global FluentPalette {
     out property <brush> control-solid: dark-color-scheme ? #454545 : #FFFFFF;
     out property <brush> circle-border: dark-color-scheme ? @linear-gradient(180deg, #FFFFFF17 0%, #FFFFFF12 100%) : @linear-gradient(180deg, #0000000F 0%, #00000029 100%);
     out property <brush> control-input-active: dark-color-scheme ? #1E1E1EB3 : #FFFFFF;
-    out property <brush> focus-stroke-inner: dark-color-scheme ? #000000B3 : #FFFFFF;
-    out property <brush> focus-stroke-outer: dark-color-scheme ? #FFFFFF : #000000E6;
+    // 焦点描边全透明:焦点环(点选后残留的粗黑框)是纯视觉装饰,
+    // 本工具禁用;焦点转移逻辑不受影响
+    out property <brush> focus-stroke-inner: transparent;
+    out property <brush> focus-stroke-outer: transparent;
     out property <brush> control-background-stroke-flyout: dark-color-scheme ? #00000033 : #0000000F;
     out property <brush> sub-title-secondary: dark-color-scheme ? #FFFFFF0F : #0000000A;
     out property <brush> sub-title-tertiary: dark-color-scheme ? #FFFFFF0A : #00000005;

@@ -256,7 +256,7 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 
 **处理**:slint-build 的 `CompilerConfiguration::with_include_paths` 指向项目内 `src/ui/style-override/`,把内置 `widgets/fluent/styling.slint` 拷来改边框三变量(`control-border`/`accent-control-border`/`text-control-border` 浅色分支渐变 → `#0000000A` 单色)与 `border`(#00000073→#0000001A)。编译器优先从 include path 解析,未覆盖的文件(如 button.slint)仍回落内置样式库——单文件覆盖,不 fork 整个样式目录。注意:slint 1.17 `EmbedResourcesKind` 无 `EmbedForSoftware` 变体(编译报错即删该配置);同一属性写两个 `changed` 回调会报 Duplicated change callback,且常连带一个假的 forward-focus 报错(先修前者)。
 
-参考:`build.rs`、`src/ui/style-override/styling.slint`(注明是内置文件的手改副本,升级 slint 后需对齐)。**坑:改 style-override 文件不触发重编**——slint-build 的 rerun-if-changed 只跟踪主入口 import 链,样式系统按名解析的覆盖文件不在内;改完必须 `touch src/ui/app.slint` 强制,否则 cargo 秒 Finished 是假构建(exe 时间戳不变)。**浅色无框填充的分寸**(2026-08-31 二次修正):按钮/组合框描边透明 + 实心灰底没问题,但 **LineEdit 的 text-control-border 必须保留极淡描边**——它是白底(control-input-active),边框透明+底色不变就"隐形";控件分两类对待:可点击(无边框+灰底)/可输入(白底+淡描边)。
+参考:`build.rs`、`src/ui/style-override/styling.slint`(注明是内置文件的手改副本,升级 slint 后需对齐)。**坑:改 style-override 文件不触发重编**——slint-build 的 rerun-if-changed 只跟踪主入口 import 链,样式系统按名解析的覆盖文件不在内;改完必须 `touch src/ui/app.slint` 强制,否则 cargo 秒 Finished 是假构建(exe 时间戳不变)。**浅色无框填充的分寸**(2026-08-31 二次修正):按钮/组合框描边透明 + 实心灰底没问题,但 **LineEdit 的 text-control-border 必须保留极淡描边**——它是白底(control-input-active),边框透明+底色不变就"隐形";控件分两类对待:可点击(无边框+灰底)/可输入(白底+淡描边)。焦点描边(focus-stroke-inner/outer)也已全局透明——用户明确不要任何焦点残留框,键盘可达性让位于视觉。
 
 ---
 

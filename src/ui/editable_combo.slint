@@ -18,7 +18,8 @@ export component EditableCombo inherits Rectangle {
         width: 100%;
         height: 100%;
         model: root.candidates;
-        enabled: root.enabled;
+        // 候选 ≤1 时禁用箭头:单条候选弹列表没有意义(输入框里就是它)
+        enabled: root.enabled && root.candidates.length > 1;
         // 选中候选 → 回填输入框(current-value 被 LineEdit 盖住,无视觉冲突)
         selected(value) => { root.text = value; }
     }

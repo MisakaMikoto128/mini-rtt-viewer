@@ -348,6 +348,20 @@ extern "system" { fn GetLocalTime(out: *mut WinSystemTime); }
 
 ---
 
+## 手动滚到底与自动跟随必须同一终点:撞底像素精确,行格只管上翻
+
+**现象**:自动接收贴底时最后一行距底边正常;手动上翻再滚回底部(恢复自动滚动)后,最后一行被底边遮一小截,两种"贴底"距离不一致。
+
+**原因**:`scroll-by-px` 把 offset floor 到行高网格,上界用 `grid-max = floor(max-offset/行高)×行高`。当 `max-offset mod 行高 = r > 底部padding` 时,手动滚回停在 grid-max,视口底边超出内容 r 像素,最后一行被裁;而跟随路径(`changed row-count/height/auto-scroll`)全部直接设 `max-offset`,padding 完整。两条贴底路径终点不同。
+
+**处理**:撞底(`量化值 >= grid-max`)时 offset 直接取 `max-offset` 并同步 raw——与跟随态像素一致;行格吸附只保留给上翻(行位稳定)。follow 判定相应改为 `offset >= max-offset - 0.5px`。
+
+**测试**:Slint 表达式抽不成 Rust(1.17 限制),滚动几何在 `log_model.rs` 留了逐条对应的 `ScrollGeom` 纯函数 + 单测锁定语义(撞底像素精确/上翻落格/撞顶对齐 raw/不足一屏恒跟随)。**改任一侧公式必须同步另一侧**,否则单测守护的就是一份漂移的副本。
+
+参考:`src/ui/log_view.slint` `scroll-by-px`、`src/log_model.rs` `ScrollGeom`、commit 滚动贴底修复。
+
+---
+
 ---
 
 ## 已知未修(用户知情,勿"顺手修")

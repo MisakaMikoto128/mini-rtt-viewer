@@ -71,6 +71,50 @@ pub fn split_lines(p: &mut String, rx_ending: i32, out: &mut Vec<String>) {
     }
 }
 
+/// 滚动几何(纯逻辑,与 `log_view.slint` 的 `scroll-by-px` **逐条对应**;
+/// Slint 表达式抽不成 Rust,只能双份——改任一侧必须同步另一侧,单测锁语义)。
+///
+/// 语义要点:手动滚到底与自动跟随必须停在**同一个** offset(max-offset,像素
+/// 精确,底部 padding 完整)。行格量化只用于上翻的行位稳定——若撞底也停在
+/// floor 后的 grid-max,会裁掉 (max-offset mod 行高) 像素,最后一行被遮一点
+/// 且与跟随态贴底距离不一致(踩过:见 commit "滚到底被裁一小截")。
+#[derive(Clone, Copy, Debug)]
+pub struct ScrollGeom {
+    pub line_h: f64,
+    pub content_h: f64,
+    pub viewport_h: f64,
+}
+
+impl ScrollGeom {
+    pub fn max_offset(&self) -> f64 {
+        (self.content_h - self.viewport_h).max(0.0)
+    }
+
+    /// 行格上界(上翻吸附用):floor 到行高网格
+    pub fn grid_max(&self) -> f64 {
+        (self.max_offset() / self.line_h).floor() * self.line_h
+    }
+
+    /// 应用一次像素滚动(delta 正 = 上翻),入参/返回值均为未量化累积量 raw;
+    /// 返回 (new_raw, new_offset, follow)。
+    pub fn scroll_by(&self, raw: f64, delta: f64) -> (f64, f64, bool) {
+        let raw = raw - delta;
+        let u = (raw / self.line_h).floor() * self.line_h;
+        let max_off = self.max_offset();
+        let grid_max = self.grid_max();
+        let (offset, raw) = if u >= grid_max {
+            // 撞底:像素精确贴死 max-offset(与自动跟随同一终点)
+            (max_off, max_off)
+        } else {
+            let offset = u.clamp(0.0, grid_max);
+            // 撞顶时累积量对齐,反向滚动立即响应(不消化攒量)
+            let raw = if offset != u { offset } else { raw };
+            (offset, raw)
+        };
+        (raw, offset, offset >= max_off - 0.5)
+    }
+}
+
 /// 日志泵状态(main 与"清空"回调共享)
 #[derive(Default)]
 pub struct LogPump {
@@ -448,5 +492,63 @@ mod tests {
         pump.enforce_line_cap();
         let rows = pump.take_new_rows().unwrap();
         assert_eq!(rows.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["abcd", "efgh", "ij"]);
+    }
+
+    // ---- 滚动几何(与 log_view.slint scroll-by-px 同步,语义锁定)----
+
+    /// 复刻"手动滚回底部被裁一小截"的几何:max_offset 不落在行格上,
+    /// 余量 r = 2316-2304 = 12,超过底部 padding——旧实现停在 2304 就裁字。
+    fn geom() -> ScrollGeom {
+        ScrollGeom { line_h: 32.0, content_h: 3216.0, viewport_h: 900.0 }
+    }
+
+    #[test]
+    fn scroll_lands_bottom_pixel_exact_not_on_grid() {
+        let g = geom();
+        assert_eq!(g.max_offset(), 2316.0);
+        assert_eq!(g.grid_max(), 2304.0); // floor 少 12,行格≠贴底
+        // 贴底状态继续下滚(哪怕已到底):必须停在 max-offset 而非 grid-max
+        let (raw, offset, follow) = g.scroll_by(2316.0, -64.0);
+        assert_eq!(offset, 2316.0);
+        assert_eq!(raw, 2316.0);
+        assert!(follow);
+    }
+
+    #[test]
+    fn scroll_up_from_bottom_snaps_to_grid() {
+        let g = geom();
+        let (raw, offset, follow) = g.scroll_by(2316.0, 64.0);
+        assert_eq!(offset, 2240.0);
+        assert_eq!(offset % 32.0, 0.0); // 上翻落行格,行位稳定
+        assert_eq!(raw, 2252.0);
+        assert!(!follow);
+    }
+
+    #[test]
+    fn scroll_down_from_grid_returns_pixel_bottom() {
+        // 用户操作序列:上翻(行格 2240)后向下滚回底部 → 与自然跟随同一终点
+        let g = geom();
+        let (_, offset, follow) = g.scroll_by(2252.0, -64.0);
+        assert_eq!(offset, g.max_offset()); // 2316,不是 grid_max 2304
+        assert!(follow);
+    }
+
+    #[test]
+    fn scroll_clamps_at_top_and_syncs_raw() {
+        let g = geom();
+        let (raw, offset, follow) = g.scroll_by(64.0, 1000.0);
+        assert_eq!(offset, 0.0);
+        assert_eq!(raw, 0.0); // 撞顶累积量对齐,反向滚动不消化攒量
+        assert!(!follow);
+    }
+
+    #[test]
+    fn scroll_short_content_is_always_following() {
+        // 内容不足一屏:max_offset=0,任何滚动都停在 0 且视为贴底
+        let g = ScrollGeom { line_h: 32.0, content_h: 200.0, viewport_h: 900.0 };
+        let (raw, offset, follow) = g.scroll_by(0.0, -240.0);
+        assert_eq!(offset, 0.0);
+        assert_eq!(raw, 0.0);
+        assert!(follow);
     }
 }

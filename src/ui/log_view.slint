@@ -79,16 +79,24 @@ export component LogView inherits Rectangle {
         ? probe.preferred-height : line-fallback;
 
     // 统一滚动入口:像素 delta 进入未量化累积量,floor 到行高网格后夹进范围。
-    // 亚行残余留在 raw(触摸板细粒度凑满一行才动,滚轮大步长每格稳定走整数行);
-    // 撞边界时累积量直接对齐,反向滚动立即响应(不消化攒量)。
+    // 亚行残余留在 raw(触摸板细粒度凑满一行才动,滚轮大步长每格稳定走整数行)。
+    // 撞底必须像素精确贴死 max-offset(与自动跟随同一终点,底部 8px 间隙完整):
+    // grid-max 是 floor 值,比 max-offset 少不足一行的余量,若也停在 grid-max,
+    // 最后会被裁掉 (max-offset mod 行高) 像素——和跟随态的贴底距离不一致。
+    // 行格只服务于上翻的行位稳定;顶部分支同样对齐并同步 raw(不消化攒量)。
     function scroll-by-px(delta: length) {
         root.raw = root.raw - delta;
         root.u = floor(root.raw / root.line-h) * root.line-h;
-        root.offset = min(max(root.u, 0px), root.grid-max);
-        if (root.offset != root.u) {
+        if (root.u >= root.grid-max) {
+            root.offset = root.max-offset;
             root.raw = root.offset;
+        } else {
+            root.offset = min(max(root.u, 0px), root.grid-max);
+            if (root.offset != root.u) {
+                root.raw = root.offset;
+            }
         }
-        root.follow = root.offset >= root.grid-max - 0.5px;
+        root.follow = root.offset >= root.max-offset - 0.5px;
         root.auto-scroll = root.follow;
     }
 

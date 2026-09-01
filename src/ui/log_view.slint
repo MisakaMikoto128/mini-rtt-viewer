@@ -183,7 +183,10 @@ export component LogView inherits Rectangle {
             height: root.line-h;
             clip: true;
             // 选中覆盖层:中间行全宽(像素精确),首/尾行按显示列换算;
-            // 单行选中时同行为首+尾(start-col..end-col+1)
+            // 单行选中时同行为首+尾(start-col..end-col+1)。
+            // x 相对 row Rectangle——row 原点就是内容列 0(rows-layout 已含 8px
+            // padding),这里**不能**再加 8px:多加一层后高亮整体右移一个字符宽,
+            // 每行首字符永远不被覆盖,复制(按列)与视觉选区对不上。
             if (root.has-selection()
                 && i >= min(root.sel-a-row, root.sel-b-row)
                 && i <= max(root.sel-a-row, root.sel-b-row)): Rectangle {
@@ -195,8 +198,8 @@ export component LogView inherits Rectangle {
                 property <int> end-col: root.sel-a-row < root.sel-b-row ? root.sel-b-col
                     : root.sel-a-row > root.sel-b-row ? root.sel-a-col
                     : max(root.sel-a-col, root.sel-b-col);
-                x: i == first-row ? 8px + start-col * root.cell-w : 8px;
-                width: (i == last-row ? 8px + (end-col + 1) * root.cell-w : 8px + row-line.width) - self.x;
+                x: i == first-row ? start-col * root.cell-w : 0px;
+                width: (i == last-row ? (end-col + 1) * root.cell-w : row-line.width) - self.x;
                 background: #28afe926;
             }
             if (i == root.highlight-row): Rectangle {

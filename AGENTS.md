@@ -336,6 +336,18 @@ extern "system" { fn GetLocalTime(out: *mut WinSystemTime); }
 
 ---
 
+## 条件渲染子元素的 x 相对**直接父元素**原点:父级已含 padding 就别再加
+
+**现象**:日志拖选的高亮覆盖层比文字整体右移约一个字符宽——每行首字符视觉上未被覆盖,但复制按列号提取包含它,「复制的和看到的对不齐」。逐像素审计截图:文字首列 x=596(物理),高亮左缘 x=611,偏差恰好一个 cell。
+
+**原因**:覆盖层 `if (...) Rectangle` 是 `for row` 里行 Rectangle 的**子元素**,而行 Rectangle 位于 `rows-layout(x: 8px)` 内——行原点就是内容列 0,padding 已在父级。旧公式又写了 `x: 8px + col * cell-w`,把同一份 8px 加了两遍。复制/`col-at-x` 用的是 `(x - 8px) / cell-w`(LogView 坐标系),两者天然差 8px。
+
+**处理**:覆盖层坐标一律行相对:中间行 `x: 0px`,首行 `x: start-col * cell-w`。写 Slint 嵌套元素坐标时先问一句"我的原点是谁"——父级链上任何一层带 padding,子级再写一遍就是双倍。类似地 `col-at-x` 的 `8px` 与 `rows-layout` 的 `x: 8px` 是同一份 padding 的两个写法,改其一必须同步另一个。
+
+参考:`src/ui/log_view.slint` 选中覆盖层、commit `8f5a477`。
+
+---
+
 ---
 
 ## 已知未修(用户知情,勿"顺手修")

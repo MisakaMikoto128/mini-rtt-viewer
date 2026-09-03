@@ -65,6 +65,8 @@ export component AppWindow inherits Window {
     in-out property <string> search-query: "";
     in property <string> search-status: "";
     in property <bool> search-error: false;
+    // 正则开关(false = 字面量匹配);.* 按钮切换,持久化在 prefs
+    in-out property <bool> search-regex: false;
     in property <int> search-highlight-row: -1;
     in property <int> search-jump-row: -1;
     // 日志列级选中(LogView 镜像,Rust Ctrl+C 读取;行+显示列,-1 = 无)
@@ -97,6 +99,9 @@ export component AppWindow inherits Window {
     callback send-history-next();
     // 正则搜索
     callback search-edited();
+    callback search-regex-toggled();
+    // Ctrl+F 打开:日志区有选中文本则带入搜索框(Rust 侧)
+    callback search-opened();
     callback search-next();
     callback search-prev();
     callback search-closed();
@@ -136,7 +141,7 @@ export component AppWindow inherits Window {
         }
         KeyBinding {
             keys: @keys(Control+F);
-            activated => { root.search-visible = true; }
+            activated => { root.search-opened(); }
         }
         KeyBinding {
             keys: @keys(Control+C);
@@ -611,6 +616,12 @@ export component AppWindow inherits Window {
                     font-size: 11px;
                     font-family: AppTheme.ui-font;
                     vertical-alignment: center;
+                }
+                // 正则开关(VS Code 同款 .* 按钮;关=字面量包含匹配)
+                CheckBox {
+                    checked <=> root.search-regex;
+                    text: ".*";
+                    toggled => { root.search-regex-toggled(); }
                 }
                 Button { width: 30px; text: "↑"; clicked => { root.search-prev(); } }
                 Button { width: 30px; text: "↓"; clicked => { root.search-next(); } }

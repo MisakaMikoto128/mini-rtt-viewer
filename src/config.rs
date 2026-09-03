@@ -58,6 +58,8 @@ pub struct StoredPrefs {
     pub timer_send: bool,
     /// 定时发送间隔文本(秒,保持用户输入原样)
     pub timer_interval: String,
+    /// 搜索正则开关(false = 字面量匹配)
+    pub search_regex: bool,
 }
 
 impl Default for StoredPrefs {
@@ -87,6 +89,7 @@ impl Default for StoredPrefs {
             keep_awake: false,
             timer_send: false,
             timer_interval: "1".into(),
+            search_regex: false,
         }
     }
 }
@@ -173,6 +176,7 @@ mod tests {
             keep_awake: true,
             timer_send: true,
             timer_interval: "0.5".into(),
+            search_regex: true,
         };
         save_to(&p, &prefs).unwrap();
         let back = load_from(&p);

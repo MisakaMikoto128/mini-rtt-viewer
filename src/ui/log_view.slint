@@ -12,6 +12,8 @@ export struct LogRun {
 // 一行日志 = 若干同色段(ANSI 转义由 Rust 端 vte 解析,这里只渲染)
 export struct LogRow {
     runs: [LogRun],
+    // 命中搜索(非当前):行底淡黄;当前命中行由 highlight-row 橙底覆盖
+    hit: bool,
 }
 
 // 日志滚动区:滚轮位移按整数行量化对齐,手动滚动位置永远落在行高网格上
@@ -210,8 +212,12 @@ export component LogView inherits Rectangle {
                 width: (i == last-row ? (end-col + 1) * root.cell-w : row-line.width) - self.x;
                 background: #28afe926;
             }
+            // 搜索命中行(VS Code 惯例淡黄;当前命中行 highlight-row 橙色覆盖)
+            if (row.hit && i != root.highlight-row): Rectangle {
+                background: AppTheme.search-hit-bg;
+            }
             if (i == root.highlight-row): Rectangle {
-                background: #28afe94d;
+                background: AppTheme.search-current-bg;
             }
             row-line := HorizontalLayout {
                 for run in row.runs: Text {

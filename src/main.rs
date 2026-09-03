@@ -11,6 +11,7 @@ use mini_rtt_viewer::{device_db, demo, single_instance, AppTheme, AppWindow, Inf
 use regex_lite::Regex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -240,9 +241,7 @@ impl Default for Stats {
 
 /// 正则搜索状态(行模型上扫描;编译/计算按 150ms 节流)
 struct SearchState {
-    /// 编译成功的正则;None = 输入非法
-    regex: Option<Regex>,
-    /// 编译错误提示(显示在搜索条,红色)
+    /// 编译错误提示(显示在搜索条,红色;仅正则模式)
     error: String,
     /// 匹配行号升序(UI 行模型下标,含标记/回显行)
     matches: Vec<usize>,
@@ -252,16 +251,18 @@ struct SearchState {
     dirty: bool,
     /// 上次计算时刻(节流)
     last_run: Instant,
+    /// 上轮命中集合(与新一轮 diff,只更新变化的行 hit 标记)
+    last_hits: HashSet<usize>,
 }
 impl Default for SearchState {
     fn default() -> Self {
         Self {
-            regex: None,
             error: String::new(),
             matches: Vec::new(),
             current: 0,
             dirty: false,
             last_run: Instant::now(),
+            last_hits: HashSet::new(),
         }
     }
 }
@@ -420,7 +421,7 @@ impl Ctx {
                         default_fg: r.fg.is_none(),
                     })
                     .collect();
-                self.log_rows.push(LogRow { runs: ModelRc::new(VecModel::from(spans)) });
+                self.log_rows.push(LogRow { runs: ModelRc::new(VecModel::from(spans)), hit: false });
             }
             ui.set_log_row_count(self.log_rows.row_count() as i32);
         }
@@ -498,7 +499,7 @@ impl Ctx {
                     default_fg: r.fg.is_none(),
                 })
                 .collect();
-            fresh.push(LogRow { runs: ModelRc::new(VecModel::from(spans)) });
+            fresh.push(LogRow { runs: ModelRc::new(VecModel::from(spans)), hit: false });
         }
         let n = fresh.len();
         self.log_rows.set_vec(fresh);
@@ -540,6 +541,7 @@ impl Ctx {
             keep_awake: ui.get_keep_awake(),
             timer_send: ui.get_timer_send(),
             timer_interval: ui.get_timer_interval().to_string(),
+            search_regex: ui.get_search_regex(),
         }
     }
 
@@ -752,27 +754,34 @@ impl Ctx {
         }
     }
 
-    /// 编译当前输入并扫描全部 UI 行(含标记/回显行);编译错误显示在搜索条
+    /// 编译当前输入并扫描全部 UI 行(含标记/回显行);编译错误显示在搜索条。
+    /// 正则开关(.* 按钮)决定匹配方式:开=regex-lite,关=字面量包含。
+    /// 空 query 一律清空命中(VS Code 惯例,空串不算命中全部行)。
     fn search_run(&self, ui: &AppWindow) {
         let query = ui.get_search_query().to_string();
-        let re = match Regex::new(&query) {
-            Ok(re) => Some(re),
+        if query.is_empty() {
+            self.search_reset(ui, "");
+            return;
+        }
+        // matcher:Err = 正则非法(字面量模式不产生编译错误)
+        let matcher: Result<Box<dyn Fn(&str) -> bool>, String> = if ui.get_search_regex() {
+            match Regex::new(&query) {
+                Ok(re) => Ok(Box::new(move |text| re.is_match(text))),
+                Err(e) => Err(format!("正则错误:{e}")),
+            }
+        } else {
+            let needle = query.clone();
+            Ok(Box::new(move |text| text.contains(&needle)))
+        };
+        let re = match matcher {
             Err(e) => {
-                let mut st = self.search.borrow_mut();
-                st.regex = None;
-                st.matches.clear();
-                st.current = 0;
-                st.error = format!("正则错误:{e}");
-                st.dirty = false;
-                st.last_run = Instant::now();
-                drop(st);
+                self.search_reset(ui, &e);
                 ui.set_search_error(true);
-                ui.set_search_highlight_row(-1);
                 return;
             }
+            Ok(scan) => scan,
         };
         let n = self.log_rows.row_count();
-        let re = re.unwrap();
         let mut matches = Vec::new();
         for i in 0..n {
             let Some(row) = self.log_rows.row_data(i) else { continue };
@@ -782,19 +791,26 @@ impl Ctx {
                     text.push_str(&seg.text);
                 }
             }
-            if re.is_match(&text) {
+            if re(&text) {
                 matches.push(i);
             }
         }
         let count = matches.len();
         {
             let mut st = self.search.borrow_mut();
-            st.regex = Some(re);
             st.error.clear();
-            st.matches = matches;
             st.current = 0;
             st.dirty = false;
             st.last_run = Instant::now();
+            // 命中标记 diff:先熄旧、再点新(裁剪/重排漂移下 set false 也无害)
+            let new_hits: HashSet<usize> = matches.iter().copied().collect();
+            let gone: HashSet<usize> = st.last_hits.difference(&new_hits).copied().collect();
+            let fresh: HashSet<usize> = new_hits.difference(&st.last_hits).copied().collect();
+            st.last_hits = new_hits;
+            st.matches = matches;
+            drop(st);
+            self.set_hit_marks(&gone, false);
+            self.set_hit_marks(&fresh, true);
         }
         ui.set_search_error(false);
         if count == 0 {
@@ -803,6 +819,35 @@ impl Ctx {
         } else {
             ui.set_search_status(format!("1/{count}").into());
             self.search_jump_to(ui, 0);
+        }
+    }
+
+    /// 搜索失效复位:清命中/错误/高亮与行 hit 标记(status 置为给定文本)
+    fn search_reset(&self, ui: &AppWindow, status: &str) {
+        let old = {
+            let mut st = self.search.borrow_mut();
+            st.error.clear();
+            st.matches.clear();
+            st.current = 0;
+            st.dirty = false;
+            st.last_run = Instant::now();
+            std::mem::take(&mut st.last_hits)
+        };
+        self.set_hit_marks(&old, false);
+        ui.set_search_error(false);
+        ui.set_search_status(status.into());
+        ui.set_search_highlight_row(-1);
+    }
+
+    /// 批量翻转行模型 hit 标记(只动给定行号;越界行静默跳过,容忍裁剪漂移)
+    fn set_hit_marks(&self, rows: &HashSet<usize>, on: bool) {
+        for &i in rows {
+            if let Some(mut row) = self.log_rows.row_data(i) {
+                if row.hit != on {
+                    row.hit = on;
+                    self.log_rows.set_row_data(i, row);
+                }
+            }
         }
     }
 
@@ -846,8 +891,8 @@ impl Ctx {
 
     fn search_close(&self, ui: &AppWindow) {
         ui.set_search_visible(false);
-        ui.set_search_highlight_row(-1);
-        ui.set_search_status("".into());
+        // 命中标记/高亮/状态全部复位(下次 Ctrl+F 从干净状态开始)
+        self.search_reset(ui, "");
     }
 
     /// 插入一条会话标记行。**只能在 UI 回调上下文调用**(此时不持 pump 的
@@ -910,10 +955,22 @@ impl Ctx {
     /// 清空:行模型清空 + 状态栏恢复(不退化为无参数的"已连接")
     /// 复制日志选中(Ctrl+C;列级:行+显示列,宽度列切文本,CJK 记 2 列)
     fn copy_selected(&self, ui: &AppWindow) {
+        let Some(text) = self.extract_selection(ui) else { return };
+        let lines = text.matches("\r\n").count() + 1;
+        ui.set_status_text(if set_clipboard_text(&text) {
+            format!("● 已复制 {lines} 行").into()
+        } else {
+            "● 复制失败(剪贴板被占用)".into()
+        });
+    }
+
+    /// 提取当前选区文本(列级:行+显示列,宽度列切文本,CJK 记 2 列)。
+    /// Ctrl+C 复制与 Ctrl+F 预填搜索框共用;无选中或全空返回 None。
+    fn extract_selection(&self, ui: &AppWindow) -> Option<String> {
         let (ar, ac, br, bc) =
             (ui.get_sel_a_row(), ui.get_sel_a_col(), ui.get_sel_b_row(), ui.get_sel_b_col());
         if ar < 0 || br < 0 {
-            return;
+            return None;
         }
         // 归一化:字典序 (row, col)
         let ((lo_r, lo_c), (hi_r, hi_c)) = if (ar, ac) <= (br, bc) {
@@ -952,15 +1009,26 @@ impl Ctx {
             }
             text.push_str(&line);
         }
-        if text.is_empty() {
-            return;
+        if text.is_empty() { None } else { Some(text) }
+    }
+
+    /// Ctrl+F 打开搜索条:日志区有选中文本则直接带入(VS Code 惯例)并立即搜索
+    fn search_opened(&self, ui: &AppWindow) {
+        ui.set_search_visible(true);
+        if let Some(text) = self.extract_selection(ui) {
+            // 搜索框是单行输入;跨行选区不预填(保持现 query)
+            if !text.contains('\r') && !text.contains('\n') {
+                ui.set_search_query(text.into());
+                self.search.borrow_mut().dirty = true;
+                self.search_run(ui);
+            }
         }
-        let lines = hi_r - lo_r + 1;
-        ui.set_status_text(if set_clipboard_text(&text) {
-            format!("● 已复制 {lines} 行").into()
-        } else {
-            "● 复制失败(剪贴板被占用)".into()
-        });
+    }
+
+    /// .* 开关切换:立即按新模式重算(不等 150ms 节流)
+    fn search_regex_toggled(&self, ui: &AppWindow) {
+        self.search.borrow_mut().dirty = true;
+        self.search_run(ui);
     }
 
     fn clear_log(&self, ui: &AppWindow) {
@@ -968,6 +1036,8 @@ impl Ctx {
         ui.set_log_row_count(0);
         ui.set_status_text(self.last_status.borrow().clone());
         self.pump.borrow_mut().clear();
+        // 行模型已清空:搜索命中(行号/标记)整体失效,待重算
+        self.search.borrow_mut().dirty = true;
         ui.set_sel_a_row(-1);
         ui.set_sel_a_col(-1);
         ui.set_sel_b_row(-1);
@@ -1079,6 +1149,7 @@ fn main() -> anyhow::Result<()> {
     app.set_hex_send(saved.hex_send);
     app.set_hex_rx(saved.hex_rx);
     app.set_encoding_index(saved.encoding_index.clamp(0, ENCODINGS.len() as i32 - 1));
+    app.set_search_regex(saved.search_regex);
     app.set_info_expanded(saved.info_expanded);
     // 字号 9-30 之外的值视为坏值,不恢复(UI 端按钮本身也夹在这个范围)
     if (9..=30).contains(&saved.log_font_px) {
@@ -1254,6 +1325,24 @@ fn main() -> anyhow::Result<()> {
         let ctx = ctx.clone();
         app.on_search_edited(move || {
             ctx.search.borrow_mut().dirty = true;
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_search_regex_toggled(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.search_regex_toggled(&ui);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_search_opened(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.search_opened(&ui);
+            }
         });
     }
     {

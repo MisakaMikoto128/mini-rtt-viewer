@@ -111,6 +111,8 @@ export component AppWindow inherits Window {
     callback chip-filtered(string);
     // 电源输出开关(仅连接状态下 Rust 端会真正下发)
     callback power-toggled(bool);
+    // HEX 发送开关切换:输入框内容在 文本 ↔ 十六进制 间双向转换(Rust 侧)
+    callback hex-send-toggled();
 
     init => {
         root.apply-color-scheme();
@@ -514,6 +516,7 @@ export component AppWindow inherits Window {
                             CheckBox {
                                 text: "HEX 发送(输入按十六进制字节)";
                                 checked <=> root.hex-send;
+                                toggled => { root.hex-send-toggled(); }
                             }
                             HorizontalLayout {
                                 spacing: 8px;

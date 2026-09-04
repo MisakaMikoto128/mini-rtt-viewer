@@ -86,6 +86,11 @@ export component LogView inherits Rectangle {
     // grid-max 是 floor 值,比 max-offset 少不足一行的余量,若也停在 grid-max,
     // 最后会被裁掉 (max-offset mod 行高) 像素——和跟随态的贴底距离不一致。
     // 行格只服务于上翻的行位稳定;顶部分支同样对齐并同步 raw(不消化攒量)。
+    //
+    // follow 只能被「灭」不能被「点」:用户取消自动滚动(或滚离底部)后,贴底
+    // 状态本身不再恢复跟随——否则滚轮在底部的任何一点向下滑动都会把 checkbox
+    // 重新勾上,与用户意图打架(实测:取消后仍跟滚、checkbox 反复横跳)。
+    // 恢复跟随的唯一途径是用户重新勾选 checkbox(changed auto-scroll 跳底)。
     function scroll-by-px(delta: length) {
         root.raw = root.raw - delta;
         root.u = floor(root.raw / root.line-h) * root.line-h;
@@ -98,8 +103,10 @@ export component LogView inherits Rectangle {
                 root.raw = root.offset;
             }
         }
-        root.follow = root.offset >= root.max-offset - 0.5px;
-        root.auto-scroll = root.follow;
+        if (root.offset < root.max-offset - 0.5px) {
+            root.follow = false;
+            root.auto-scroll = false;
+        }
     }
 
     // 跳转到指定行(置顶显示):手动定位解除跟随(checkbox 经 auto-scroll 同步);
@@ -191,6 +198,10 @@ export component LogView inherits Rectangle {
             // 每行严格一行高:内容超高部分裁掉(终端语义;行内不换行——
             // 超宽行由 Rust 侧按列硬换行成多行,见 log_model wrap_runs)
             height: root.line-h;
+            // 内容宽度不得反灌布局:断行兜底(MAX_LINE_CHARS)切出的超长行若把
+            // min-width 传播上去,会把 VerticalLayout/日志区整体撑宽、文字画到
+            // 边界外——渲染宽度只归 clip 管,布局宽度锁死视口
+            min-width: 0px;
             clip: true;
             // 选中覆盖层:中间行全宽(像素精确),首/尾行按显示列换算;
             // 单行选中时同行为首+尾(start-col..end-col+1)。

@@ -149,8 +149,10 @@ fn window_geom(app: &AppWindow) -> (i32, i32, i32, i32) {
     (pos.x, pos.y, size.width as i32, size.height as i32)
 }
 
-/// 恢复窗口几何并夹回主屏:标题条至少 200/100px 可见(多显示器负坐标仍可落在
-/// 左侧屏);w/h 全 0 或非法 = 无保存,不动作
+/// 恢复窗口几何并夹回主屏。保存的是上次退出时的物理像素(用户习惯),但
+/// 恢复环境可能已变(DPI 缩放调整/换显示器/上次窗口异常大),直接还原会跑出
+/// 屏幕边界——尺寸先夹到主屏的 95%/88% 以内,位置保证标题条至少 200/100px
+/// 可见;w/h 全 0 或非法 = 无保存,不动作
 fn restore_window(app: &AppWindow, x: i32, y: i32, w: i32, h: i32) {
     if w <= 0 || h <= 0 {
         return;
@@ -159,10 +161,10 @@ fn restore_window(app: &AppWindow, x: i32, y: i32, w: i32, h: i32) {
     if sw <= 0 || sh <= 0 {
         return;
     }
-    let x = x.clamp(200 - w, sw - 200);
+    let w = w.clamp(400, sw * 95 / 100) as u32;
+    let h = h.clamp(300, sh * 88 / 100) as u32;
+    let x = x.clamp(200 - w as i32, sw - 200);
     let y = y.clamp(0, sh - 100);
-    let w = w.clamp(400, sw) as u32;
-    let h = h.clamp(300, sh) as u32;
     let win = app.window();
     win.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(x, y)));
     win.set_size(slint::WindowSize::Physical(slint::PhysicalSize::new(w, h)));
@@ -426,12 +428,23 @@ impl Ctx {
             ui.set_log_row_count(self.log_rows.row_count() as i32);
         }
         drop(pump);
-        // 4. 统计栏(500ms 节流:时长按秒变化,再快也是白画)
-        let mut st = self.stats.borrow_mut();
-        if st.last_ui.elapsed() >= Duration::from_millis(500) {
-            st.last_ui = Instant::now();
-            let (tx, rx, dur) = (st.tx, st.rx, st.since.map(|t| t.elapsed()));
-            drop(st);
+        // 4. 统计栏(500ms 节流:时长按秒变化,再快也是白画)。
+        //    borrow 必须当场结束:st 若声明在 if 外,节流未到的 tick 里 RefMut
+        //    的 drop 点会拖到函数末尾,借用活着穿过 step 6——定时发送在此调
+        //    send_text 再借 stats 即 panic(RefCell already borrowed,栈已实锤)
+        let stats_due = {
+            let mut st = self.stats.borrow_mut();
+            let due = st.last_ui.elapsed() >= Duration::from_millis(500);
+            if due {
+                st.last_ui = Instant::now();
+            }
+            due
+        };
+        if stats_due {
+            let (tx, rx, dur) = {
+                let st = self.stats.borrow();
+                (st.tx, st.rx, st.since.map(|t| t.elapsed()))
+            };
             let dur_text = dur.map(fmt_dur).unwrap_or_else(|| "--:--".into());
             ui.set_stats_text(
                 format!("TX {} · RX {} · {}", fmt_bytes(tx), fmt_bytes(rx), dur_text).into(),
@@ -678,6 +691,25 @@ impl Ctx {
         *self.cmd_tx.borrow_mut() = None; // 掐断旧管道,worker try_recv 后自行退出
         ui.set_connecting(true);
         ui.set_status_text("● 断开中…".into());
+    }
+
+    /// HEX 发送开关切换:输入框内容在 文本 ↔ 十六进制 之间双向转换,
+    /// 让"模式切换"与"框内显示"始终一致(勾上看到 hex,勾回还原文本)。
+    /// 转换规则:文本→hex 用原始字节大写两位空格分隔;hex→文本失败(非法/奇数
+    /// 位)则保持原样不清空。往返无损:"abc" ↔ "61 62 63"。
+    fn hex_send_toggled(&self, ui: &AppWindow) {
+        let text = ui.get_send_text().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let converted = if ui.get_hex_send() {
+            Some(text.bytes().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "))
+        } else {
+            parse_hex_bytes(&text).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+        };
+        if let Some(t) = converted {
+            ui.set_send_text(t.into());
+        }
     }
 
     /// 发送:文本/HEX 两模式按发送行尾拼成原始字节交 worker;投递成功后回显
@@ -1175,6 +1207,13 @@ fn main() -> anyhow::Result<()> {
 
     if demo_mode {
         demo::spawn(ctx.msg_tx.clone());
+        // 假命令消费者:demo 无 worker,但发送/复位等 UI 路径需要 cmd_tx 有人接,
+        // 否则定时发送等场景在 demo 下无法端到端仿真(命令直接丢弃即可)
+        let (fake_tx, fake_rx) = mpsc::channel::<WorkerCmd>();
+        *ctx.cmd_tx.borrow_mut() = Some(fake_tx);
+        std::thread::spawn(move || {
+            while fake_rx.recv().is_ok() {}
+        });
     } else {
         // 后台枚举:目标设备库候选(有磁盘缓存则零 DLL 调用)+ 本机接入的 J-Link 列表。
         // device_db 不依赖 WorkerMsg,这里用转发线程适配消息类型
@@ -1342,6 +1381,15 @@ fn main() -> anyhow::Result<()> {
         app.on_search_opened(move || {
             if let Some(ui) = weak.upgrade() {
                 ctx.search_opened(&ui);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        let weak = app.as_weak();
+        app.on_hex_send_toggled(move || {
+            if let Some(ui) = weak.upgrade() {
+                ctx.hex_send_toggled(&ui);
             }
         });
     }

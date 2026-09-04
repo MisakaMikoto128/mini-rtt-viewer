@@ -250,6 +250,34 @@ Rust 侧曾按"每行追加 `内容+\n`"维护日志文本,结尾的 `\n` 被 Te
 
 ---
 
+## borrow 声明在 if 外、显式 drop 在 if 内:不进 if 的路径借用拖到函数尾
+
+**现象**:定时发送使能后软件崩溃(release 直接消失)。RUST_BACKTRACE 实锤:`send_text` 里 `self.stats.borrow_mut()` 报 `RefCell already borrowed`,调用栈是 `main::closure$2`(tick 的 timer 回调)→ `send_text`。
+
+**原因**:tick step 4 写成
+```rust
+let mut st = self.stats.borrow_mut();      // ← 声明在 if 外
+if st.last_ui.elapsed() >= 500ms {
+    ...
+    drop(st);                              // ← 只覆盖"进 if"的路径
+}
+// step 6:定时发送 → send_text → stats.borrow_mut() ← 崩
+```
+`RefMut` 的 `drop` 本身要再借 `&mut st`,所以**借用必须活到 drop 点**:进 if 的路径在显式 drop 处结束,但**节流未到的 tick(大多数)不进 if,st 的静态 drop 点在函数末尾——借用活着穿过 step 6**。500ms 统计节流与 500ms 定时间隔错开 10ms 后,每次定时发送都踩中。手动发送(事件回调,无 tick borrow)永不崩,所以只有定时发送炸。
+
+**处理**:borrow 作用域显式封闭,块内算出值、块外用值:
+```rust
+let stats_due = { let mut st = self.stats.borrow_mut(); ...; due };
+if stats_due { let (tx, rx, dur) = { let st = self.stats.borrow(); ... }; ... }
+```
+**规则升级**:之前那条"持 borrow 期间严禁再借"说的是显式长作用域;这条是**作用域泄漏**——`let x = borrow()` 声明在 if 外、`drop(x)` 在 if 内,就是不进 if 的路径泄漏。审查模式:`grep 'drop('` 出现的位置若在条件块内,看声明处是否同级。
+
+**demo 补设施**:demo 无 worker 时 `cmd_tx = None`,定时/手动发送的发送块整段跳过,**UI 侧这类 bug 在旧 demo 下永远测不到**。已给 demo 模式接假命令消费者(mpsc 丢弃线程),发送链可端到端仿真。
+
+参考:`src/main.rs` tick step 4、`main.rs` demo 分支 fake cmd sink、`sim_err` panic 栈。
+
+---
+
 ## 浅色下 std 组件灰边框:include-path 覆盖 fluent 单文件
 
 **现象**:浅色模式 Button/ComboBox/LineEdit 外一圈明显灰边,来自 fluent 样式私有 global `FluentPalette.control-border` 的黑色线性渐变(#0000000F→#00000029)——它在样式内部文件定义,`Palette.border`(公开)覆盖不了它。

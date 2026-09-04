@@ -551,4 +551,28 @@ mod tests {
         assert_eq!(raw, 0.0);
         assert!(follow);
     }
+
+    #[test]
+    fn pump_cjk_overlong_stream_caps_then_wraps_within_cols() {
+        // 复刻"取消断帧后的无换行宽字符流":1000 个汉字(2000 显示列),
+        // cap 按字符切 512,wrap 按显示列切——任何产出行的显示宽度都不得超列数
+        let mut pump = LogPump::default();
+        pump.set_wrap_cols(40);
+        pump.absorb_text(&"汉".repeat(1000), 4); // 行尾=无,全进 pending
+        pump.enforce_line_cap();
+        let rows = pump.take_new_rows().unwrap();
+        assert!(!rows.is_empty());
+        for r in &rows {
+            let w: usize =
+                joined(r).chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1)).sum();
+            assert!(w <= 40, "行宽 {w} 超过 40 列");
+        }
+        // cap 切剩的尾部随下一帧成行,同样不超宽
+        pump.absorb_frame_end(4);
+        for r in pump.take_new_rows().unwrap() {
+            let w: usize =
+                joined(&r).chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1)).sum();
+            assert!(w <= 40, "尾行宽 {w} 超过 40 列");
+        }
+    }
 }

@@ -278,6 +278,21 @@ if stats_due { let (tx, rx, dur) = { let st = self.stats.borrow(); ... }; ... }
 
 ---
 
+## 换行列数必须单一真源 + 无节流同步:节流窗口内的行按旧列数切,尾部被裁
+
+**现象**:关闭自动断帧后长流换行正常,但最右侧总有一两个字符被遮挡,手动拖一下窗口宽度才恢复。
+
+**原因**:换行列数有三个不同步的来源——① `LogView.columns`(UI 绑定,实时);② `pump.wrap_cols`(tick **末尾**且 250ms 节流才同步);③ 渲染 clip(实时)。节流窗口内 `take_new_rows` 的新行按**旧列数**切,超出的尾部被视口裁掉;且探针 cell-w 与实际字符 advance 有亚像素差,满列排版误差沿行累积,即使列数同步了行尾也可能裁 1-2 字符。
+
+**处理**(用户点破:"本应是统一整体却被分成不同步骤"):
+- 列数同步挪到 tick **开头**(pump 借用之前),**每个 tick 无节流执行**——列数一变,新行立即按新列切、既有行立即重排、选中/搜索连带失效,全部一步完成,不存在中间态
+- `columns` 公式保守减 1 列(`floor((width-16px)/cell-w) - 1`),吃掉亚像素累积
+- 重排成本实测可忽略(500 行 <5ms),当初的 250ms 节流防的"resize 抖动出天文列数"早已由 `set_wrap_cols` 的 clamp(512) 解决——**节流删掉,不要为已消失的问题保留复杂度**
+
+参考:`src/main.rs` tick 开头的列数同步块、`src/ui/log_view.slint` `columns`、commit 换行统一真源。
+
+---
+
 ## 浅色下 std 组件灰边框:include-path 覆盖 fluent 单文件
 
 **现象**:浅色模式 Button/ComboBox/LineEdit 外一圈明显灰边,来自 fluent 样式私有 global `FluentPalette.control-border` 的黑色线性渐变(#0000000F→#00000029)——它在样式内部文件定义,`Palette.border`(公开)覆盖不了它。

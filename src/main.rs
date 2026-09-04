@@ -306,8 +306,6 @@ struct Ctx {
     last_timer_send: RefCell<Instant>,
     /// 正则搜索状态
     search: RefCell<SearchState>,
-    /// 上次换行重排时刻(节流)
-    last_rewrap: RefCell<Instant>,
 }
 
 impl Ctx {
@@ -327,6 +325,23 @@ impl Ctx {
             .store(ui.get_encoding_index().clamp(0, ENCODINGS.len() as i32 - 1) as u32, Ordering::Relaxed);
         // HEX 接收动态生效
         self.hex_rx.store(ui.get_hex_rx(), Ordering::Relaxed);
+        // 换行列数同步:**唯一真源 = LogView.columns,每个 tick 无节流执行**。
+        // 旧实现放在 tick 末尾且 250ms 节流:节流窗口内的新行按旧列数切,
+        // 尾部被视口裁掉(用户看到"最右侧字符被遮挡,手动调宽度才恢复")。
+        // 现在列数一变立即生效:新行按新列切,既有行同步重排——切行与渲染
+        // 同一列数,不再有中间态。变列时的连带(选中失效/搜索重算)也在这里。
+        let cols = ui.get_wrap_columns();
+        if cols > 0 {
+            let changed = self.pump.borrow_mut().set_wrap_cols(cols as usize);
+            if changed {
+                self.refresh_all_rows(ui);
+                ui.set_sel_a_row(-1);
+                ui.set_sel_a_col(-1);
+                ui.set_sel_b_row(-1);
+                ui.set_sel_b_col(-1);
+                self.search.borrow_mut().dirty = true;
+            }
+        }
         // 接收行尾:0=自动 1=CRLF 2=LF 3=CR 4=无
         let rx_ending = ui.get_rx_ending();
         let mut pump = self.pump.borrow_mut();
@@ -478,21 +493,6 @@ impl Ctx {
         };
         if need {
             self.search_run(ui);
-        }
-        // 8. 换行列数:LogView 等宽探针测出,变化时全量重排 + 整体刷新
-        //    (250ms 节流;拖拽窗口宽度时连续触发也只按节流频率重排)
-        let cols = ui.get_wrap_columns();
-        if cols > 0 && self.last_rewrap.borrow().elapsed() >= Duration::from_millis(250) {
-            let changed = self.pump.borrow_mut().set_wrap_cols(cols as usize);
-            if changed {
-                *self.last_rewrap.borrow_mut() = Instant::now();
-                self.refresh_all_rows(ui);
-                ui.set_sel_a_row(-1);
-                ui.set_sel_a_col(-1);
-                ui.set_sel_b_row(-1);
-                ui.set_sel_b_col(-1);
-                self.search.borrow_mut().dirty = true;
-            }
         }
     }
 
@@ -1157,7 +1157,6 @@ fn main() -> anyhow::Result<()> {
         draft: RefCell::new(String::new()),
         last_timer_send: RefCell::new(Instant::now()),
         search: RefCell::default(),
-        last_rewrap: RefCell::new(Instant::now() - Duration::from_millis(1000)),
         encoding_index,
         hex_rx,
     });

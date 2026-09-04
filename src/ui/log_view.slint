@@ -42,8 +42,11 @@ export component LogView inherits Rectangle {
     // 右键菜单位置(LogView 坐标)
     private property <length> menu-x: 0px;
     private property <length> menu-y: 0px;
-    // 每行渲染列数(等宽字符单元换算,Rust 侧换行用;0 = 尚未测出)
-    out property <int> columns: cell-w > 0px ? max(1, floor((self.width - 16px) / cell-w)) : 0;
+    // 每行渲染列数(等宽字符单元换算,Rust 侧换行用;0 = 尚未测出)。
+    // 保守减 1 列:探针 cell-w 与实际字符 advance 有亚像素差,满列排版时
+    // 误差沿行累积,行尾 1-2 个字符会被右缘裁掉(实测)——留一列余量
+    out property <int> columns: cell-w > 0px
+        ? max(1, floor((self.width - 16px) / cell-w) - 1) : 0;
     // 等宽字符单元宽(Consolas 半角宽;探针 "00" 实测取半)
     private property <length> cell-w: cell-probe.preferred-width > 0px
         ? cell-probe.preferred-width / 2 : 0px;

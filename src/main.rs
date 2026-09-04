@@ -5,7 +5,7 @@
 // 本文件只是"装配层"——创建 AppWindow、把回调接到 Ctx 的方法上、起 timer 泵、
 // 管理退出编排。业务规则一律不在这里实现。
 use mini_rtt_viewer::config::{self, StoredPrefs};
-use mini_rtt_viewer::log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
+use mini_rtt_viewer::log_model::{char_width_cols, LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
 use mini_rtt_viewer::rtt::{self, WorkerCmd, WorkerHandle, WorkerMsg, ENCODINGS, APP_SHUTDOWN};
 use mini_rtt_viewer::{device_db, demo, single_instance, AppTheme, AppWindow, InfoRow, LogRun, LogRow};
 use regex_lite::Regex;
@@ -1016,13 +1016,13 @@ impl Ctx {
             // 该行截取列区间:首行从 lo_c 起,尾行到 hi_c 止(含),中间整行
             let start_col = if i == lo_r { lo_c } else { 0 };
             let end_col = if i == hi_r { hi_c.saturating_add(1) } else { usize::MAX };
-            // 按显示宽度列从带色段提取纯文本
+            // 按显示宽度列从带色段提取纯文本(列宽真源同 wrap_runs)
             let mut col = 0usize;
             let mut line = String::new();
             for j in 0..row.runs.row_count() {
                 let Some(seg) = row.runs.row_data(j) else { continue };
                 for ch in seg.text.chars() {
-                    let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+                    let w = char_width_cols(ch);
                     if col + w > end_col {
                         break;
                     }

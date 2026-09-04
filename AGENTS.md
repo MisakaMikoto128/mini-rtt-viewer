@@ -293,6 +293,18 @@ if stats_due { let (tx, rx, dur) = { let st = self.stats.borrow(); ... }; ... }
 
 ---
 
+## unicode-width 的 emoji=2 列低估了渲染宽度:列宽真源要对 fallback 字体保守
+
+**现象**:统一列数真源 + 保守减 1 列后,满列行行尾仍贴死裁剪线(窗口越宽累积越明显)。UIA 几何审计发现行内容渲染宽比「列数 × 探针 cell-w」宽约 2%——emoji 走字体 fallback(Segoe UI Emoji),实际 advance 接近 3 个半角列,unicode-width 只记 2;误差沿行累积,行尾字符被行 Rectangle 的 clip 纵向切半。
+
+**处理**:列宽计算收敛为单一函数 `char_width_cols`(log_model 导出):emoji 区段(U+1F000-1FAFF、U+2600-27BF、U+2764)记 3 列,其余按 unicode-width。**wrap_runs 与 main.rs 的复制/列提取共用它**——切行和复制的列坐标系必须同一份,否则复制的内容和选区又对不上(前科)。教训:**任何「逻辑列宽 ↔ 实际像素」的换算,fallback 字体的字符(CJK/emoji/符号)都是误差大头,保守估计 + 单一真源 + 单测锁定(emoji 全流 wrap 断言不超列)。**
+
+判读技巧:满列行切点一致,行尾 x 聚集在同一位置是**正常**的,不要误判为"贴死裁剪线"——先算出裁剪线位置(LogView 右缘 - padding)再比差值。
+
+参考:`src/log_model.rs` `char_width_cols`、`src/main.rs` `extract_selection`。
+
+---
+
 ## 浅色下 std 组件灰边框:include-path 覆盖 fluent 单文件
 
 **现象**:浅色模式 Button/ComboBox/LineEdit 外一圈明显灰边,来自 fluent 样式私有 global `FluentPalette.control-border` 的黑色线性渐变(#0000000F→#00000029)——它在样式内部文件定义,`Palette.border`(公开)覆盖不了它。

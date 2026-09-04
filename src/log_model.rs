@@ -9,6 +9,19 @@
 use crate::ansi::{AnsiLines, Run};
 use unicode_width::UnicodeWidthChar;
 
+/// 单个字符的显示列宽(换行/复制共用的**唯一真源**)。
+/// unicode-width 给 emoji 记 2 列,但渲染时 emoji 走字体 fallback(Segoe UI
+/// Emoji),实际 advance ≈ 3 个半角列——按 2 列切行的行尾会溢出被裁(实测
+/// 213 列的行溢出 4-5 列)。这里对 emoji 区段保守记 3 列;其余按 unicode-width。
+pub fn char_width_cols(c: char) -> usize {
+    let u = c as u32;
+    if (0x1F000..=0x1FAFF).contains(&u) || (0x2600..=0x27BF).contains(&u) || u == 0x2764 {
+        3
+    } else {
+        UnicodeWidthChar::width(c).unwrap_or(1).max(1)
+    }
+}
+
 /// 按显示宽度把一行(带色段)硬切成多行:每段切到 cols 列为止,续行继承
 /// 当前颜色状态。切分单位是**显示列**(ASCII/半角 1 列,CJK/全角 2 列)——
 /// 与等宽字体渲染宽度对齐,UI 按列数换算像素即可。
@@ -20,7 +33,7 @@ fn wrap_runs(runs: &[Run], cols: usize) -> Vec<Vec<Run>> {
         let mut seg = String::new();
         for ch in run.text.chars() {
             // 控制字符宽度按 0 处理会卡死切分循环,兜底按 1 列
-            let w = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+            let w = char_width_cols(ch);
             if cur_w + w > cols && cur_w > 0 {
                 cur.push(Run { text: std::mem::take(&mut seg), fg: run.fg });
                 out.push(std::mem::take(&mut cur));
@@ -573,6 +586,24 @@ mod tests {
             let w: usize =
                 joined(&r).chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1)).sum();
             assert!(w <= 40, "尾行宽 {w} 超过 40 列");
+        }
+    }
+
+    #[test]
+    fn emoji_counts_three_cols_so_wrapped_lines_never_overflow() {
+        // emoji 渲染走 fallback 字体,实际宽 ≈3 列;若按 unicode-width 的 2 列
+        // 切行,行尾会溢出被右缘裁掉(真机实测)。切行宽度必须用 char_width_cols
+        assert_eq!(char_width_cols('😊'), 3);
+        assert_eq!(char_width_cols('❤'), 3);
+        assert_eq!(char_width_cols('a'), 1);
+        assert_eq!(char_width_cols('汉'), 2);
+        let mut pump = LogPump::default();
+        pump.set_wrap_cols(20);
+        pump.absorb_text(&"😊".repeat(50), 4); // 全 emoji 无换行流
+        pump.absorb_frame_end(4); // 未超 cap 不成行,强制 flush
+        for r in pump.take_new_rows().unwrap() {
+            let w: usize = joined(&r).chars().map(char_width_cols).sum();
+            assert!(w <= 20, "emoji 行宽 {w} 超过 20 列");
         }
     }
 }

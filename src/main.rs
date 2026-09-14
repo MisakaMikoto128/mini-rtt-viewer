@@ -202,7 +202,7 @@ fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
         return Err("十六进制位数为奇数".into());
     }
     let mut out = Vec::with_capacity(cleaned.len() / 2);
-    for pair in cleaned.as_bytes().chunks_exact(2) {
+    for pair in cleaned.as_bytes().as_chunks::<2>().0 {
         let hi = (pair[0] as char)
             .to_digit(16)
             .ok_or_else(|| format!("非法字符 '{}'", pair[0] as char))?;

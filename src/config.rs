@@ -97,9 +97,9 @@ impl Default for StoredPrefs {
 /// 配置文件路径:`%APPDATA%/MiniRttViewer/prefs.json`;无 APPDATA 环境变量时
 /// 返回 None(保存静默跳过,功能照常)
 fn prefs_path() -> Option<PathBuf> {
-    std::env::var("APPDATA").ok().map(|d| {
-        PathBuf::from(d).join("MiniRttViewer").join("prefs.json")
-    })
+    std::env::var("APPDATA")
+        .ok()
+        .map(|d| PathBuf::from(d).join("MiniRttViewer").join("prefs.json"))
 }
 
 /// 读取偏好:文件缺失/损坏/字段缺失一律回落默认
@@ -132,8 +132,7 @@ pub(crate) fn save_to(path: &std::path::Path, prefs: &StoredPrefs) -> std::io::R
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
-    let body = serde_json::to_string_pretty(prefs)
-        .map_err(std::io::Error::other)?;
+    let body = serde_json::to_string_pretty(prefs).map_err(std::io::Error::other)?;
     std::fs::write(&tmp, body)?;
     // Windows 的 rename 不覆盖已存在文件:先移除旧的再改名(窗口极小)
     let _ = std::fs::remove_file(path);
@@ -209,8 +208,22 @@ mod tests {
     #[test]
     fn save_overwrites_existing_file_atomically() {
         let p = tmp_path("overwrite");
-        save_to(&p, &StoredPrefs { chip_name: "a".into(), ..Default::default() }).unwrap();
-        save_to(&p, &StoredPrefs { chip_name: "b".into(), ..Default::default() }).unwrap();
+        save_to(
+            &p,
+            &StoredPrefs {
+                chip_name: "a".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        save_to(
+            &p,
+            &StoredPrefs {
+                chip_name: "b".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(load_from(&p).chip_name, "b");
         // .tmp 不残留
         assert!(!p.with_extension("json.tmp").exists());

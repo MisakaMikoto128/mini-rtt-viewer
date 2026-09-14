@@ -2,6 +2,13 @@
 
 轻量级 SEGGER RTT 日志查看器 —— 为 **UTF-8 / emoji** 而生。
 
+[![CI](https://github.com/MisakaMikoto128/mini-rtt-viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/MisakaMikoto128/mini-rtt-viewer/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/MisakaMikoto128/mini-rtt-viewer)](https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+
+项目主页:<https://misakamikoto128.github.io/mini-rtt-viewer/>
+
 ![screenshot](docs/screenshot.png)
 
 ## 为什么做这个
@@ -12,7 +19,7 @@
 - **启动 < 100ms**,没有 Python 运行时、没有 WebView
 - **UTF-8 完整支持**,中文 / emoji 原样显示,跨读取块的多字节序列自动拼接
 - **实时流畅**:10ms 界面刷新粒度,均匀发送的消息逐条均匀上屏;日志文本上限 6 万字符(超出丢最旧),长时间流式输出不卡 UI
-- 无换行符的裸流(如裸 printf 数值)可开启**自动断帧**:相邻数据到达间隔超过设定值(1~200ms,5ms 精度判定)自动换行
+- 无换行符的裸流(如裸 printf 数值)可开启**自动断帧**:相邻数据到达间隔超过设定值(1~200ms)自动换行。等待跟着判定点走,判定精确落在设定值上——设 1ms 就是 1ms,不会被轮询间隔量化上取整
 - **滚轮逐行对齐**:滚动位置量化到整数行高,连续上翻时行位置稳定;滚离底部失随、滚回底部恢复跟随
 
 ## 功能
@@ -58,7 +65,7 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 |---|---|---|
 | UI | Slint 1.x | 编译期声明式 UI,启动秒开,exe 小 |
 | J-Link 访问 | FFI 直调 `JLink_x64.dll` | 与官方工具/驱动共存,不抢 USB(纯 USB 协议实现需要 Zadig 换驱动,会破坏 SEGGER 工具链) |
-| 并发模型 | std::thread + mpsc + 10ms 消息泵 | worker 读线程(5ms 轮询)不碰 UI,泵只做断行与文本合并 |
+| 并发模型 | std::thread + mpsc + 10ms 消息泵 | worker 读线程不碰 UI,泵只做断行与文本合并;线程等待一律可唤醒(`Condvar` / `recv_timeout`),全项目零 `thread::sleep`,停止与退出信号到达即醒 |
 
 连接时序沿用了经过验证的 J-Link DLL 状态机要求(RTT START 在 connect 之前建立)。
 
@@ -71,11 +78,15 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 | `src/log_model.rs` | 消息泵纯逻辑(断行/缓冲/ANSI 带色行/行数上限),有单元测试 |
 | `src/ansi.rs` | ANSI 转义 → 带色文本段(vte 状态机,颜色状态跨行跨块保持),有单元测试 |
 | `src/rtt.rs` | worker 线程:`connect_target` 连接序列 + `rtt_read_loop` 读循环(断帧判定/命令消化/UTF-8 增量解码) |
-| `src/jlink_dll.rs` | JLinkARM.dll 最小 FFI 绑定(连接/RTT/设备信息/调试器枚举与选定) |
+| `src/jlink_dll.rs` | JLinkARM.dll 最小 FFI 绑定(符号 load 时一次性解析;连接/RTT/设备信息/调试器枚举与选定) |
 | `src/device_db.rs` | 设备库后台枚举 + 磁盘缓存 + 多台调试器列表 |
+| `src/signal.rs` | 可唤醒等待原语(Condvar):全项目替代 `thread::sleep`,停止/退出信号到达即醒 |
+| `src/util.rs` | 纯逻辑助手(HEX 收发格式/统计格式化/发送历史游标/行尾),有单元测试 |
+| `src/width.rs` | 字符显示列宽唯一真源(换行/复制/Tab 展开共用) |
+| `src/win32.rs` | Win32 FFI 收拢(剪贴板/本地时间/屏幕常亮/屏幕几何与 DPI) |
 | `src/single_instance.rs` | 单实例互斥 |
 | `src/demo.rs` | `--demo-log` 演示数据源(中英混排 + emoji + ANSI 颜色样例) |
-| `src/ui/log_view.slint` | 日志滚动区(ListView 虚拟化、滚轮行高对齐、贴底跟随、自动滚动同步) |
+| `src/ui/log_view.slint` | 日志滚动区(行容器平移滚动、滚轮行高对齐、贴底跟随、列级选中) |
 | `src/ui/editable_combo.slint` | 目标设备单控件(输入即筛选 + 原生下拉候选) |
 | `examples/emu_check.rs` | 无界面验证:枚举调试器 + 选定/实际打开一致性 |
 | `examples/rtt_check.rs` | 无界面 RTT 直读(连接序列排障用) |

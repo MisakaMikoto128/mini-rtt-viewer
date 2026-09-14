@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    # 项目定位 Windows-only:RTT 数据路径依赖 JLinkARM.dll(FFI 加载,无跨平台
+    # 替代),见 docs/product/spec.md PLAT-1。不摆三平台矩阵——编不过的矩阵
+    # 是假的跨平台,不如把 Windows 的一条线做扎实。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked

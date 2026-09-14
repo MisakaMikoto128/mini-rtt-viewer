@@ -35,7 +35,10 @@ fn wrap_runs(runs: &[Run], cols: usize) -> Vec<Vec<Run>> {
             // 控制字符宽度按 0 处理会卡死切分循环,兜底按 1 列
             let w = char_width_cols(ch);
             if cur_w + w > cols && cur_w > 0 {
-                cur.push(Run { text: std::mem::take(&mut seg), fg: run.fg });
+                cur.push(Run {
+                    text: std::mem::take(&mut seg),
+                    fg: run.fg,
+                });
                 out.push(std::mem::take(&mut cur));
                 cur_w = 0;
             }
@@ -43,7 +46,10 @@ fn wrap_runs(runs: &[Run], cols: usize) -> Vec<Vec<Run>> {
             cur_w += w;
         }
         if !seg.is_empty() {
-            cur.push(Run { text: seg, fg: run.fg });
+            cur.push(Run {
+                text: seg,
+                fg: run.fg,
+            });
         }
     }
     if !cur.is_empty() {
@@ -51,7 +57,10 @@ fn wrap_runs(runs: &[Run], cols: usize) -> Vec<Vec<Run>> {
     }
     if out.is_empty() {
         // 空行保留(纯 \n 场景)
-        out.push(vec![Run { text: String::new(), fg: runs.first().and_then(|r| r.fg) }]);
+        out.push(vec![Run {
+            text: String::new(),
+            fg: runs.first().and_then(|r| r.fg),
+        }]);
     }
     out
 }
@@ -151,7 +160,8 @@ pub struct LogPump {
 
 impl LogPump {
     /// 消化一段文本数据(Log 横幅 / RTT 读块),按接收行尾模式切出完整行
-    pub fn absorb_text(&mut self, text: &str, rx_ending: i32) {        self.pending.push_str(text);
+    pub fn absorb_text(&mut self, text: &str, rx_ending: i32) {
+        self.pending.push_str(text);
         split_lines(&mut self.pending, rx_ending, &mut self.new_lines);
     }
 
@@ -183,7 +193,10 @@ impl LogPump {
     /// 增量上屏,同样受 [`MAX_LOG_ROWS`] 裁剪。暂停接收不影响标记(标记是
     /// 用户/应用动作,不是设备数据)。
     pub fn push_colored_line(&mut self, text: &str, fg: (u8, u8, u8)) {
-        self.marks.push(vec![Run { text: text.to_string(), fg: Some(fg) }]);
+        self.marks.push(vec![Run {
+            text: text.to_string(),
+            fg: Some(fg),
+        }]);
     }
 
     /// 把已切出的行经 ANSI 解析转为带色行;有新行返回它们(增量上屏)。
@@ -198,7 +211,10 @@ impl LogPump {
         }
         // 按当前列数硬换行(0 = 不换行):每行仍是单视觉行,UI 滚动数学不变
         if self.wrap_cols > 0 {
-            fresh = fresh.iter().flat_map(|r| wrap_runs(r, self.wrap_cols)).collect();
+            fresh = fresh
+                .iter()
+                .flat_map(|r| wrap_runs(r, self.wrap_cols))
+                .collect();
         }
         self.rows.extend(fresh.iter().cloned());
         if self.rows.len() > MAX_LOG_ROWS {
@@ -335,7 +351,10 @@ mod tests {
         // 剩余 10 字符留在 pending
         pump.absorb_frame_end(0);
         let rows = pump.take_new_rows().unwrap();
-        let joined: String = rows.iter().flat_map(|r| r.iter().map(|s| s.text.clone())).collect();
+        let joined: String = rows
+            .iter()
+            .flat_map(|r| r.iter().map(|s| s.text.clone()))
+            .collect();
         assert!(joined.ends_with("xxxxxxxxxx"));
     }
 
@@ -455,23 +474,38 @@ mod tests {
 
     #[test]
     fn wrap_runs_splits_ascii_by_columns() {
-        let runs = vec![Run { text: "abcdefghij".into(), fg: None }];
+        let runs = vec![Run {
+            text: "abcdefghij".into(),
+            fg: None,
+        }];
         let out = wrap_runs(&runs, 4);
-        assert_eq!(out.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(
+            out.iter().map(|l| joined(l)).collect::<Vec<_>>(),
+            vec!["abcd", "efgh", "ij"]
+        );
     }
 
     #[test]
     fn wrap_runs_counts_cjk_as_two_columns() {
         // "你好啊" 每字 2 列:4 列宽 → "你好" | "啊"
-        let runs = vec![Run { text: "你好啊".into(), fg: None }];
+        let runs = vec![Run {
+            text: "你好啊".into(),
+            fg: None,
+        }];
         let out = wrap_runs(&runs, 4);
-        assert_eq!(out.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["你好", "啊"]);
+        assert_eq!(
+            out.iter().map(|l| joined(l)).collect::<Vec<_>>(),
+            vec!["你好", "啊"]
+        );
     }
 
     #[test]
     fn wrap_runs_carries_color_into_continuation() {
         // 红色长行切两段:续行仍为红色
-        let runs = vec![Run { text: "abcdef".into(), fg: Some((0xcc, 0x33, 0x44)) }];
+        let runs = vec![Run {
+            text: "abcdef".into(),
+            fg: Some((0xcc, 0x33, 0x44)),
+        }];
         let out = wrap_runs(&runs, 3);
         assert_eq!(out.len(), 2);
         assert_eq!(out[1][0].fg, Some((0xcc, 0x33, 0x44)));
@@ -492,7 +526,10 @@ mod tests {
         assert!(pump.take_new_rows().is_some());
         assert!(pump.set_wrap_cols(4)); // 行集已变
         let rows = pump.snapshot_rows();
-        assert_eq!(rows.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(
+            rows.iter().map(|l| joined(l)).collect::<Vec<_>>(),
+            vec!["abcd", "efgh", "ij"]
+        );
         assert!(!pump.set_wrap_cols(4)); // 同值不重排
         assert!(pump.set_wrap_cols(0)); // 关闭换行不重排既有行(增量按新行生效)
     }
@@ -504,7 +541,10 @@ mod tests {
         pump.absorb_text("abcdefghij\n", 0);
         pump.enforce_line_cap();
         let rows = pump.take_new_rows().unwrap();
-        assert_eq!(rows.iter().map(|l| joined(l)).collect::<Vec<_>>(), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(
+            rows.iter().map(|l| joined(l)).collect::<Vec<_>>(),
+            vec!["abcd", "efgh", "ij"]
+        );
     }
 
     // ---- 滚动几何(与 log_view.slint scroll-by-px 同步,语义锁定)----
@@ -512,7 +552,11 @@ mod tests {
     /// 复刻"手动滚回底部被裁一小截"的几何:max_offset 不落在行格上,
     /// 余量 r = 2316-2304 = 12,超过底部 padding——旧实现停在 2304 就裁字。
     fn geom() -> ScrollGeom {
-        ScrollGeom { line_h: 32.0, content_h: 3216.0, viewport_h: 900.0 }
+        ScrollGeom {
+            line_h: 32.0,
+            content_h: 3216.0,
+            viewport_h: 900.0,
+        }
     }
 
     #[test]
@@ -520,7 +564,7 @@ mod tests {
         let g = geom();
         assert_eq!(g.max_offset(), 2316.0);
         assert_eq!(g.grid_max(), 2304.0); // floor 少 12,行格≠贴底
-        // 贴底状态继续下滚(哪怕已到底):必须停在 max-offset 而非 grid-max
+                                          // 贴底状态继续下滚(哪怕已到底):必须停在 max-offset 而非 grid-max
         let (raw, offset, follow) = g.scroll_by(2316.0, -64.0);
         assert_eq!(offset, 2316.0);
         assert_eq!(raw, 2316.0);
@@ -558,7 +602,11 @@ mod tests {
     #[test]
     fn scroll_short_content_is_always_following() {
         // 内容不足一屏:max_offset=0,任何滚动都停在 0 且视为贴底
-        let g = ScrollGeom { line_h: 32.0, content_h: 200.0, viewport_h: 900.0 };
+        let g = ScrollGeom {
+            line_h: 32.0,
+            content_h: 200.0,
+            viewport_h: 900.0,
+        };
         let (raw, offset, follow) = g.scroll_by(0.0, -240.0);
         assert_eq!(offset, 0.0);
         assert_eq!(raw, 0.0);
@@ -576,15 +624,19 @@ mod tests {
         let rows = pump.take_new_rows().unwrap();
         assert!(!rows.is_empty());
         for r in &rows {
-            let w: usize =
-                joined(r).chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1)).sum();
+            let w: usize = joined(r)
+                .chars()
+                .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
+                .sum();
             assert!(w <= 40, "行宽 {w} 超过 40 列");
         }
         // cap 切剩的尾部随下一帧成行,同样不超宽
         pump.absorb_frame_end(4);
         for r in pump.take_new_rows().unwrap() {
-            let w: usize =
-                joined(&r).chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1)).sum();
+            let w: usize = joined(&r)
+                .chars()
+                .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
+                .sum();
             assert!(w <= 40, "尾行宽 {w} 超过 40 列");
         }
     }

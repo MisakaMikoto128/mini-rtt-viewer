@@ -100,8 +100,7 @@ pub struct CharsetDecoder {
 impl CharsetDecoder {
     /// 按编码标签构建;未知标签回落 UTF-8
     pub fn for_label(label: &str) -> Self {
-        let enc = encoding_rs::Encoding::for_label(label.as_bytes())
-            .unwrap_or(encoding_rs::UTF_8);
+        let enc = encoding_rs::Encoding::for_label(label.as_bytes()).unwrap_or(encoding_rs::UTF_8);
         let decoder = enc.new_decoder();
         Self { decoder }
     }
@@ -123,7 +122,10 @@ impl CharsetDecoder {
 
 /// 下拉索引 → encoding_rs 标签(越界回落 UTF-8)
 fn enc_label(index: u32) -> &'static str {
-    ENCODINGS.get(index as usize).map(|(_, label)| *label).unwrap_or("utf-8")
+    ENCODINGS
+        .get(index as usize)
+        .map(|(_, label)| *label)
+        .unwrap_or("utf-8")
 }
 
 /// 启动 RTT 工作线程:加载 DLL → 按验证过的序列连接 → 循环读通道。
@@ -168,7 +170,13 @@ fn connect_target(
     tx: &mpsc::Sender<WorkerMsg>,
     stop: &AtomicBool,
 ) -> anyhow::Result<JLinkDll> {
-    let WorkerConfig { chip, iface_index, speed_khz, selected_sn, .. } = config;
+    let WorkerConfig {
+        chip,
+        iface_index,
+        speed_khz,
+        selected_sn,
+        ..
+    } = config;
     let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLinkARM.dll…".into()));
     let jlink = JLinkDll::load()?;
     // 抑制 DLL 模态弹窗必须最先做(调试器选择窗/固件升级提示都发生在 Open 内部),
@@ -268,7 +276,13 @@ fn rtt_read_loop(
     cmd_rx: &mpsc::Receiver<WorkerCmd>,
     stop: &AtomicBool,
 ) {
-    let WorkerConfig { channel, frame_timeout_ms, encoding_index, hex_rx, .. } = config;
+    let WorkerConfig {
+        channel,
+        frame_timeout_ms,
+        encoding_index,
+        hex_rx,
+        ..
+    } = config;
 
     let mut buf = [0u8; 4096];
     // 按用户选定字符集增量解码:跨读块的多字节边界(emoji 4 字节/GBK 2 字节
@@ -333,7 +347,10 @@ fn rtt_read_loop(
             let _ = tx.send(WorkerMsg::FrameEnd);
             frame_open = false;
         } else if n < 0 {
-            let _ = tx.send(WorkerMsg::State(false, format!("● RTT 读取失败 ({n}),已断开")));
+            let _ = tx.send(WorkerMsg::State(
+                false,
+                format!("● RTT 读取失败 ({n}),已断开"),
+            ));
             jlink.rtt_control(RTT_CMD_STOP);
             jlink.close();
             return;
@@ -362,7 +379,11 @@ fn rtt_read_loop(
                 }
                 WorkerCmd::Power(on) => {
                     // SupplyPower:J-Link 19 脚给目标供电(与原项目 pylink power_on/off 一致)
-                    let resp = jlink.exec_command(if on { "SupplyPower = 1" } else { "SupplyPower = 0" });
+                    let resp = jlink.exec_command(if on {
+                        "SupplyPower = 1"
+                    } else {
+                        "SupplyPower = 0"
+                    });
                     let resp = resp.trim();
                     let suffix = if resp.is_empty() {
                         String::new()
@@ -429,7 +450,10 @@ mod tests {
     #[test]
     fn encodings_table_labels_are_all_resolvable() {
         for (_, label) in ENCODINGS {
-            assert!(encoding_rs::Encoding::for_label(label.as_bytes()).is_some(), "{label}");
+            assert!(
+                encoding_rs::Encoding::for_label(label.as_bytes()).is_some(),
+                "{label}"
+            );
         }
     }
 }

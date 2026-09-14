@@ -25,7 +25,11 @@ pub fn busy() -> bool {
 /// 缓存文件:%APPDATA%\MiniRttViewer\device_names.txt(每行一个设备名)
 fn cache_path() -> Option<PathBuf> {
     let base = std::env::var("APPDATA").ok()?;
-    Some(PathBuf::from(base).join("MiniRttViewer").join("device_names.txt"))
+    Some(
+        PathBuf::from(base)
+            .join("MiniRttViewer")
+            .join("device_names.txt"),
+    )
 }
 
 fn load_cache() -> Option<Vec<String>> {
@@ -110,6 +114,11 @@ mod tests {
             ]
         );
         // 排序应是大写序:stm32f103c8(小写)与 STM32F103C8 去重后留一个
-        assert_eq!(out.iter().filter(|n| n.to_uppercase() == "STM32F103C8").count(), 1);
+        assert_eq!(
+            out.iter()
+                .filter(|n| n.to_uppercase() == "STM32F103C8")
+                .count(),
+            1
+        );
     }
 }

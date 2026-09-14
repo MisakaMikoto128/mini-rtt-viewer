@@ -6,8 +6,13 @@ use mini_rtt_viewer::rtt::CharsetDecoder;
 use std::time::{Duration, Instant};
 
 fn main() -> anyhow::Result<()> {
-    let chip = std::env::args().nth(1).unwrap_or_else(|| "STM32F030F4".into());
-    let secs: u64 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(8);
+    let chip = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "STM32F030F4".into());
+    let secs: u64 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8);
 
     let jlink = JLinkDll::load()?;
     println!("[dll] loaded, SN = {}", jlink.serial_number());

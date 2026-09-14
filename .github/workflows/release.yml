@@ -19,7 +19,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --locked
 
       - name: Download UPX
         shell: pwsh
@@ -34,16 +34,23 @@ jobs:
           ./upx/upx-5.2.1-win64/upx.exe --best target/release/mini-rtt-viewer.exe
           exit 0
 
+      # 产物命名契约:mini-rtt-viewer-<版本>-windows-x86_64.zip,
+      # 内含 exe + README + LICENSE(解压即用,许可随包走)
       - name: Collect artifact
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target/release/mini-rtt-viewer.exe dist/
-          Get-ChildItem dist
+          $ver = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          if (-not $ver -or $ver -eq "") { $ver = "dev" }
+          $name = "mini-rtt-viewer-$ver-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path "pack/$name" | Out-Null
+          Copy-Item target/release/mini-rtt-viewer.exe "pack/$name/"
+          Copy-Item README.md LICENSE "pack/$name/"
+          Compress-Archive -Force -Path "pack/$name" -DestinationPath "pack/$name.zip"
+          Get-ChildItem pack
 
       - name: Upload to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/mini-rtt-viewer.exe
+          files: pack/*.zip
           generate_release_notes: true

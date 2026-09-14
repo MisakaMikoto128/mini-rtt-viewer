@@ -96,8 +96,7 @@ impl JLinkDll {
 
     pub fn serial_number(&self) -> u32 {
         unsafe {
-            let f: Symbol<unsafe extern "C" fn() -> u32> =
-                self.lib.get(b"JLINKARM_GetSN").unwrap();
+            let f: Symbol<unsafe extern "C" fn() -> u32> = self.lib.get(b"JLINKARM_GetSN").unwrap();
             f()
         }
     }
@@ -131,10 +130,7 @@ impl JLinkDll {
         }
         // i8 数组按 ASCII 收尾
         let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-        buf[..end]
-            .iter()
-            .map(|&b| b as u8 as char)
-            .collect()
+        buf[..end].iter().map(|&b| b as u8 as char).collect()
     }
 
     pub fn connect(&self) -> c_int {
@@ -158,8 +154,7 @@ impl JLinkDll {
     /// 让复位后 halted 的 CPU 跑起来(pylink reset(halt=false) 的后半步)
     pub fn go(&self) -> c_int {
         unsafe {
-            let f: Symbol<unsafe extern "C" fn() -> c_int> =
-                self.lib.get(b"JLINKARM_Go").unwrap();
+            let f: Symbol<unsafe extern "C" fn() -> c_int> = self.lib.get(b"JLINKARM_Go").unwrap();
             f()
         }
     }
@@ -210,7 +205,10 @@ impl JLinkDll {
     /// 硬件版本(整数编码:x.y → major = v/10000%100, minor = v/100%100,同 pylink)。
     pub fn hardware_version(&self) -> String {
         let v = unsafe {
-            match self.lib.get::<unsafe extern "C" fn() -> c_int>(b"JLINKARM_GetHardwareVersion") {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn() -> c_int>(b"JLINKARM_GetHardwareVersion")
+            {
                 Ok(f) => f(),
                 Err(_) => return String::new(),
             }
@@ -221,7 +219,10 @@ impl JLinkDll {
     /// 目标核心 ID(hex,连接后有效)
     pub fn core_id(&self) -> String {
         let v = unsafe {
-            match self.lib.get::<unsafe extern "C" fn() -> c_uint>(b"JLINKARM_GetId") {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn() -> c_uint>(b"JLINKARM_GetId")
+            {
                 Ok(f) => f(),
                 Err(_) => return String::new(),
             }
@@ -256,9 +257,12 @@ impl JLinkDll {
         };
         let mut buf = [0i8; 256];
         unsafe {
-            if let Ok(f) = self.lib.get::<unsafe extern "C" fn(c_uint, *mut c_char, c_int) -> c_int>(
-                b"JLINKARM_Core2CoreName",
-            ) {
+            if let Ok(f) = self
+                .lib
+                .get::<unsafe extern "C" fn(c_uint, *mut c_char, c_int) -> c_int>(
+                    b"JLINKARM_Core2CoreName",
+                )
+            {
                 f(cpu, buf.as_mut_ptr(), buf.len() as c_int);
             }
         }
@@ -270,9 +274,11 @@ impl JLinkDll {
     /// J-Link DLL 支持的设备总数。`DEVICE_GetInfo(-1, null)` 按约定返回数量。
     pub fn device_count(&self) -> c_int {
         unsafe {
-            match self.lib.get::<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>(
-                b"JLINKARM_DEVICE_GetInfo",
-            ) {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>(
+                    b"JLINKARM_DEVICE_GetInfo",
+                ) {
                 Ok(f) => f(-1, std::ptr::null_mut()),
                 Err(_) => 0,
             }
@@ -281,9 +287,11 @@ impl JLinkDll {
     /// 枚举设备库全部设备名。独立于连接状态(只读设备数据库)。
     pub fn enumerate_device_names(&self) -> Vec<String> {
         let get_info = unsafe {
-            match self.lib.get::<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>(
-                b"JLINKARM_DEVICE_GetInfo",
-            ) {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>(
+                    b"JLINKARM_DEVICE_GetInfo",
+                ) {
                 Ok(f) => f,
                 Err(_) => return Vec::new(),
             }
@@ -325,9 +333,11 @@ impl JLinkDll {
     /// 无需 Open,纯 USB 扫描(pylink connected_emulators 同款用法)。
     pub fn enumerate_emulators(&self) -> Vec<(u32, String)> {
         let get_list = unsafe {
-            match self.lib.get::<unsafe extern "C" fn(c_uint, *mut c_void, c_int) -> c_int>(
-                b"JLINKARM_EMU_GetList",
-            ) {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn(c_uint, *mut c_void, c_int) -> c_int>(
+                    b"JLINKARM_EMU_GetList",
+                ) {
                 Ok(f) => f,
                 Err(_) => return Vec::new(),
             }
@@ -404,10 +414,7 @@ fn fixed_cstr(buf: &[i8]) -> Option<String> {
 /// i8 缓冲里的 NUL 结尾 ASCII/UTF-8 字符串 → String(空串原样返回)
 fn cstr_to_string(buf: &[i8]) -> String {
     let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    buf[..end]
-        .iter()
-        .map(|&b| b as u8 as char)
-        .collect()
+    buf[..end].iter().map(|&b| b as u8 as char).collect()
 }
 
 /// JLinkFlashArea / JLinkRAMArea 的 C 布局(pylink structs.py:Addr + Size)

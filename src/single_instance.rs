@@ -16,7 +16,9 @@ pub fn enforce_single_instance() {
             kernel32.get(b"CreateMutexW").unwrap();
         let last_err: Symbol<unsafe extern "C" fn() -> u32> =
             kernel32.get(b"GetLastError").unwrap();
-        let name: Vec<u16> = "Local\\MiniRttViewerSingleInstance\0".encode_utf16().collect();
+        let name: Vec<u16> = "Local\\MiniRttViewerSingleInstance\0"
+            .encode_utf16()
+            .collect();
         let _mutex_guard = create(std::ptr::null_mut(), 0, name.as_ptr());
         if last_err() == 183 {
             // ERROR_ALREADY_EXISTS:已有实例在跑。mutex 故意不释放,随进程存活

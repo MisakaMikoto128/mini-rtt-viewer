@@ -63,7 +63,10 @@ struct Collector {
 impl Collector {
     fn flush_run(&mut self) {
         if !self.text.is_empty() {
-            self.runs.push(Run { text: std::mem::take(&mut self.text), fg: self.fg });
+            self.runs.push(Run {
+                text: std::mem::take(&mut self.text),
+                fg: self.fg,
+            });
         }
     }
 }
@@ -78,7 +81,13 @@ impl Perform for Collector {
         let _ = byte;
     }
 
-    fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
+    fn csi_dispatch(
+        &mut self,
+        params: &Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
         if action != 'm' {
             return; // 只关心 SGR(颜色);光标移动/清屏等在日志场景忽略
         }
@@ -126,8 +135,7 @@ impl Perform for Collector {
                                     }
                                 }
                                 if ok {
-                                    self.fg =
-                                        Some((rgb[0] as u8, rgb[1] as u8, rgb[2] as u8));
+                                    self.fg = Some((rgb[0] as u8, rgb[1] as u8, rgb[2] as u8));
                                 }
                             }
                             _ => {}

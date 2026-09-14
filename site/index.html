@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini RTT Viewer — SEGGER J-Link RTT 极简查看器</title>
+<style>
+  :root {
+    --bg: #16161a; --panel: #222228; --text: #e8e8ea; --muted: #a0a0a8;
+    --accent: #28afe9; --card: #2a2a31; --border: #3a3a42;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f2f3f5; --panel: #ffffff; --text: #1a1a1e; --muted: #55555e; --card: #eceef1; --border: #d0d3d9; }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.7 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 2rem; margin-bottom: 4px; }
+  h1 code { color: var(--accent); }
+  .tagline { color: var(--muted); font-size: 1.05rem; margin-bottom: 24px; }
+  .badges img { margin-right: 6px; vertical-align: middle; }
+  .cta { margin: 24px 0 40px; }
+  .btn { display: inline-block; padding: 10px 22px; margin-right: 12px; border-radius: 8px;
+         text-decoration: none; font-weight: 600; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.ghost { border: 1px solid var(--border); color: var(--text); }
+  h2 { font-size: 1.2rem; margin: 32px 0 12px; color: var(--accent); }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  .shot { width: 100%; border-radius: 10px; border: 1px solid var(--border); margin: 12px 0 4px; }
+  .caption { color: var(--muted); font-size: .85rem; margin-bottom: 8px; }
+  code { background: var(--card); padding: 2px 6px; border-radius: 5px; font-size: .9em; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  td, th { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+  th { background: var(--card); }
+  footer { margin-top: 48px; color: var(--muted); font-size: .85rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Mini <code>RTT</code> Viewer</h1>
+  <p class="tagline">SEGGER J-Link RTT 的极简桌面查看器 —— 连接快、体积小、不添乱。</p>
+  <p class="badges">
+    <img alt="CI" src="https://github.com/MisakaMikoto128/mini-rtt-viewer/actions/workflows/ci.yml/badge.svg">
+    <img alt="Release" src="https://img.shields.io/github/v/release/MisakaMikoto128/mini-rtt-viewer">
+    <img alt="License" src="https://img.shields.io/github/license/MisakaMikoto128/mini-rtt-viewer">
+    <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue">
+  </p>
+
+  <div class="cta">
+    <a class="btn primary" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/latest">下载最新版</a>
+    <a class="btn ghost" href="https://github.com/MisakaMikoto128/mini-rtt-viewer">GitHub 仓库</a>
+  </div>
+
+  <img class="shot" src="https://raw.githubusercontent.com/MisakaMikoto128/mini-rtt-viewer/main/docs/screenshot.png"
+       alt="Mini RTT Viewer 界面截图" onerror="this.style.display='none'">
+  <p class="caption">主界面:左侧配置面板,右侧彩色日志(深色主题)。</p>
+
+  <h2>它是什么</h2>
+  <p>单片机调试时,printf 调试依旧是最快的方式。RTT(Segger Real-Time Transfer)
+  比串口快得多,但官方 SWO Viewer 界面臃肿、启动慢。Mini RTT Viewer 只做一件事:
+  <b>连上 J-Link,把 RTT 日志漂亮地显示出来。</b>单文件、约 3MB、免安装。</p>
+
+  <h2>特性</h2>
+  <ul>
+    <li><b>直连 JLinkARM.dll</b>(FFI),不依赖 pylink,连接即用</li>
+    <li>彩色日志:ANSI/VT 全解析,深色/浅色主题,字号可调</li>
+    <li>自动断帧、行尾模式、按显示列硬换行(中文/emoji 不越界)</li>
+    <li>字符集切换动态生效:UTF-8 / GBK / UTF-16 LE / Latin-1 / ASCII</li>
+    <li>HEX 收发、定时发送、发送历史、J-Link 19 脚供电、目标复位</li>
+    <li>VS Code 式搜索:正则开关、命中高亮、n/m 计数、选中即搜</li>
+    <li>列级选中复制(拖选即复制),日志导出,会话标记</li>
+    <li>偏好全量记住:窗口、连接参数、字符集、主题,下次启动原样恢复</li>
+    <li><code>--demo-log</code> 无设备演示模式,不接板子也能体验全部交互</li>
+  </ul>
+
+  <h2>快速开始</h2>
+  <table>
+    <tr><th>步骤</th><th>说明</th></tr>
+    <tr><td>1. 装驱动</td><td>已安装 SEGGER J-Link 驱动(JLinkARM.dll)</td></tr>
+    <tr><td>2. 下载</td><td><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/latest">Releases</a> 下载 zip,解压即用</td></tr>
+    <tr><td>3. 连接</td><td>选 J-Link、填芯片名(支持补全)、点连接</td></tr>
+    <tr><td>体验</td><td>命令行运行 <code>mini-rtt-viewer.exe --demo-log</code> 看模拟日志流</td></tr>
+  </table>
+
+  <h2>文档</h2>
+  <ul>
+    <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/docs/product/spec.md">需求规格(spec)</a>
+        · <a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md">变更日志</a>
+        · <a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CONTRIBUTING.md">贡献指南</a></li>
+  </ul>
+
+  <footer>MIT License · 用 Rust + Slint 构建 · Windows 10/11 x64</footer>
+</div>
+</body>
+</html>

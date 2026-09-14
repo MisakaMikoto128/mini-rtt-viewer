@@ -6,8 +6,10 @@
 // 管理退出编排。业务规则一律不在这里实现。
 use mini_rtt_viewer::config::{self, StoredPrefs};
 use mini_rtt_viewer::log_model::{char_width_cols, LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
-use mini_rtt_viewer::rtt::{self, WorkerCmd, WorkerHandle, WorkerMsg, ENCODINGS, APP_SHUTDOWN};
-use mini_rtt_viewer::{device_db, demo, single_instance, AppTheme, AppWindow, InfoRow, LogRun, LogRow};
+use mini_rtt_viewer::rtt::{self, WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN, ENCODINGS};
+use mini_rtt_viewer::{
+    demo, device_db, single_instance, AppTheme, AppWindow, InfoRow, LogRow, LogRun,
+};
 use regex_lite::Regex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
@@ -73,19 +75,18 @@ fn set_clipboard_text(text: &str) -> bool {
         if OpenClipboard(std::ptr::null_mut()) == 0 {
             return false;
         }
-        let ok = EmptyClipboard() != 0
-            && {
-                let bytes = wide.len() * 2;
-                let mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-                if mem.is_null() {
-                    false
-                } else {
-                    let p = GlobalLock(mem) as *mut u16;
-                    std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
-                    GlobalUnlock(mem);
-                    !SetClipboardData(CF_UNICODETEXT, mem).is_null()
-                }
-            };
+        let ok = EmptyClipboard() != 0 && {
+            let bytes = wide.len() * 2;
+            let mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            if mem.is_null() {
+                false
+            } else {
+                let p = GlobalLock(mem) as *mut u16;
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+                GlobalUnlock(mem);
+                !SetClipboardData(CF_UNICODETEXT, mem).is_null()
+            }
+        };
         CloseClipboard();
         ok
     }
@@ -94,14 +95,24 @@ fn set_clipboard_text(text: &str) -> bool {
 /// 屏幕"常亮"开关:阻止系统熄屏(不影响睡眠策略的其他部分)。
 /// 进程退出后 ES_CONTINUOUS 随之失效,系统自动恢复。
 fn set_display_keep_awake(on: bool) {
-    let flags = if on { ES_CONTINUOUS | ES_DISPLAY_REQUIRED } else { ES_CONTINUOUS };
+    let flags = if on {
+        ES_CONTINUOUS | ES_DISPLAY_REQUIRED
+    } else {
+        ES_CONTINUOUS
+    };
     unsafe { SetThreadExecutionState(flags) };
 }
 
 fn local_time() -> WinSystemTime {
     let mut st = WinSystemTime {
-        year: 0, month: 0, day_of_week: 0, day: 0,
-        hour: 0, minute: 0, second: 0, millis: 0,
+        year: 0,
+        month: 0,
+        day_of_week: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        millis: 0,
     };
     unsafe { GetLocalTime(&mut st) };
     st
@@ -114,7 +125,10 @@ fn now_hms() -> String {
 /// "YYYYMMDD_HHMMSS"(导出文件名)
 fn now_stamp() -> String {
     let st = local_time();
-    format!("{:04}{:02}{:02}_{:02}{:02}{:02}", st.year, st.month, st.day, st.hour, st.minute, st.second)
+    format!(
+        "{:04}{:02}{:02}_{:02}{:02}{:02}",
+        st.year, st.month, st.day, st.hour, st.minute, st.second
+    )
 }
 
 /// 发送历史入队:去重(同项移到最前),超上限丢最旧
@@ -166,7 +180,9 @@ fn restore_window(app: &AppWindow, x: i32, y: i32, w: i32, h: i32) {
     let x = x.clamp(200 - w as i32, sw - 200);
     let y = y.clamp(0, sh - 100);
     let win = app.window();
-    win.set_position(slint::WindowPosition::Physical(slint::PhysicalPosition::new(x, y)));
+    win.set_position(slint::WindowPosition::Physical(
+        slint::PhysicalPosition::new(x, y),
+    ));
     win.set_size(slint::WindowSize::Physical(slint::PhysicalSize::new(w, h)));
 }
 
@@ -237,7 +253,12 @@ struct Stats {
 }
 impl Default for Stats {
     fn default() -> Self {
-        Self { tx: 0, rx: 0, since: None, last_ui: Instant::now() }
+        Self {
+            tx: 0,
+            rx: 0,
+            since: None,
+            last_ui: Instant::now(),
+        }
     }
 }
 
@@ -318,11 +339,14 @@ impl Ctx {
                 .trim()
                 .parse::<u32>()
                 .unwrap_or(DEFAULT_FRAME_TIMEOUT_MS);
-            self.frame_timeout_ms.store(v.clamp(1, 200), Ordering::Relaxed);
+            self.frame_timeout_ms
+                .store(v.clamp(1, 200), Ordering::Relaxed);
         }
         // 字符集动态生效:UI 下拉 → 共享变量(worker 每块检测变化热切换)
-        self.encoding_index
-            .store(ui.get_encoding_index().clamp(0, ENCODINGS.len() as i32 - 1) as u32, Ordering::Relaxed);
+        self.encoding_index.store(
+            ui.get_encoding_index().clamp(0, ENCODINGS.len() as i32 - 1) as u32,
+            Ordering::Relaxed,
+        );
         // HEX 接收动态生效
         self.hex_rx.store(ui.get_hex_rx(), Ordering::Relaxed);
         // 换行列数同步:**唯一真源 = LogView.columns,每个 tick 无节流执行**。
@@ -438,7 +462,10 @@ impl Ctx {
                         default_fg: r.fg.is_none(),
                     })
                     .collect();
-                self.log_rows.push(LogRow { runs: ModelRc::new(VecModel::from(spans)), hit: false });
+                self.log_rows.push(LogRow {
+                    runs: ModelRc::new(VecModel::from(spans)),
+                    hit: false,
+                });
             }
             ui.set_log_row_count(self.log_rows.row_count() as i32);
         }
@@ -512,7 +539,10 @@ impl Ctx {
                     default_fg: r.fg.is_none(),
                 })
                 .collect();
-            fresh.push(LogRow { runs: ModelRc::new(VecModel::from(spans)), hit: false });
+            fresh.push(LogRow {
+                runs: ModelRc::new(VecModel::from(spans)),
+                hit: false,
+            });
         }
         let n = fresh.len();
         self.log_rows.set_vec(fresh);
@@ -561,15 +591,42 @@ impl Ctx {
     /// 设备信息区(字段对齐原 PySide6 工程;空字段 UI 显示 "—")
     fn apply_device_info(&self, ui: &AppWindow, info: rtt::DeviceInfo) {
         let rows = vec![
-            InfoRow { label: "固件版本".into(), value: info.firmware.into() },
-            InfoRow { label: "硬件版本".into(), value: info.hardware.into() },
-            InfoRow { label: "序列号".into(), value: info.serial.into() },
-            InfoRow { label: "核心名称".into(), value: info.core_name.into() },
-            InfoRow { label: "核心 ID".into(), value: info.core_id.into() },
-            InfoRow { label: "CPU 类型".into(), value: info.core_cpu.into() },
-            InfoRow { label: "目标设备".into(), value: info.target.into() },
-            InfoRow { label: "接口".into(), value: info.iface.into() },
-            InfoRow { label: "速度(kHz)".into(), value: info.speed_khz.to_string().into() },
+            InfoRow {
+                label: "固件版本".into(),
+                value: info.firmware.into(),
+            },
+            InfoRow {
+                label: "硬件版本".into(),
+                value: info.hardware.into(),
+            },
+            InfoRow {
+                label: "序列号".into(),
+                value: info.serial.into(),
+            },
+            InfoRow {
+                label: "核心名称".into(),
+                value: info.core_name.into(),
+            },
+            InfoRow {
+                label: "核心 ID".into(),
+                value: info.core_id.into(),
+            },
+            InfoRow {
+                label: "CPU 类型".into(),
+                value: info.core_cpu.into(),
+            },
+            InfoRow {
+                label: "目标设备".into(),
+                value: info.target.into(),
+            },
+            InfoRow {
+                label: "接口".into(),
+                value: info.iface.into(),
+            },
+            InfoRow {
+                label: "速度(kHz)".into(),
+                value: info.speed_khz.to_string().into(),
+            },
         ];
         ui.set_info_rows(ModelRc::new(VecModel::from(rows)));
     }
@@ -597,9 +654,8 @@ impl Ctx {
             .collect();
         let cur = ui.get_jlink_index();
         ui.set_jlink_names(ModelRc::new(VecModel::from(descs)));
-        let idx = match
-            (*self.preferred_jlink.borrow())
-                .and_then(|sn| list.iter().position(|(s, _)| *s == sn))
+        let idx = match (*self.preferred_jlink.borrow())
+            .and_then(|sn| list.iter().position(|(s, _)| *s == sn))
         {
             Some(i) => i as i32,
             None if cur < list.len() as i32 && cur >= 0 => cur,
@@ -613,7 +669,12 @@ impl Ctx {
     /// 连接:校验 → 选定 SN → spawn worker。上一个 worker 还活着(可能阻塞在
     /// connect)时严禁并发——这是"严禁并发抢 J-Link"的门闩。
     fn start_connect(&self, ui: &AppWindow) {
-        if self.worker.borrow().as_ref().is_some_and(|h| h.alive.load(Ordering::Relaxed)) {
+        if self
+            .worker
+            .borrow()
+            .as_ref()
+            .is_some_and(|h| h.alive.load(Ordering::Relaxed))
+        {
             return;
         }
         *self.worker.borrow_mut() = None;
@@ -633,7 +694,9 @@ impl Ctx {
         // (用户输 "STM32G474V" → 连接 "STM32G474VE…" 首个匹配;残缺型号会让
         // DLL 弹设备选择框)。无任何候选 = 库里没有,拒绝连接并提示
         let full = self.device_names.borrow();
-        let exact = full.iter().any(|n| n.as_str().eq_ignore_ascii_case(&chip_raw));
+        let exact = full
+            .iter()
+            .any(|n| n.as_str().eq_ignore_ascii_case(&chip_raw));
         let chip: String = if exact {
             drop(full);
             chip_raw
@@ -659,8 +722,12 @@ impl Ctx {
         ui.set_status_text("● 连接中…".into());
         // 多台 J-Link:把下拉选中的序列号交给 worker(Open 前选定);未选中/空列表 = 自动
         let idx = ui.get_jlink_index();
-        let selected_sn =
-            self.jlinks.borrow().get(idx as usize).filter(|_| idx >= 0).map(|(sn, _)| *sn);
+        let selected_sn = self
+            .jlinks
+            .borrow()
+            .get(idx as usize)
+            .filter(|_| idx >= 0)
+            .map(|(sn, _)| *sn);
 
         let (tx, rx) = mpsc::channel::<WorkerCmd>();
         *self.cmd_tx.borrow_mut() = Some(tx);
@@ -703,9 +770,16 @@ impl Ctx {
             return;
         }
         let converted = if ui.get_hex_send() {
-            Some(text.bytes().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" "))
+            Some(
+                text.bytes()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
         } else {
-            parse_hex_bytes(&text).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+            parse_hex_bytes(&text)
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
         };
         if let Some(t) = converted {
             ui.set_send_text(t.into());
@@ -748,7 +822,9 @@ impl Ctx {
             *self.history_cursor.borrow_mut() = None;
             self.draft.borrow_mut().clear();
             // 回显显示用户输入原文(HEX 模式下原文即 hex 串),不写发送框
-            self.pump.borrow_mut().push_colored_line(&format!("» {text}"), ECHO_COLOR);
+            self.pump
+                .borrow_mut()
+                .push_colored_line(&format!("» {text}"), ECHO_COLOR);
         }
     }
 
@@ -771,7 +847,9 @@ impl Ctx {
 
     /// ↓ 翻历史:向更新一条移动;越过最新一条恢复用户输入草稿
     fn send_history_next(&self, ui: &AppWindow) {
-        let Some(i) = *self.history_cursor.borrow() else { return };
+        let Some(i) = *self.history_cursor.borrow() else {
+            return;
+        };
         match history_step_next(Some(i)) {
             Some(j) => {
                 *self.history_cursor.borrow_mut() = Some(j);
@@ -816,7 +894,9 @@ impl Ctx {
         let n = self.log_rows.row_count();
         let mut matches = Vec::new();
         for i in 0..n {
-            let Some(row) = self.log_rows.row_data(i) else { continue };
+            let Some(row) = self.log_rows.row_data(i) else {
+                continue;
+            };
             let mut text = String::new();
             for j in 0..row.runs.row_count() {
                 if let Some(seg) = row.runs.row_data(j) {
@@ -930,7 +1010,9 @@ impl Ctx {
     /// 插入一条会话标记行。**只能在 UI 回调上下文调用**(此时不持 pump 的
     /// borrow);tick 内持 borrow 期间必须直接 `pump.push_colored_line(...)`
     fn insert_mark(&self, label: &str) {
-        self.pump.borrow_mut().push_colored_line(&mark_text(label), MARK_COLOR);
+        self.pump
+            .borrow_mut()
+            .push_colored_line(&mark_text(label), MARK_COLOR);
     }
 
     /// 复位目标并恢复运行(仅连接状态;复位后 worker 重挂 RTT 继续收)
@@ -953,7 +1035,9 @@ impl Ctx {
         }
         let mut body = String::new();
         for i in 0..n {
-            let Some(row) = self.log_rows.row_data(i) else { continue };
+            let Some(row) = self.log_rows.row_data(i) else {
+                continue;
+            };
             for j in 0..row.runs.row_count() {
                 if let Some(seg) = row.runs.row_data(j) {
                     body.push_str(&seg.text);
@@ -987,7 +1071,9 @@ impl Ctx {
     /// 清空:行模型清空 + 状态栏恢复(不退化为无参数的"已连接")
     /// 复制日志选中(Ctrl+C;列级:行+显示列,宽度列切文本,CJK 记 2 列)
     fn copy_selected(&self, ui: &AppWindow) {
-        let Some(text) = self.extract_selection(ui) else { return };
+        let Some(text) = self.extract_selection(ui) else {
+            return;
+        };
         let lines = text.matches("\r\n").count() + 1;
         ui.set_status_text(if set_clipboard_text(&text) {
             format!("● 已复制 {lines} 行").into()
@@ -999,8 +1085,12 @@ impl Ctx {
     /// 提取当前选区文本(列级:行+显示列,宽度列切文本,CJK 记 2 列)。
     /// Ctrl+C 复制与 Ctrl+F 预填搜索框共用;无选中或全空返回 None。
     fn extract_selection(&self, ui: &AppWindow) -> Option<String> {
-        let (ar, ac, br, bc) =
-            (ui.get_sel_a_row(), ui.get_sel_a_col(), ui.get_sel_b_row(), ui.get_sel_b_col());
+        let (ar, ac, br, bc) = (
+            ui.get_sel_a_row(),
+            ui.get_sel_a_col(),
+            ui.get_sel_b_row(),
+            ui.get_sel_b_col(),
+        );
         if ar < 0 || br < 0 {
             return None;
         }
@@ -1012,15 +1102,23 @@ impl Ctx {
         };
         let mut text = String::new();
         for i in lo_r..=hi_r {
-            let Some(row) = self.log_rows.row_data(i) else { continue };
+            let Some(row) = self.log_rows.row_data(i) else {
+                continue;
+            };
             // 该行截取列区间:首行从 lo_c 起,尾行到 hi_c 止(含),中间整行
             let start_col = if i == lo_r { lo_c } else { 0 };
-            let end_col = if i == hi_r { hi_c.saturating_add(1) } else { usize::MAX };
+            let end_col = if i == hi_r {
+                hi_c.saturating_add(1)
+            } else {
+                usize::MAX
+            };
             // 按显示宽度列从带色段提取纯文本(列宽真源同 wrap_runs)
             let mut col = 0usize;
             let mut line = String::new();
             for j in 0..row.runs.row_count() {
-                let Some(seg) = row.runs.row_data(j) else { continue };
+                let Some(seg) = row.runs.row_data(j) else {
+                    continue;
+                };
                 for ch in seg.text.chars() {
                     let w = char_width_cols(ch);
                     if col + w > end_col {
@@ -1041,7 +1139,11 @@ impl Ctx {
             }
             text.push_str(&line);
         }
-        if text.is_empty() { None } else { Some(text) }
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
     }
 
     /// Ctrl+F 打开搜索条:日志区有选中文本则直接带入(VS Code 惯例)并立即搜索
@@ -1093,14 +1195,22 @@ impl Ctx {
         APP_SHUTDOWN.store(true, Ordering::Relaxed);
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
-            let alive =
-                self.worker.borrow().as_ref().is_some_and(|h| h.alive.load(Ordering::Relaxed));
+            let alive = self
+                .worker
+                .borrow()
+                .as_ref()
+                .is_some_and(|h| h.alive.load(Ordering::Relaxed));
             if !alive {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        if self.worker.borrow().as_ref().is_some_and(|h| h.alive.load(Ordering::Relaxed)) {
+        if self
+            .worker
+            .borrow()
+            .as_ref()
+            .is_some_and(|h| h.alive.load(Ordering::Relaxed))
+        {
             // worker 卡死在不可中断的 DLL 调用里(如模态弹窗):强制退出,宁可不优雅也不留僵尸
             std::process::exit(0);
         }
@@ -1184,7 +1294,8 @@ fn main() -> anyhow::Result<()> {
     app.set_info_expanded(saved.info_expanded);
     // 字号 9-30 之外的值视为坏值,不恢复(UI 端按钮本身也夹在这个范围)
     if (9..=30).contains(&saved.log_font_px) {
-        app.global::<AppTheme>().set_log_font_size(saved.log_font_px as f32);
+        app.global::<AppTheme>()
+            .set_log_font_size(saved.log_font_px as f32);
     }
     // 主题:恢复深/浅(Palette 同步由 UI 的 changed checked 链自动完成)
     app.global::<AppTheme>().set_dark(saved.dark_theme);
@@ -1202,7 +1313,13 @@ fn main() -> anyhow::Result<()> {
         set_display_keep_awake(true);
         app.set_keep_awake(true);
     }
-    restore_window(&app, saved.window_x, saved.window_y, saved.window_w, saved.window_h);
+    restore_window(
+        &app,
+        saved.window_x,
+        saved.window_y,
+        saved.window_w,
+        saved.window_h,
+    );
 
     if demo_mode {
         demo::spawn(ctx.msg_tx.clone());
@@ -1210,9 +1327,7 @@ fn main() -> anyhow::Result<()> {
         // 否则定时发送等场景在 demo 下无法端到端仿真(命令直接丢弃即可)
         let (fake_tx, fake_rx) = mpsc::channel::<WorkerCmd>();
         *ctx.cmd_tx.borrow_mut() = Some(fake_tx);
-        std::thread::spawn(move || {
-            while fake_rx.recv().is_ok() {}
-        });
+        std::thread::spawn(move || while fake_rx.recv().is_ok() {});
     } else {
         // 后台枚举:目标设备库候选(有磁盘缓存则零 DLL 调用)+ 本机接入的 J-Link 列表。
         // device_db 不依赖 WorkerMsg,这里用转发线程适配消息类型
@@ -1237,11 +1352,15 @@ fn main() -> anyhow::Result<()> {
     {
         let weak = app.as_weak();
         let ctx = ctx.clone();
-        timer.start(TimerMode::Repeated, Duration::from_millis(FLUSH_MS), move || {
-            if let Some(ui) = weak.upgrade() {
-                ctx.tick(&ui);
-            }
-        });
+        timer.start(
+            TimerMode::Repeated,
+            Duration::from_millis(FLUSH_MS),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ctx.tick(&ui);
+                }
+            },
+        );
     }
 
     // ---- 回调接线:闭包只做 weak 升级,业务全在 Ctx 方法 ----

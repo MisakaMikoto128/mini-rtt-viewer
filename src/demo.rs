@@ -51,7 +51,11 @@ pub fn spawn(msg_tx: mpsc::Sender<WorkerMsg>) {
             } else {
                 format!("\x1b[32m{i}\x1b[0m")
             };
-            let level = if i % 10 == 9 { " \x1b[41mERR\x1b[0m" } else { "" };
+            let level = if i % 10 == 9 {
+                " \x1b[41mERR\x1b[0m"
+            } else {
+                ""
+            };
             // Block 而非 Log:demo 模拟的是设备输出流(计入 RX 统计),
             // Log 是 J-Link 横幅语义,不参与统计
             let _ = msg_tx.send(WorkerMsg::Block(format!(

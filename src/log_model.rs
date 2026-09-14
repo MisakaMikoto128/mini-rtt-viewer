@@ -205,7 +205,7 @@ impl LogPump {
         if self.new_lines.is_empty() && self.marks.is_empty() {
             return None;
         }
-        let mut fresh: Vec<Vec<Run>> = self.marks.drain(..).collect();
+        let mut fresh: Vec<Vec<Run>> = std::mem::take(&mut self.marks);
         for l in self.new_lines.drain(..) {
             fresh.push(self.ansi.feed_line(&l));
         }

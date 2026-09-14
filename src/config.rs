@@ -201,7 +201,7 @@ mod tests {
         let prefs = load_from(&p);
         assert_eq!(prefs.chip_name, "STM32F030C8");
         assert_eq!(prefs.speed_index, StoredPrefs::default().speed_index);
-        assert_eq!(prefs.auto_frame, true);
+        assert!(prefs.auto_frame);
         let _ = std::fs::remove_file(&p);
     }
 

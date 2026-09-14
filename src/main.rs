@@ -262,6 +262,9 @@ impl Default for Stats {
     }
 }
 
+/// 一次搜索的匹配器:Ok = 可执行匹配闭包,Err = 正则编译错误文案
+type SearchResult = Result<Box<dyn Fn(&str) -> bool>, String>;
+
 /// 正则搜索状态(行模型上扫描;编译/计算按 150ms 节流)
 struct SearchState {
     /// 编译错误提示(显示在搜索条,红色;仅正则模式)
@@ -874,7 +877,7 @@ impl Ctx {
             return;
         }
         // matcher:Err = 正则非法(字面量模式不产生编译错误)
-        let matcher: Result<Box<dyn Fn(&str) -> bool>, String> = if ui.get_search_regex() {
+        let matcher: SearchResult = if ui.get_search_regex() {
             match Regex::new(&query) {
                 Ok(re) => Ok(Box::new(move |text| re.is_match(text))),
                 Err(e) => Err(format!("正则错误:{e}")),

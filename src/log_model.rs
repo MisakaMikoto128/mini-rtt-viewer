@@ -460,8 +460,10 @@ mod tests {
 
     #[test]
     fn marks_survive_pause_and_clear_wipes_them() {
-        let mut pump = LogPump::default();
-        pump.paused = true;
+        let mut pump = LogPump {
+            paused: true,
+            ..Default::default()
+        };
         pump.push_colored_line("mark", (1, 2, 3));
         assert!(pump.take_new_rows().is_some()); // 暂停只丢数据,不丢标记
         pump.clear();

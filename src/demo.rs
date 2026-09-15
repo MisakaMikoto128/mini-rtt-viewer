@@ -52,7 +52,9 @@ pub fn spawn(msg_tx: mpsc::Sender<WorkerMsg>) {
                 format!("\x1b[32m{i}\x1b[0m")
             };
             let level = if i % 10 == 9 {
-                " \x1b[41mERR\x1b[0m"
+                // 前景红(31)而非背景红(41):ansi.rs 暂不解析背景 SGR(记 backlog),
+                // 背景码会被吞掉导致 ERR 无色
+                " \x1b[31mERR\x1b[0m"
             } else {
                 ""
             };

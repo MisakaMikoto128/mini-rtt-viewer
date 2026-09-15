@@ -52,6 +52,8 @@ use tokio::sync::broadcast;
 
 /// 管理台单页(build 时内嵌,零静态文件分发)
 const INDEX_HTML: &str = include_str!("../../ui/web/index.html");
+/// favicon(build 时内嵌,不依赖进程工作目录;运行时读 assets/ 在 cwd 不对时 404)
+const FAVICON: &[u8] = include_bytes!("../../assets/app-32.png");
 /// 会话标记行颜色(与桌面版 MARK_COLOR 一致)
 const MARK_COLOR: (u8, u8, u8) = (0x28, 0xaf, 0xe9);
 
@@ -154,9 +156,30 @@ struct MarkReq {
     text: String,
 }
 
+/// 用法说明(--help / -h 打印后 exit 0,不占端口)
+fn print_usage() {
+    println!(
+        "rtt-web — Mini RTT Viewer 浏览器管理台(Rust 数据层 + 内嵌 Web UI)
+
+用法: rtt-web [选项]
+
+选项:
+  --demo-log    使用内置演示数据源,无需 J-Link 设备即可体验/测试
+  --port <n>    HTTP 监听端口(默认 8686,仅绑定 127.0.0.1)
+  -h, --help    显示本帮助并退出
+
+启动后浏览器访问 http://127.0.0.1:<端口>"
+    );
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // --help / -h:打印用法后退出
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_usage();
+        std::process::exit(0);
+    }
     let demo_mode = args.iter().any(|a| a == "--demo-log");
     let port: u16 = args
         .iter()
@@ -164,6 +187,13 @@ async fn main() {
         .and_then(|i| args.get(i + 1))
         .and_then(|p| p.parse().ok())
         .unwrap_or(8686);
+    // 未知参数:警告到 stderr 但继续启动(向后兼容,不让旧调用方式直接失败)
+    for (i, a) in args.iter().enumerate().skip(1) {
+        if a == "--demo-log" || a == "--port" || args[i - 1] == "--port" {
+            continue; // --port 的值参数也算已知
+        }
+        eprintln!("[rtt-web] 警告:未知参数 '{a}'(已忽略;--help 查看用法)");
+    }
 
     let (events_tx, _) = broadcast::channel(512);
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
@@ -379,10 +409,7 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn favicon() -> Response {
-    match std::fs::read("assets/app-32.png").or_else(|_| std::fs::read("assets/app.png")) {
-        Ok(bytes) => (StatusCode::OK, [(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+    (StatusCode::OK, [(header::CONTENT_TYPE, "image/png")], FAVICON).into_response()
 }
 
 async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value> {

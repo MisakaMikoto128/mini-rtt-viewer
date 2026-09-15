@@ -277,7 +277,8 @@
   }
   function trim() {
     const removed = [];
-    while (log.children.length > 800) { removed.push(log.firstChild); log.removeChild(log.firstChild); }
+    // 上限与服务端 MAX_LOG_ROWS=500 对齐:底栏行数口径才与 DOM 一致
+    while (log.children.length > 500) { removed.push(log.firstChild); log.removeChild(log.firstChild); }
     if (removed.length) onRowsRemoved(removed);
   }
   // 自动滚动互斥:搜索条打开期间流式新行不拉回底部;唯一滚动来源是命中导航
@@ -461,7 +462,7 @@
   document.documentElement.dataset.theme = themeSel.value;
 
   // ===== VS Code 式日志搜索(P0)=====
-  // 数据源:#log 已渲染行文本(≤800,被裁剪即不可搜);按行匹配,不跨行。
+  // 数据源:#log 已渲染行文本(≤500,与服务端 MAX_LOG_ROWS 一致;被裁剪即不可搜);按行匹配,不跨行。
   // 词级高亮按 runs 重建保留 ANSI span;命中上限 2000 封顶;高亮重绘 rAF 批量提交。
   const sBar = $('search-bar'), sInput = $('s-input'), sCount = $('s-count');
   const sPrev = $('s-prev'), sNext = $('s-next'), sClose = $('s-close');
@@ -474,6 +475,7 @@
   let sCur = -1;                      // 当前命中下标,-1 = 未定位
   let capped = false;                 // 命中达 2000 封顶
   let sDebT = 0, sRaf = 0;
+  let sDebouncing = false;            // debounce 窗口:计数位保持 —,不闪上一轮陈旧计数
   const sPending = new Set();         // 待重绘行(rAF 批量提交)
 
   function selectionInLog() {
@@ -562,6 +564,7 @@
     updateCount();
   }
   function updateCount() {
+    if (sDebouncing) return; // debounce 窗口(含流式新行的增量计数):维持 —,到期后由 rebuild 显示新结果
     sInput.classList.toggle('err', !!serrMsg);
     if (!sInput.value) { sCount.textContent = '—'; sCount.className = ''; sCount.title = ''; }
     else if (serrMsg) { sCount.textContent = '无效正则'; sCount.className = 'err'; sCount.title = 'RegExp: ' + serrMsg; }
@@ -600,7 +603,7 @@
     matches = []; sCur = -1; capped = false; sPending.clear();
     updateCount();
   }
-  // 行被 DOM 裁剪(>800):摘除其命中(命中序与行序一致 → 被裁行命中构成前缀);
+  // 行被 DOM 裁剪(>500,与服务端 MAX_LOG_ROWS 对齐):摘除其命中(命中序与行序一致 → 被裁行命中构成前缀);
   // 当前命中所在行被裁 → 推进至下一存活命中(不滚动)
   function onRowsRemoved(els) {
     if (!matches.length) return;
@@ -656,7 +659,12 @@
   };
   sInput.addEventListener('input', () => {        // 输入即搜:150ms debounce 全量重算
     clearTimeout(sDebT);
-    sDebT = setTimeout(() => { if (searchOpen) rebuild(); }, 150);
+    // 输入即清计数位为 —(含 err 类):debounce 窗口内不显示上一轮陈旧计数
+    sDebouncing = true;
+    sCount.textContent = '—';
+    sCount.className = '';
+    sCount.title = '';
+    sDebT = setTimeout(() => { sDebouncing = false; if (searchOpen) rebuild(); }, 150);
   });
   sInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); navigate(e.shiftKey ? -1 : 1); }

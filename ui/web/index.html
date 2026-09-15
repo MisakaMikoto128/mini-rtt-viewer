@@ -69,17 +69,34 @@
   header .title { font-weight: 700; }
   header .spacer { flex: 1; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
-  /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互) */
-  .combo { position: relative; flex: 1; min-width: 0; display: flex; }
-  .combo > input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-  .combo > .arrow { width: 30px; min-width: 30px; border-top-left-radius: 0; border-bottom-left-radius: 0;
-    border-left: none; font-size: 10px; color: var(--muted); padding: 0; }
-  .combo-list { position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px;
-    background: var(--input); border: 1px solid var(--border); border-radius: 6px;
+  /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互)
+     容器化:边框/圆角/底色收归 .combo,input 与箭头透明无边框(P0-1/P2-9) */
+  .combo { position: relative; flex: 1; min-width: 0; display: flex; height: 40px;
+    background: var(--input); border: 1px solid var(--border); border-radius: 8px; }
+  .combo:focus-within { border: 2px solid var(--accent); }
+  .combo > input { flex: 1; min-width: 0; border: none; background: transparent;
+    padding: 9px 12px; font-size: 14px; }
+  .combo > input:focus { border: none; }
+  .combo > .arrow { width: 34px; min-width: 34px; border: none; background: transparent;
+    color: var(--accent); padding: 0; display: flex; align-items: center; justify-content: center;
+    cursor: pointer; }
+  .combo > .arrow:hover { opacity: .75; }
+  /* 浮层卡片质感(P1-6):var(--card) 底 + 10px 圆角 + 深投影;
+     间距 8px(P2-10):top:100% 锚在 padding 盒上,扣除聚焦态 2px 边框后实测 6-7px */
+  .combo-list { position: absolute; top: 100%; left: 0; right: 0; margin-top: 8px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 6px;
     max-height: 220px; overflow-y: auto; z-index: 30; display: none;
-    box-shadow: 0 4px 14px rgba(0,0,0,.25); }
-  .combo-list .opt { padding: 7px 12px; cursor: pointer; font-size: 13px; }
-  .combo-list .opt:hover, .combo-list .opt.active { background: var(--accent); color: #fff; }
+    box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+  /* 候选项胶囊化(P0-3/P1-7):圆角胶囊、项间 2px、hover/激活/当前值 accent 底白字 */
+  .combo-list .opt { padding: 9px 12px; margin: 2px 0; cursor: pointer; font-size: 13px;
+    border-radius: 7px; }
+  .combo-list .opt:first-child { margin-top: 0; }
+  .combo-list .opt:last-child { margin-bottom: 0; }
+  .combo-list .opt:hover, .combo-list .opt.active, .combo-list .opt.current {
+    background: var(--accent); color: #fff; font-weight: 600; }
+  /* 细滚动条(P2-11,可选) */
+  .combo-list::-webkit-scrollbar { width: 6px; }
+  .combo-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -104,7 +121,9 @@
       <div class="field"><span class="label">目标设备</span>
         <div class="combo" id="chip-combo">
           <input id="chip" autocomplete="off" placeholder="STM32F103C8">
-          <button class="arrow" id="chip-arrow" tabindex="-1" aria-label="展开设备库">▾</button>
+          <button class="arrow" id="chip-arrow" tabindex="-1" aria-label="展开设备库">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
           <div class="combo-list" id="chip-list"></div>
         </div></div>
       <div class="field"><span class="label">接口</span>
@@ -256,30 +275,45 @@
     $('chip-line').textContent = (d.target || '—') + ' · ' + (d.iface || '—');
   }
   // 可编辑下拉:输入即筛选,↑↓ 选择,Enter 确认,Esc 关闭,箭头展开全部
+  // P0-4:浮层默认隐藏,仅聚焦/输入/点箭头展开;失焦/Esc/选中后关闭
   let chipOptions = [];
+  let chipListOpen = false;
   function fillDatalist(names) {
     chipOptions = names;
-    renderChipList($('chip').value);
+    renderChipList($('chip').value); // 只重绘候选,不改开合状态 → names 到达不再自动展开
   }
   function renderChipList(filter) {
     const list = $('chip-list');
     const f = (filter || '').toUpperCase();
+    // P1-8:与当前 #chip 值一致的候选常驻 accent 底白字(忽略大小写)
+    const cur = ($('chip').value || '').trim().toUpperCase();
     const opts = chipOptions.filter(o => o.toUpperCase().includes(f));
-    list.innerHTML = opts.map(o => '<div class="opt" data-v="' + o.replace(/"/g, '&quot;') + '">' + o + '</div>').join('');
-    list.style.display = opts.length ? 'block' : 'none';
+    list.innerHTML = opts.map(o =>
+      '<div class="opt' + (o.toUpperCase() === cur ? ' current' : '') +
+      '" data-v="' + o.replace(/"/g, '&quot;') + '">' + o + '</div>'
+    ).join('');
+    list.style.display = (chipListOpen && opts.length) ? 'block' : 'none';
     list.querySelectorAll('.opt').forEach(el => {
       el.addEventListener('mousedown', e => { e.preventDefault(); pickChip(el.dataset.v); });
     });
   }
+  function openChipList(filter) {
+    chipListOpen = true;
+    renderChipList(filter !== undefined ? filter : $('chip').value);
+  }
+  function closeChipList() {
+    chipListOpen = false;
+    $('chip-list').style.display = 'none';
+  }
   function pickChip(v) {
     $('chip').value = v;
-    $('chip-list').style.display = 'none';
+    closeChipList();
   }
   (function initChipCombo() {
     const input = $('chip'), list = $('chip-list');
-    input.addEventListener('input', () => renderChipList(input.value));
-    input.addEventListener('focus', () => renderChipList(input.value));
-    input.addEventListener('blur', () => setTimeout(() => { list.style.display = 'none'; }, 150));
+    input.addEventListener('input', () => openChipList());
+    input.addEventListener('focus', () => openChipList());
+    input.addEventListener('blur', () => setTimeout(closeChipList, 150));
     input.addEventListener('keydown', e => {
       const items = [...list.querySelectorAll('.opt')];
       let active = items.findIndex(el => el.classList.contains('active'));
@@ -298,11 +332,11 @@
         if (active >= 0) pickChip(items[active].dataset.v);
         else if (items.length === 1) pickChip(items[0].dataset.v);
       } else if (e.key === 'Escape') {
-        list.style.display = 'none';
+        closeChipList();
       }
     });
     $('chip-arrow').addEventListener('mousedown', e => e.preventDefault());
-    $('chip-arrow').onclick = () => renderChipList('');
+    $('chip-arrow').onclick = () => { chipListOpen ? closeChipList() : openChipList(''); };
   })();
   function fillJlinks(list) {
     $('jlink').innerHTML = '<option value="">自动</option>' +

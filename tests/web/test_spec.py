@@ -21,6 +21,9 @@ PORT = 18080
 BASE = f"http://127.0.0.1:{PORT}"
 EXE = r"target\release\rtt-web.exe"
 
+# UX 规格中的 accent 色 #28afe9(getComputedStyle 返回 rgb 形式)
+_ACCENT_RGB = "rgb(40, 175, 233)"
+
 
 @pytest.fixture(scope="session")
 def server():
@@ -99,6 +102,63 @@ def test_fr2_device_combo_filters_and_picks(page):
     page.click("#chip-arrow")
     n_all = page.evaluate("document.querySelectorAll('#chip-list .opt').length")
     assert n_all >= 5
+
+
+def test_fr2_combo_visual_p0(page):
+    """FR-2(视觉 P0,UX 报告):聚焦时容器 2px accent 边框、浮层默认隐藏、
+    候选项圆角非 0、与当前输入值相同的候选项常驻 accent 高亮。"""
+    page.goto(BASE)  # 全新加载,排除前序用例的交互残留
+    page.wait_for_selector("#chip", state="visible")
+    # 浮层默认隐藏(页面加载未交互时不展开)
+    assert (
+        page.evaluate("getComputedStyle(document.getElementById('chip-list')).display")
+        == "none"
+    ), "页面加载未交互时候选浮层应默认隐藏"
+
+    # 聚焦(真实点击)展开,容器边框 2px solid accent
+    page.click("#chip")
+    page.wait_for_function(
+        "getComputedStyle(document.getElementById('chip-list')).display !== 'none'",
+        timeout=3000,
+    )
+    bw = page.evaluate(
+        """() => {
+            const cs = getComputedStyle(
+                document.getElementById('chip').closest('.combo'));
+            return [cs.borderTopStyle, cs.borderTopWidth, cs.borderRightWidth,
+                    cs.borderBottomWidth, cs.borderLeftWidth, cs.borderTopColor];
+        }"""
+    )
+    assert bw[0] == "solid" and bw[1:5] == ["2px"] * 4, (
+        f"聚焦后容器边框应为 2px solid:实测 {bw}"
+    )
+    assert bw[5] == _ACCENT_RGB, f"聚焦后容器边框应为 accent 色:实测 {bw[5]}"
+
+    # 候选项胶囊圆角非 0
+    radius = page.evaluate(
+        "parseFloat(getComputedStyle(document.querySelector('#chip-list .opt'))"
+        ".borderTopLeftRadius)"
+    )
+    assert radius > 0, f"候选项圆角应非 0:实测 {radius}px"
+
+    # 与当前输入值相同的候选项:常驻 accent 高亮(非 hover 态)
+    val = page.evaluate("document.querySelector('#chip-list .opt').dataset.v")
+    page.fill("#chip", val)
+    page.wait_for_timeout(100)
+    if (
+        page.evaluate("getComputedStyle(document.getElementById('chip-list')).display")
+        == "none"
+    ):
+        page.click("#chip-arrow")  # 输入精确值后若浮层被过滤关闭,用箭头重开
+    bg = page.evaluate(
+        """() => {
+            const val = document.getElementById('chip').value;
+            const opt = [...document.querySelectorAll('#chip-list .opt')]
+                .find(o => o.dataset.v === val);
+            return opt ? getComputedStyle(opt).backgroundColor : null;
+        }"""
+    )
+    assert bg == _ACCENT_RGB, f"当前值候选项应有 accent 常驻高亮:实测 bg={bg}"
 
 
 def test_fr11_send_echoes_line(page):

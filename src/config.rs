@@ -43,8 +43,10 @@ pub struct StoredPrefs {
     pub log_font_px: i32,
     /// 设备信息折叠展开态
     pub info_expanded: bool,
-    /// 深色模式(默认开)
+    /// 深色模式(0.1.x 遗留字段,被 theme 取代;仅作旧偏好迁移来源,仍随快照写)
     pub dark_theme: bool,
+    /// 主题索引:0=深色 1=浅色 2=OLED 纯黑 3=护眼暖色(越界回落深色)
+    pub theme: i32,
     /// 发送历史(最新在前,去重,上限 50 条)
     pub send_history: Vec<String>,
     /// 窗口位置/尺寸(物理像素;全 0 = 不恢复)
@@ -81,6 +83,7 @@ impl Default for StoredPrefs {
             log_font_px: 13,
             info_expanded: false,
             dark_theme: true,
+            theme: 0,
             send_history: Vec::new(),
             window_x: 0,
             window_y: 0,
@@ -167,6 +170,7 @@ mod tests {
             log_font_px: 16,
             info_expanded: true,
             dark_theme: false,
+            theme: 2,
             send_history: vec!["read 3".into(), "led on".into()],
             window_x: -1920,
             window_y: 40,

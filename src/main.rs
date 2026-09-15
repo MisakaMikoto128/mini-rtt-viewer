@@ -575,6 +575,7 @@ impl Ctx {
             hex_send: ui.get_hex_send(),
             hex_rx: ui.get_hex_rx(),
             dark_theme: ui.global::<AppTheme>().get_dark(),
+            theme: ui.global::<AppTheme>().get_theme(),
             encoding_index: ui.get_encoding_index(),
             log_font_px: font_px,
             info_expanded: ui.get_info_expanded(),
@@ -1300,8 +1301,13 @@ fn main() -> anyhow::Result<()> {
         app.global::<AppTheme>()
             .set_log_font_size(saved.log_font_px as f32);
     }
-    // 主题:恢复深/浅(Palette 同步由 UI 的 changed checked 链自动完成)
-    app.global::<AppTheme>().set_dark(saved.dark_theme);
+    // 主题:恢复主题索引;0.1.x 旧偏好只有 dark_theme 布尔——theme 缺省 0(深色)
+    // 且旧值为浅色时迁到 1,老用户偏好无缝升级(Palette 同步走 UI changed 链)
+    let theme = match saved.theme {
+        0 if !saved.dark_theme => 1,
+        t => t.clamp(0, 3),
+    };
+    app.global::<AppTheme>().set_theme(theme);
     *ctx.preferred_jlink.borrow_mut() = saved.jlink_serial;
     ctx.encoding_index.store(
         saved.encoding_index.clamp(0, ENCODINGS.len() as i32 - 1) as u32,

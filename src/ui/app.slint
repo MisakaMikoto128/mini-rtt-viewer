@@ -16,6 +16,7 @@ export struct InfoRow {
 // 按钮统一用 std Button(点击/焦点/无障碍行为由官方维护,自定义 TouchArea 有点击丢失怪癖)。
 export component AppWindow inherits Window {
     title: "Mini RTT Viewer";
+    icon: @image-url("../../assets/app.png");
     preferred-width: 960px;
     preferred-height: 640px;
     min-width: 560px;
@@ -213,12 +214,24 @@ export component AppWindow inherits Window {
                 spacing: AppTheme.gap;
 
                     // ---- 外观 ----
-                    CheckBox {
-                        text: "深色模式";
-                        checked <=> AppTheme.dark;
-                        // changed(而非 toggled):Rust 启动恢复 set_dark 的变化也会
-                        // 触发,Palette(std 组件配色)与主题开关始终同步
-                        changed checked => { root.apply-color-scheme(); }
+                    HorizontalLayout {
+                        spacing: AppTheme.gap;
+                        Text {
+                            text: "主题";
+                            width: 116px;
+                            color: AppTheme.text-secondary;
+                            font-family: AppTheme.ui-font;
+                            font-size: AppTheme.ui-font-size;
+                            vertical-alignment: center;
+                        }
+                        ComboBox {
+                            horizontal-stretch: 1;
+                            model: ["深色", "浅色", "OLED 纯黑", "护眼暖色"];
+                            // changed(而非 toggled):Rust 启动恢复 set_theme 的变化
+                            // 也触发,Palette(std 组件配色)与主题始终同步
+                            changed current-index => { root.apply-color-scheme(); }
+                            current-index <=> AppTheme.theme;
+                        }
                     }
 
                     // ---- 连接设置 ----

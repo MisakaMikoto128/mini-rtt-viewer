@@ -32,6 +32,8 @@ vte = "0.13"
 
 [build-dependencies]
 slint-build = "1"
+# exe 图标嵌入(Windows 资源编译)
+winres = "0.1"
 
 [profile.release]
 # opt-level 3(性能优先):RTT 数据路径(UTF-8 增量解码/ANSI 解析/行切分)与

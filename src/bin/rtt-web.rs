@@ -1,5 +1,5 @@
 //! 浏览器管理台服务(`rtt-web`):SerialHub 同构——Rust 数据层 + 内嵌 Web UI,
-//! 浏览器访问 `http://127.0.0.1:8080`,Playwright/pytest 可黑盒测试。
+//! 浏览器访问 `http://127.0.0.1:8686`,Playwright/pytest 可黑盒测试。
 //!
 //! 与桌面版**同一套数据层与 worker**(rtt::spawn / LogPump / demo / device_db),
 //! 界面布局与桌面版一致(左配置面板 + 右日志区)。主 exe 不链接 axum/tokio,
@@ -163,7 +163,7 @@ async fn main() {
         .position(|a| a == "--port")
         .and_then(|i| args.get(i + 1))
         .and_then(|p| p.parse().ok())
-        .unwrap_or(8080);
+        .unwrap_or(8686);
 
     let (events_tx, _) = broadcast::channel(512);
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();

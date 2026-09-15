@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **浏览器管理台(rtt-web)**:SerialHub 同构——独立二进制(主 exe 体积零影响)
+  起 `127.0.0.1:8080`,浏览器即用:WS 实时日志流、四主题、发送/暂停/清空;
+  Playwright + pytest 黑盒测试入 CI(6 条 spec 命名用例)
+- **API 契约**:/api/status /api/themes /api/send /api/pause /api/clear + WS;
+  行序号水位解决清空竞态,Lagged 自动快照重同步
+
 - **四套主题**:深色 / 浅色 / OLED 纯黑 / 护眼暖色,左面板"主题"下拉即时切换;
   旧 dark_theme 偏好自动迁移,全部令牌(背景/文字/描边/状态色/搜索高亮)按主题取值
 - **应用图标**:窗口标题栏 / 任务栏 / exe 资源三处(自绘:心跳波形 + 日志行)

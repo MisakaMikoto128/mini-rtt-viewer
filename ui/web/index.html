@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini RTT Viewer — 管理台</title>
+<style>
+  /* 主题 = CSS 变量集(ADR-18 同款插件化):THEMES 表加一项即新主题 */
+  :root, :root[data-theme="dark"] {
+    --bg:#1b1b1f; --panel:#222228; --card:#2a2a31; --input:#26262c;
+    --text:#e8e8ea; --muted:#a0a0a8; --border:#3a3a42;
+    --accent:#28afe9; --ok:#2e7d32; --err:#cc4455; --log-bg:#222222; --log-fg:#dddddd;
+  }
+  :root[data-theme="light"] {
+    --bg:#f2f3f5; --panel:#ffffff; --card:#eceef1; --input:#ffffff;
+    --text:#1a1a1e; --muted:#55555e; --border:#d0d3d9;
+    --accent:#1c8cc4; --ok:#2e7d32; --err:#cc3344; --log-bg:#ffffff; --log-fg:#222222;
+  }
+  :root[data-theme="oled"] {
+    --bg:#000000; --panel:#0a0a0a; --card:#111114; --input:#060608;
+    --text:#e0e0e0; --muted:#909096; --border:#26262c;
+    --accent:#28afe9; --ok:#2e7d32; --err:#ff5566; --log-bg:#000000; --log-fg:#d8d8d8;
+  }
+  :root[data-theme="sepia"] {
+    --bg:#f5efdc; --panel:#fbf7e8; --card:#efe8d2; --input:#fdf9ee;
+    --text:#3d3322; --muted:#7a6c4f; --border:#d8cfae;
+    --accent:#1c8cc4; --ok:#2e7d32; --err:#b34a44; --log-bg:#faf5e4; --log-fg:#4a3f2a;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.6 "Segoe UI", system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--err); }
+  header .dot.on { background: var(--ok); }
+  header .title { font-weight: 700; }
+  header .stats { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  select, input, button { background: var(--input); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font: inherit; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  main { flex: 1; display: flex; min-height: 0; }
+  #log { flex: 1; overflow-y: auto; background: var(--log-bg); color: var(--log-fg);
+    font: 13px/1.5 Consolas, monospace; padding: 8px 12px; }
+  #log .row { white-space: pre-wrap; word-break: break-all; min-height: 19.5px; }
+  #log .row .fg-accent { color: var(--accent); }
+  aside { width: 280px; background: var(--panel); border-left: 1px solid var(--border);
+    padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+  aside h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  aside label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+  aside input[type=text] { width: 100%; }
+  .send-row { display: flex; gap: 8px; }
+  .send-row input { flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; }
+  footer { padding: 8px 16px; background: var(--panel); border-top: 1px solid var(--border);
+    display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <span class="title">Mini RTT Viewer · 管理台</span>
+  <span class="stats" id="phase">idle</span>
+  <span class="spacer"></span>
+  <span class="hint">主题</span>
+  <select id="theme"></select>
+</header>
+<main>
+  <div id="log"></div>
+  <aside>
+    <h3>发送</h3>
+    <label for="send-text">发送到通道 0(Enter 发送)</label>
+    <div class="send-row">
+      <input type="text" id="send-text" placeholder="hello">
+      <button id="send-btn">发送</button>
+    </div>
+    <h3>接收</h3>
+    <div class="send-row">
+      <button id="pause-btn">暂停</button>
+      <button id="clear-btn">清空</button>
+    </div>
+    <p class="hint">数据源:<span id="src">demo</span>(--demo-log)。真机接入为下一阶段。</p>
+  </aside>
+</main>
+<footer>
+  <span id="tx">TX 0 B</span>
+  <span id="rx">RX 0 B</span>
+  <span id="rows">0 行</span>
+  <span class="spacer" style="flex:1"></span>
+  <span>Mini RTT Viewer · 浏览器管理台</span>
+</footer>
+<script>
+  // 主题表(插件化:加主题 = 这里加一项 + /api/themes 加一条)
+  const API = location.origin;
+  const log = document.getElementById('log');
+  const dot = document.getElementById('dot');
+  const phase = document.getElementById('phase');
+  const fmt = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  function appendRow(row) {
+    const div = document.createElement('div');
+    div.className = 'row';
+    for (const run of row.runs) {
+      const span = document.createElement('span');
+      span.textContent = run.text;
+      if (run.fg) span.style.color = run.fg;
+      div.appendChild(span);
+    }
+    log.appendChild(div);
+  }
+  function trim(max) {
+    while (log.children.length > max) log.removeChild(log.firstChild);
+  }
+  let clearSeq = 0;
+  function onMsg(ev) {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'snapshot') { log.innerHTML = ''; m.rows.forEach(appendRow); scrollBottom(); }
+    else if (m.type === 'cleared') { clearSeq = m.seq; log.innerHTML = ''; window.__clearedCount = (window.__clearedCount || 0) + 1; }
+    else if (m.type === 'rows') {
+      if (m.seq <= clearSeq) return; // 清空水位之前的滞留行作废
+      for (let i = 0; i < (m.dropped || 0); i++) log.removeChild(log.firstChild);
+      m.rows.forEach(appendRow); trim(800); scrollBottom();
+    }
+  }
+  function scrollBottom() { log.scrollTop = log.scrollHeight; }
+  function connect() {
+    const ws = new WebSocket(API.replace('http', 'ws') + '/ws');
+    ws.onmessage = onMsg;
+    ws.onclose = () => setTimeout(connect, 1500);
+  }
+  connect();
+
+  async function pollStatus() {
+    try {
+      const s = await (await fetch(API + '/api/status')).json();
+      dot.classList.toggle('on', s.connected);
+      phase.textContent = s.phase + ' · demo';
+      document.getElementById('tx').textContent = 'TX ' + fmt(s.txBytes);
+      document.getElementById('rx').textContent = 'RX ' + fmt(s.rxBytes);
+      document.getElementById('rows').textContent = s.rowsTotal + ' 行';
+    } catch {}
+  }
+  setInterval(pollStatus, 1000);
+  pollStatus();
+
+  document.getElementById('send-btn').onclick = send;
+  document.getElementById('send-text').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+  function send() {
+    const input = document.getElementById('send-text');
+    if (!input.value) return;
+    fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text: input.value }) }).then(() => { input.value = ''; });
+  }
+  document.getElementById('pause-btn').onclick = function () {
+    const paused = this.textContent === '暂停';
+    fetch(API + '/api/pause', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ on: paused }) }).then(() => { this.textContent = paused ? '继续' : '暂停'; });
+  };
+  document.getElementById('clear-btn').onclick = () =>
+    fetch(API + '/api/clear', { method: 'POST' }).then(() => { log.innerHTML = ''; });
+
+  // 主题:/api/themes 拉 id 列表,选择存 localStorage,改 data-theme 即切换
+  const themeSel = document.getElementById('theme');
+  fetch(API + '/api/themes').then(r => r.json()).then(themes => {
+    for (const t of themes) {
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.name;
+      themeSel.appendChild(o);
+    }
+    themeSel.value = localStorage.getItem('web-theme') || 'dark';
+  });
+  themeSel.onchange = () => {
+    document.documentElement.dataset.theme = themeSel.value;
+    localStorage.setItem('web-theme', themeSel.value);
+  };
+  themeSel.value = localStorage.getItem('web-theme') || 'dark';
+  document.documentElement.dataset.theme = themeSel.value;
+</script>
+</body>
+</html>

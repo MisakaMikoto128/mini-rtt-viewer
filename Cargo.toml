@@ -29,6 +29,15 @@ unicode-width = "0.2"
 rfd = "0.15"
 # ANSI/VT 转义序列解析(Alacritty/WezTerm 同款状态机;增量式,颜色状态跨块跨行保持)
 vte = "0.13"
+# ---- 浏览器管理台(仅 rtt-web 二进制使用;主 exe 不链接,体积零影响)----
+# SerialHub 同构:Rust 数据层 + 内嵌 Web UI,浏览器/Playwright 可测
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# 浏览器管理台服务:与桌面版共享 lib 数据层,产物独立分发
+[[bin]]
+name = "rtt-web"
+path = "src/bin/rtt-web.rs"
 
 [build-dependencies]
 slint-build = "1"

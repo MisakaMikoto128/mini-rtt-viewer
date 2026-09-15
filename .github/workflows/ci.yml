@@ -31,3 +31,30 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+  web-test:
+    # 浏览器管理台黑盒测试(SerialHub 同款回路):Playwright + pytest,
+    # 预期只来自 spec 条目(tests/web/test_spec.py)。Windows runner 与
+    # 主 job 同因(PLAT-1)。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test deps
+        run: |
+          pip install pytest playwright
+          playwright install chromium
+
+      - name: Build rtt-web
+        run: cargo build --release --locked -p mini-rtt-viewer --bin rtt-web
+
+      - name: Run Playwright suite
+        run: python -m pytest tests/web/test_spec.py -v

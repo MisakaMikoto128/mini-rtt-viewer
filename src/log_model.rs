@@ -250,6 +250,11 @@ impl LogPump {
         self.rows.clone()
     }
 
+    /// 当前保留行数(状态栏/只读统计用)
+    pub fn rows_len(&self) -> usize {
+        self.rows.len()
+    }
+
     /// 测试专用:内部保留行数(裁剪断言用;仅 lib 测试编译)
     #[cfg(test)]
     pub fn test_rows_len(&self) -> usize {

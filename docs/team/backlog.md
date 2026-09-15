@@ -16,7 +16,11 @@
   债务再收紧(不放宽门禁)
 - ☐ GitHub Pages 站点上线后,README 顶部挂站点与下载链接
 - ☐ 发布产物签名或至少发布 SHA256SUMS(消除 SmartScreen 信任疑虑)
+- ◐ UI 技术栈:浏览器管理台 spike 已落地(rtt-web + Playwright 全绿),
+  ADR-11 决策素材齐备;真机接入(J-Link 数据 → Web)为迁移第二步
 - ☐ AGENTS.md「项目现状速览」与 docs/ 结构对齐(标准化后结构变了)
+- ☐ 桌面版遗留 UI 问题(状态栏文本间距/面板控件超界)——浏览器版布局体系
+  天然规避;桌面版待 ADR-11 决策后定优先级
 - ☐ UI 截图刷新:README/docs/images 换 0.1.9 界面(浅色主题、1280+ 宽)
 
 ## 存档(✔ / ✖)

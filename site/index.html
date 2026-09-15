@@ -1,248 +1,663 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
+<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mini RTT Viewer — SEGGER J-Link RTT 极简查看器</title>
-<meta name="description" content="Mini RTT Viewer:Windows 下的轻量级 SEGGER RTT 日志查看器,为 UTF-8 / emoji 而生。单文件约 3MB 免安装,启动 <1 秒,ANSI 彩色日志、正则搜索、HEX 收发;另附浏览器管理台 rtt-web。">
-<link rel="icon" type="image/png" href="favicon.png">
+<meta name="color-scheme" content="light">
+<title>Mini RTT Viewer — 为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器 | 免费开源 · 免安装</title>
+<meta name="description" content="Mini RTT Viewer 是免费开源(MIT)的轻量级 SEGGER RTT 日志查看器:中文 / emoji 原样显示,ANSI 彩色日志、VS Code 式正则搜索、四套主题,桌面版 + 浏览器管理台双程序。单文件约 3 MB 免安装,10kHz+ 吞吐不卡 UI,启动不到 1 秒。">
+<link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon.png">
+<link rel="icon" type="image/png" sizes="256x256" href="./assets/icon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Mini RTT Viewer — 为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器">
+<meta property="og:description" content="官方 J-Link RTT Viewer 对 UTF-8 的支持是坏的:中文乱码、emoji 直接丢。Mini RTT Viewer 单文件约 3 MB 免安装,中文和 emoji 原样显示,10kHz+ 吞吐不卡 UI,启动不到 1 秒。桌面版 + 浏览器管理台双程序,免费开源(MIT)。">
+<meta property="og:url" content="https://misakamikoto128.github.io/mini-rtt-viewer/">
+<!-- ═══════════════════════════════════════════════════════════════════
+     RELEASE-DATA (单一数据块, 逐版发布只改此对象)
+     版本 / 日期 / 平台包名·规格·SHA256·链接全部在此; 页面加载后由本对象渲染。
+     正文里的同名静态文本仅为无 JS / 搜索引擎回退, 渲染以本对象为准。
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+const RELEASE = {
+  version: "v0.2.0",
+  date: "2026-09-15",
+  repo: "https://github.com/MisakaMikoto128/mini-rtt-viewer",
+  releases: "https://github.com/MisakaMikoto128/mini-rtt-viewer/releases",
+  changelog: "https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md",
+  platforms: {
+    windows: {
+      file: "mini-rtt-viewer-0.2.0-windows-x86_64.zip",
+      spec: "Windows x86_64 · zip · 约 6.3 MB · 内含桌面版与浏览器管理台双程序",
+      sha256: "5b519881648fd5d0c7d949f3bc76b2940498c8fa204a26f88cab7130171d0a4c",
+      url: "https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.2.0/mini-rtt-viewer-0.2.0-windows-x86_64.zip"
+    }
+  }
+};
+</script>
 <style>
-  :root {
-    --bg: #16161a; --panel: #222228; --text: #e8e8ea; --muted: #a0a0a8;
-    --accent: #28afe9; --card: #2a2a31; --border: #3a3a42;
+/* ═══ 设计令牌 (全部 --wh-*) ═══ */
+:root{
+  /* 色板 18 */
+  --wh-bg:#f7f9fb;
+  --wh-panel:#ffffff;
+  --wh-panel-2:#f6f8fa;
+  --wh-ink:#1c2630;
+  --wh-muted:#5f6b76;
+  --wh-faint:#8b96a1;
+  --wh-accent:#0e6db8;
+  --wh-accent-hover:#0b5c9c;
+  --wh-accent-ink:#ffffff;
+  --wh-border:#d3dae1;
+  --wh-border-strong:#b7c1cb;
+  --wh-code-bg:#f6f8fa;
+  --wh-code-ink:#1c2630;
+  --wh-term-bg:#14171a;
+  --wh-term-ink:#e8eaed;
+  --wh-term-border:#2c313a;
+  --wh-term-faint:#828c99;
+  --wh-term-accent:#5aa9dc;
+  --wh-ok:#1e8e4e;
+  /* 字体与字阶 8 */
+  --wh-sans:"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  --wh-mono:Consolas,"Cascadia Mono","SFMono-Regular",Menlo,monospace;
+  --wh-fs-hero:28px;
+  --wh-fs-h2:21px;
+  --wh-fs-h3:17px;
+  --wh-fs-body:15px;
+  --wh-fs-small:12px;
+  --wh-fs-mono:13px;
+  /* 间距 / 布局 11 */
+  --wh-sp-1:4px;
+  --wh-sp-2:8px;
+  --wh-sp-3:12px;
+  --wh-sp-4:16px;
+  --wh-sp-5:24px;
+  --wh-sp-6:32px;
+  --wh-sp-7:48px;
+  --wh-sp-8:64px;
+  --wh-sp-9:96px;
+  --wh-container:1100px;
+  --wh-nav-h:56px;
+  /* 圆角 / 阴影 / 控件 10 */
+  --wh-radius:8px;
+  --wh-radius-sm:4px;
+  --wh-pill:999px;
+  --wh-shadow-1:0 1px 2px rgba(28,38,48,.06);
+  --wh-shadow-2:0 6px 24px rgba(28,38,48,.10);
+  --wh-shadow-3:0 10px 40px rgba(28,38,48,.16);
+  --wh-btn-h:40px;
+  --wh-btn-h-lg:48px;
+  --wh-btn-px:20px;
+}
+@media (min-width:720px){
+  :root{
+    --wh-fs-hero:36px;
+    --wh-fs-h2:24px;
+    --wh-fs-h3:18px;
+    --wh-fs-body:16px;
+    --wh-fs-small:13px;
+    --wh-fs-mono:14px;
   }
-  :root[data-theme="light"] {
-    --bg: #f2f3f5; --panel: #ffffff; --text: #1a1a1e; --muted: #55555e;
-    --card: #eceef1; --border: #d0d3d9;
+}
+@media (min-width:1440px){
+  :root{
+    --wh-fs-hero:44px;
+    --wh-fs-h2:28px;
   }
-  /* 未手动选择时跟随系统;:root 默认深色,系统浅色且未手动覆盖时切浅 */
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme]) { --bg: #f2f3f5; --panel: #ffffff; --text: #1a1a1e; --muted: #55555e; --card: #eceef1; --border: #d0d3d9; }
+}
+
+/* ═══ 基础 ═══ */
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--wh-nav-h) + 12px)}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{
+  font-family:var(--wh-sans);
+  font-size:var(--wh-fs-body);
+  line-height:1.7;
+  color:var(--wh-ink);
+  background:var(--wh-bg);
+}
+img{max-width:100%}
+a{color:var(--wh-accent)}
+:focus-visible{outline:2px solid var(--wh-accent);outline-offset:1px}
+.container{max-width:var(--wh-container);margin-inline:auto;padding-inline:16px}
+@media (min-width:720px){.container{padding-inline:24px}}
+
+/* ═══ 导航 (粘性) ═══ */
+.nav{
+  position:sticky;top:0;z-index:50;
+  height:var(--wh-nav-h);
+  background:var(--wh-panel);
+  border-bottom:2px solid var(--wh-border-strong);
+}
+.nav-in{
+  max-width:var(--wh-container);margin-inline:auto;padding-inline:16px;
+  height:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--wh-sp-4);
+}
+@media (min-width:720px){.nav-in{padding-inline:24px}}
+.brand{display:flex;align-items:center;gap:var(--wh-sp-2);font-weight:700;font-size:16px;color:var(--wh-ink);text-decoration:none;white-space:nowrap}
+.brand-mark{width:10px;height:10px;background:var(--wh-accent);flex:none}
+.nav-links{display:flex;gap:var(--wh-sp-5);list-style:none;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
+.nav-links a{font-size:14px;color:var(--wh-muted);text-decoration:none}
+.nav-links a:hover{color:var(--wh-accent)}
+
+/* ═══ 区块通用 ═══ */
+.sec{padding-top:var(--wh-sp-7)}
+@media (min-width:720px){.sec{padding-top:var(--wh-sp-8)}}
+@media (min-width:1440px){.sec{padding-top:var(--wh-sp-9)}}
+.eyebrow{font-family:var(--wh-mono);font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--wh-faint)}
+.sec-head h2{font-size:var(--wh-fs-h2);line-height:1.25;font-weight:700;margin-top:var(--wh-sp-2)}
+
+/* ═══ Hero ═══ */
+.hero{padding:var(--wh-sp-6) 0 var(--wh-sp-7);border-bottom:1px solid var(--wh-border);text-align:center}
+@media (min-width:720px){.hero{padding:var(--wh-sp-7) 0 var(--wh-sp-8)}}
+@media (min-width:1440px){.hero{padding:var(--wh-sp-8) 0 var(--wh-sp-9)}}
+.hero h1{font-size:var(--wh-fs-hero);line-height:1.2;font-weight:700;letter-spacing:.5px;margin-top:var(--wh-sp-4)}
+.hero-sub{max-width:640px;margin:var(--wh-sp-4) auto 0;color:var(--wh-muted);font-size:var(--wh-fs-h3);font-weight:400}
+.hero-cta{display:flex;flex-direction:column;gap:var(--wh-sp-3);margin-top:var(--wh-sp-6)}
+@media (min-width:720px){.hero-cta{flex-direction:row;justify-content:center;align-items:center}}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--wh-sp-2);
+  height:var(--wh-btn-h);padding-inline:var(--wh-btn-px);
+  border-radius:var(--wh-radius);border:1px solid transparent;
+  font-family:var(--wh-sans);font-size:var(--wh-fs-body);text-decoration:none;cursor:pointer;
+}
+.btn-lg{height:var(--wh-btn-h-lg)}
+.btn-primary{background:var(--wh-accent);color:var(--wh-accent-ink)}
+.btn-primary:hover{background:var(--wh-accent-hover)}
+.btn-secondary{background:var(--wh-panel);color:var(--wh-ink);border-color:var(--wh-border-strong)}
+.btn-secondary:hover{border-color:var(--wh-accent);color:var(--wh-accent)}
+.hero-cta .btn{width:100%}
+@media (min-width:720px){.hero-cta .btn{width:auto}}
+.pill-row{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--wh-sp-2);margin-top:var(--wh-sp-5)}
+.pill{
+  display:inline-block;padding:2px 12px;
+  background:var(--wh-panel-2);border:1px solid var(--wh-border);border-radius:var(--wh-pill);
+  font-size:13px;color:var(--wh-muted);text-decoration:none;
+}
+.pill:hover{border-color:var(--wh-accent);color:var(--wh-accent)}
+.hero-ver{margin-top:var(--wh-sp-3);font-size:12px;color:var(--wh-faint)}
+
+/* ═══ 特性网格 ═══ */
+.feat-grid{display:grid;grid-template-columns:1fr;gap:var(--wh-sp-5);margin-top:var(--wh-sp-6)}
+@media (min-width:720px){.feat-grid{grid-template-columns:repeat(2,1fr)}}
+@media (min-width:1440px){.feat-grid{grid-template-columns:repeat(3,1fr)}}
+.feat-card{
+  background:var(--wh-panel);border:1px solid var(--wh-border);border-radius:var(--wh-radius);
+  box-shadow:var(--wh-shadow-1);padding:var(--wh-sp-5);
+}
+.feat-card:hover{border-color:var(--wh-border-strong)}
+.feat-ico{display:block;color:var(--wh-accent);margin-bottom:var(--wh-sp-3)}
+.feat-card h3{font-size:var(--wh-fs-h3);font-weight:600}
+.feat-card p{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted)}
+
+/* ═══ 截图区 ═══
+   注: 截图自带窗口底色, 保留圆角容器、柔和阴影与点击放大。 */
+.shot-main{margin-top:var(--wh-sp-6)}
+.shot-banner{margin-top:var(--wh-sp-5)}
+.shot-grid{display:grid;grid-template-columns:1fr;gap:var(--wh-sp-5);margin-top:var(--wh-sp-5)}
+@media (min-width:720px){.shot-grid{grid-template-columns:1fr 1fr}}
+.shot{display:block;border-radius:var(--wh-radius);overflow:hidden;background:var(--wh-panel);box-shadow:var(--wh-shadow-2)}
+.shot img{display:block;width:100%;height:auto}
+figure{margin:0}
+figcaption{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted)}
+
+/* ═══ 下载区 ═══ */
+.dl-date{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);color:var(--wh-faint)}
+.ver-pill{
+  display:inline-block;font-family:var(--wh-mono);font-size:var(--wh-fs-mono);
+  background:var(--wh-panel-2);border:1px solid var(--wh-border);border-radius:var(--wh-pill);
+  padding:1px 12px;vertical-align:2px;
+}
+.dl-grid{display:grid;grid-template-columns:1fr;gap:var(--wh-sp-5);margin-top:var(--wh-sp-6)}
+@media (min-width:1024px){.dl-grid{grid-template-columns:repeat(3,1fr)}}
+.dl-card{
+  background:var(--wh-panel);border:1px solid var(--wh-border);border-radius:var(--wh-radius);
+  box-shadow:var(--wh-shadow-1);padding:var(--wh-sp-5);
+  display:flex;flex-direction:column;gap:var(--wh-sp-3);
+}
+.dl-card:hover{border-color:var(--wh-border-strong)}
+.dl-card h3{font-size:var(--wh-fs-body);font-weight:600}
+.dl-spec{font-family:var(--wh-mono);font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.dl-file{font-family:var(--wh-mono);font-size:12px;line-height:1.5;color:var(--wh-faint);word-break:break-all}
+.dl-desc{font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted)}
+.dl-btn{width:100%}
+.sha-label{font-family:var(--wh-mono);font-size:11px;letter-spacing:1px;color:var(--wh-faint)}
+.sha-bar{position:relative;background:var(--wh-term-bg);border:1px solid var(--wh-term-border);border-radius:var(--wh-radius)}
+.sha-bar code{
+  display:block;padding:10px 52px 10px 12px;
+  font-family:var(--wh-mono);font-size:12px;line-height:1.5;color:var(--wh-term-ink);
+  word-break:break-all; /* 深色命令条内的长 SHA 是唯一允许 break-all 的地方 */
+}
+.copy-btn{
+  position:absolute;top:50%;transform:translateY(-50%);right:6px;
+  background:transparent;border:none;border-radius:var(--wh-radius-sm);
+  font-family:var(--wh-sans);font-size:12px;color:var(--wh-term-faint);
+  padding:4px 6px;cursor:pointer;white-space:nowrap;
+}
+.copy-btn:hover{color:var(--wh-term-accent)}
+.copy-btn.ok{color:var(--wh-ok)}
+.copy-btn.err{color:#d07a5a}
+.cmdbar{position:relative;background:var(--wh-term-bg);border:1px solid var(--wh-term-border);border-radius:var(--wh-radius)}
+.cmdbar code{
+  display:block;padding:10px 76px 10px 12px;
+  font-family:var(--wh-mono);font-size:var(--wh-fs-mono);color:var(--wh-term-ink);
+  white-space:nowrap;overflow-x:auto;
+}
+.cmdbar .copy-btn{right:6px}
+.dl-notes{margin-top:var(--wh-sp-6);display:flex;flex-direction:column;gap:var(--wh-sp-4)}
+.note{
+  background:var(--wh-panel);border:1px solid var(--wh-border);border-radius:var(--wh-radius);
+  padding:var(--wh-sp-3) var(--wh-sp-4);font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted);
+}
+.sysreq{font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.sha-note{font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.inline-code{
+  font-family:var(--wh-mono);font-size:12px;color:var(--wh-code-ink);
+  background:var(--wh-code-bg);border:1px solid var(--wh-border);border-radius:var(--wh-radius-sm);
+  padding:1px 6px;word-break:break-all;
+}
+.dl-tail{margin-top:var(--wh-sp-5);display:flex;flex-direction:column;gap:var(--wh-sp-2)}
+.dl-history{font-size:var(--wh-fs-body)}
+.dl-mirror{font-size:var(--wh-fs-small);color:var(--wh-faint)}
+
+/* ═══ 快速开始 ═══ */
+.qs-steps{margin-top:var(--wh-sp-6)}
+.qs-step{position:relative;padding-left:44px;padding-bottom:var(--wh-sp-5)}
+.qs-step:last-child{padding-bottom:0}
+.qs-step:not(:last-child)::before{ /* <720 纵向时间线虚线 */
+  content:"";position:absolute;left:13px;top:34px;bottom:4px;
+  border-left:2px dashed var(--wh-border-strong);
+}
+.qs-head{display:flex;align-items:center;gap:var(--wh-sp-3);margin-bottom:var(--wh-sp-2)}
+.qs-num{
+  width:28px;height:28px;flex:none;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--wh-panel-2);border:1px solid var(--wh-border-strong);border-radius:var(--wh-radius-sm);
+  font-family:var(--wh-mono);font-size:var(--wh-fs-small);font-weight:600;
+}
+.qs-head h3{font-size:var(--wh-fs-h3);font-weight:600}
+.qs-desc{font-size:14px;color:var(--wh-muted)}
+.qs-step .cmdbar{margin-top:var(--wh-sp-3)}
+@media (min-width:720px){
+  .qs-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--wh-sp-6)}
+  .qs-step{padding-left:0;padding-bottom:0}
+  .qs-step::before{display:none}
+  .qs-step:not(:last-child)::after{ /* ≥720 横向虚线导线 */
+    content:"";position:absolute;top:13px;left:40px;right:calc(8px - var(--wh-sp-6));
+    border-top:2px dashed var(--wh-border-strong);
   }
-  .theme-toggle { position: fixed; top: 16px; right: 16px; width: 40px; height: 40px;
-    border-radius: 10px; border: 1px solid var(--border); background: var(--panel);
-    color: var(--text); font-size: 18px; cursor: pointer; z-index: 10; }
-  * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--text); font: 16px/1.7 "Segoe UI", system-ui, sans-serif; }
-  .wrap { max-width: 920px; margin: 0 auto; padding: 48px 24px 80px; }
-  h1 { font-size: 2.1rem; margin-bottom: 6px; }
-  h1 code { color: var(--accent); }
-  .tagline { color: var(--muted); font-size: 1.08rem; margin-bottom: 20px; }
-  .badges img { margin-right: 6px; vertical-align: middle; }
-  .cta { margin: 20px 0 36px; }
-  .btn { display: inline-block; padding: 10px 22px; margin: 0 12px 8px 0; border-radius: 8px;
-         text-decoration: none; font-weight: 600; }
-  .btn.primary { background: var(--accent); color: #fff; }
-  .btn.ghost { border: 1px solid var(--border); color: var(--text); }
-  h2 { font-size: 1.25rem; margin: 44px 0 14px; color: var(--accent); }
-  h3 { font-size: 1rem; margin-bottom: 8px; }
-  ul { padding-left: 22px; }
-  li { margin: 6px 0; }
-  .lead { max-width: 44em; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .grid4 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
-  .card ul { padding-left: 18px; margin: 0; }
-  .card li { margin: 5px 0; font-size: .93rem; }
-  .card p { color: var(--muted); font-size: .93rem; margin: 0 0 8px; }
-  .card b { color: var(--text); }
-  .form-note { margin-top: 12px; color: var(--muted); font-size: .92rem; }
-  .shot { width: 100%; border-radius: 10px; border: 1px solid var(--border); margin: 12px 0 4px; }
-  .caption { color: var(--muted); font-size: .85rem; margin-bottom: 8px; }
-  code { background: var(--card); padding: 2px 6px; border-radius: 5px; font-size: .9em; }
-  ol.steps { padding-left: 0; list-style: none; counter-reset: step; }
-  ol.steps li { counter-increment: step; margin: 12px 0; padding-left: 40px; position: relative; }
-  ol.steps li::before { content: counter(step); position: absolute; left: 0; top: 3px;
-    width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
-    font-weight: 700; font-size: .85rem; display: flex; align-items: center; justify-content: center; }
-  .demo-tip { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--accent);
-    border-radius: 8px; padding: 12px 16px; margin-top: 16px; font-size: .95rem; }
-  details { border: 1px solid var(--border); border-radius: 10px; background: var(--card);
-    margin: 10px 0; padding: 0 16px; }
-  summary { cursor: pointer; font-weight: 600; padding: 12px 0; }
-  details[open] summary { border-bottom: 1px dashed var(--border); margin-bottom: 8px; }
-  details p, details ul { margin-bottom: 12px; }
-  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
-  td, th { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
-  th { background: var(--card); }
-  .doclinks { list-style: none; padding-left: 0; }
-  .doclinks li { margin: 8px 0; }
-  footer { margin-top: 48px; color: var(--muted); font-size: .85rem; }
-  a { color: var(--accent); }
-  @media (max-width: 680px) {
-    .grid2, .grid4 { grid-template-columns: 1fr; }
-    h1 { font-size: 1.7rem; }
-  }
+}
+
+/* ═══ 更新日志 ═══ */
+.log-list{list-style:none;margin-top:var(--wh-sp-6);border-top:1px solid var(--wh-border)}
+.log-item{padding-block:var(--wh-sp-4);border-bottom:1px solid var(--wh-border)}
+.log-head{display:flex;align-items:center;gap:var(--wh-sp-3);flex-wrap:wrap}
+.ver-chip{
+  position:relative;display:inline-block;
+  font-family:var(--wh-mono);font-size:var(--wh-fs-mono);
+  background:var(--wh-panel-2);border:1px solid var(--wh-border);border-radius:var(--wh-pill);
+  padding:1px 12px;
+}
+.ver-chip.latest::before{
+  content:"";display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--wh-ok);margin-right:6px;vertical-align:1px;
+}
+.log-date{font-size:var(--wh-fs-small);color:var(--wh-faint)}
+.log-sum{margin-top:var(--wh-sp-2);font-size:14px;color:var(--wh-muted)}
+.log-more{margin-top:var(--wh-sp-5);text-align:right}
+
+/* ═══ 页脚 ═══ */
+.footer{margin-top:var(--wh-sp-7);background:var(--wh-panel);border-top:2px solid var(--wh-border-strong)}
+@media (min-width:720px){.footer{margin-top:var(--wh-sp-8)}}
+@media (min-width:1440px){.footer{margin-top:var(--wh-sp-9)}}
+.foot-grid{display:grid;grid-template-columns:1fr;gap:var(--wh-sp-6);padding-block:var(--wh-sp-7)}
+@media (min-width:720px){.foot-grid{grid-template-columns:2fr 1fr 1.6fr}}
+.foot-brand{display:flex;align-items:center;gap:var(--wh-sp-2);font-weight:700;font-size:16px}
+.foot-tag{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.foot-lic{margin-top:var(--wh-sp-3);font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.foot-links{list-style:none}
+.foot-links li{margin-bottom:var(--wh-sp-2)}
+.foot-links a{font-size:var(--wh-fs-small);color:var(--wh-muted);text-decoration:none}
+.foot-links a:hover{color:var(--wh-accent)}
+.foot-warn{font-size:var(--wh-fs-small);line-height:1.7;color:var(--wh-muted)}
+.foot-bottom{border-top:1px solid var(--wh-border)}
+.foot-bottom .container{padding-block:var(--wh-sp-4);font-size:12px;color:var(--wh-faint)}
+
+/* ═══ 截图放大 (原生 dialog) ═══ */
+dialog#lightbox{
+  border:1px solid var(--wh-border);border-radius:var(--wh-radius);
+  background:var(--wh-bg);padding:var(--wh-sp-3);
+  max-width:none;max-height:none;
+}
+dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
+#lightbox img{display:block;max-width:90vw;max-height:88vh;width:auto;height:auto;border-radius:var(--wh-radius-sm)}
+#lightbox .lb-foot{display:flex;justify-content:flex-end;margin-top:var(--wh-sp-2)}
 </style>
 </head>
 <body>
-<button class="theme-toggle" id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">☀</button>
+
+<!-- ═══════════ 导航 ═══════════ -->
+<nav class="nav" aria-label="站点导航">
+  <div class="nav-in">
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span>Mini RTT Viewer</a>
+    <ul class="nav-links">
+      <li><a href="#features">特性</a></li>
+      <li><a href="#screenshots">截图</a></li>
+      <li><a href="#download">下载</a></li>
+      <li><a href="#quickstart">快速开始</a></li>
+      <li><a href="#changelog">更新日志</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ═══════════ Hero ═══════════ -->
+<header class="hero" id="top">
+  <div class="container">
+    <p class="eyebrow">J-LINK RTT CONSOLE</p>
+    <h1>为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器</h1>
+    <p class="hero-sub">RTT 比串口快得多,官方 J-Link RTT Viewer 对 UTF-8 的支持却是坏的:中文乱码、emoji 直接丢。Mini RTT Viewer 单文件约 3 MB、免安装,中文和 emoji 原样显示,10kHz+ 吞吐不卡 UI,启动不到 1 秒。</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary btn-lg" href="#download">下载 Mini RTT Viewer</a>
+      <a class="btn btn-secondary btn-lg" href="https://github.com/MisakaMikoto128/mini-rtt-viewer" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub 仓库
+      </a>
+    </div>
+    <p class="pill-row">
+      <a class="pill" href="#dl-windows">Windows 10/11 x64</a>
+      <a class="pill" href="#quickstart">无板演示 --demo-log</a>
+      <a class="pill" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/LICENSE" target="_blank" rel="noopener">MIT 开源</a>
+    </p>
+    <p class="hero-ver">当前版本 <span data-rel="version">v0.2.0</span> · 一个 zip 内含桌面版与浏览器管理台双程序</p>
+  </div>
+</header>
+
+<main>
+  <!-- ═══════════ 特性 ═══════════ -->
+  <section class="sec" id="features">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">FEATURES</p>
+        <h2>核心特性</h2>
+      </div>
+      <div class="feat-grid">
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>
+          <h3>FFI 直连 JLinkARM.dll</h3>
+          <p>直接调 SEGGER 官方 DLL,不经 pylink 之类封装;与官方驱动共存不抢 USB,多台调试器接入时下拉指定连哪一台,连接后固件版本、核心型号、序列号一目了然。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5h16"/><path d="M4 9h10"/><path d="M4 13h16"/><path d="M4 17h7"/></svg>
+          <h3>彩色日志,中文 emoji 不越界</h3>
+          <p>ANSI 16/256/RGB 真彩色全解析,颜色状态跨行跨块保持;窄窗口按显示列硬换行——CJK 占 2 列、emoji 占 3 列,不会把半截字切出去。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <h3>VS Code 式搜索</h3>
+          <p>Ctrl+F 浮动搜索条:正则 / 字面量开关、命中行高亮、n/m 计数、↑↓ 逐处跳转;日志区有选中文本时再按 Ctrl+F,直接拿选区当关键词。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8"/><path d="M12 4v16"/></svg>
+          <h3>四套主题</h3>
+          <p>深色 / 浅色 / OLED 纯黑 / 护眼暖色,下拉即时切换,已上屏的日志行颜色跟着走;字号 A- / A+ 随手调,行高与滚动网格自动适应。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M6.5 6.5h.01"/><path d="M9.5 6.5h.01"/></svg>
+          <h3>桌面版 + 浏览器管理台双形态</h3>
+          <p>rtt-web.exe 在本机起服务,浏览器打开 <code class="inline-code">127.0.0.1:8686</code> 就能用,与桌面版同一套真机连接协议;Playwright 黑盒测试进 CI,不是摆设。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>
+          <h3>单文件免安装零依赖</h3>
+          <p>解压即用:没有 Python、没有 WebView、没有运行时;主程序约 3 MB,启动不到 1 秒,拷给同事就能跑。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 截图 ═══════════ -->
+  <section class="sec" id="screenshots">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">SCREENSHOTS</p>
+        <h2>眼见为实</h2>
+      </div>
+      <figure class="shot-main">
+        <a class="shot" href="./images/desktop.png" target="_blank" rel="noopener">
+          <img src="./images/desktop.png" alt="Mini RTT Viewer 桌面版" width="1946" height="1351" loading="lazy">
+        </a>
+        <figcaption>桌面版:左侧连接 / 设备信息 / 接收 / 发送分区配置,右侧 ANSI 彩色日志按显示列换行,滚轮逐行对齐、贴底跟随。</figcaption>
+      </figure>
+      <figure class="shot-main">
+        <a class="shot" href="./images/web-console.png" target="_blank" rel="noopener">
+          <img src="./images/web-console.png" alt="rtt-web 浏览器管理台" width="1440" height="900" loading="lazy">
+        </a>
+        <figcaption>浏览器管理台 rtt-web:本机起服务,浏览器打开即用——实时日志流、四主题、发送 / 暂停 / 清空,与桌面版同一套真机连接协议。</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ═══════════ 下载 ═══════════ -->
+  <section class="sec" id="download">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">DOWNLOAD</p>
+        <h2>下载 Mini RTT Viewer <span class="ver-pill" data-rel="version">v0.2.0</span></h2>
+        <p class="dl-date"><span data-rel="date">2026-09-15</span> 发布</p>
+      </div>
+
+      <div class="dl-grid">
+        <article class="dl-card" id="dl-windows">
+          <h3>Windows</h3>
+          <p class="dl-spec" data-rel="spec-windows">Windows x86_64 · zip · 约 6.3 MB · 内含桌面版与浏览器管理台双程序</p>
+          <p class="dl-file" data-rel="file-windows">mini-rtt-viewer-0.2.0-windows-x86_64.zip</p>
+          <p class="dl-desc">包内双程序——mini-rtt-viewer.exe 桌面版 + rtt-web.exe 浏览器管理台,解压即用。</p>
+          <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.2.0/mini-rtt-viewer-0.2.0-windows-x86_64.zip">下载 Windows 版</a>
+          <p class="sha-label">SHA256</p>
+          <div class="sha-bar">
+            <code data-rel="sha-windows">5b519881648fd5d0c7d949f3bc76b2940498c8fa204a26f88cab7130171d0a4c</code>
+            <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
+          </div>
+        </article>
+      </div>
+
+      <noscript><p class="note" style="margin-top:var(--wh-sp-4)">检测到浏览器未启用 JavaScript:请直接前往 <a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases" target="_blank" rel="noopener">GitHub Releases</a> 下载安装包。</p></noscript>
+      <p class="note" id="dl-freshness" hidden style="margin-top:var(--wh-sp-4)"></p>
+
+      <div class="dl-notes">
+        <p class="note">安装包未做代码签名:首次运行若被 Windows SmartScreen 拦下,点「更多信息」→「仍要运行」;介意的话,先核对上方 SHA256 再运行。</p>
+        <p class="sysreq">系统要求:Windows 10/11 x64;需已安装 <a href="https://www.segger.com/downloads/jlink/" target="_blank" rel="noopener">SEGGER J-Link 软件包</a>(程序运行时加载其中的 JLinkARM.dll,本工具不捆绑、不分发该 DLL);目标板固件需已初始化 SEGGER RTT。</p>
+        <p class="sha-note">下载后核对这串校验值与本地文件一致,即可确认安装包完整、未被篡改。<br>
+        校验命令:Windows:<code class="inline-code">certutil -hashfile &lt;文件名&gt; SHA256</code></p>
+        <div class="dl-tail">
+          <p class="dl-history"><a data-rel="releases" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases" target="_blank" rel="noopener">查看全部历史版本 →</a></p>
+          <p class="dl-mirror">纯本地工具:无遥测、无自动更新,新版本请留意 GitHub Releases</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 快速开始 ═══════════ -->
+  <section class="sec" id="quickstart">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">QUICK START</p>
+        <h2>三步上手</h2>
+      </div>
+      <div class="qs-steps">
+        <div class="qs-step">
+          <div class="qs-head"><span class="qs-num" aria-hidden="true">1</span><h3>装 SEGGER J-Link 软件包</h3></div>
+          <p class="qs-desc">去 <a href="https://www.segger.com/downloads/jlink/" target="_blank" rel="noopener">SEGGER 官网</a>装好 J-Link 软件包,驱动自带本工具要加载的 JLinkARM.dll——没有它,连不上芯片。</p>
+        </div>
+        <div class="qs-step">
+          <div class="qs-head"><span class="qs-num" aria-hidden="true">2</span><h3>解压并运行</h3></div>
+          <p class="qs-desc">解压 zip:双击 mini-rtt-viewer.exe 用桌面版;或运行 rtt-web.exe,浏览器打开 <code class="inline-code">http://127.0.0.1:8686</code> 进管理台。</p>
+        </div>
+        <div class="qs-step">
+          <div class="qs-head"><span class="qs-num" aria-hidden="true">3</span><h3>填芯片型号,点连接</h3></div>
+          <p class="qs-desc">左侧面板填 J-Link 认的完整型号(如 <code class="inline-code">STM32F103C8</code>),选 SWD 和速率,点「连接」开始收日志。手边没板子?先用内置演示流过过瘾——滚动、断行、emoji 渲染全都能看。</p>
+          <div class="cmdbar">
+            <code>mini-rtt-viewer.exe --demo-log</code>
+            <button type="button" class="copy-btn" aria-live="polite" aria-label="复制演示命令">复制</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 更新日志 ═══════════ -->
+  <section class="sec" id="changelog">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">CHANGELOG</p>
+        <h2>更新日志</h2>
+      </div>
+      <ol class="log-list">
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip latest" data-rel="version">v0.2.0</span><span class="log-date" data-rel="date">2026-09-15</span></div>
+          <p class="log-sum">浏览器管理台 rtt-web 独立成第二个程序(桌面版体积零影响),四套主题下拉即时切换,自绘应用图标上岗;顺手修掉连接即崩、滚动裁末行、复制对不齐等一批 bug,发布包改为「双 exe + README/LICENSE」契约。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v0.1.9</span><span class="log-date">2026-08-31</span></div>
+          <p class="log-sum">体验大版本:全部配置持久化到 %APPDATA%,VS Code 式正则搜索,按显示列换行(中文不越界),列级自由复制;外加 HEX 收发与五种字符集,测试从 22 条涨到 46 条。</p>
+        </li>
+      </ol>
+      <p class="log-more"><a data-rel="changelog" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md" target="_blank" rel="noopener">查看全部更新日志 →</a></p>
+    </div>
+  </section>
+</main>
+
+<!-- ═══════════ 页脚 ═══════════ -->
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div>
+        <p class="foot-brand"><span class="brand-mark" aria-hidden="true"></span>Mini RTT Viewer</p>
+        <p class="foot-tag">为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器</p>
+        <p class="foot-lic">Mini RTT Viewer 基于 <a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a> 开源发布。</p>
+      </div>
+      <div>
+        <ul class="foot-links">
+          <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer" target="_blank" rel="noopener">GitHub 仓库</a></li>
+          <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/docs/product/spec.md" target="_blank" rel="noopener">需求规格(FR-1..26)</a></li>
+          <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">贡献指南</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="foot-warn">安全提示:纯本地工具,无遥测、无联网功能,不收集任何数据;发布包未做代码签名,下载后请核对 SHA256,详见 <a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/SECURITY.md" target="_blank" rel="noopener">安全说明</a>。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <div class="container">© 2026 Mini RTT Viewer · MIT License · 本站无 Cookie、无统计脚本</div>
+  </div>
+</footer>
+
+<!-- ═══════════ 截图放大层 ═══════════ -->
+<dialog id="lightbox" aria-label="截图放大查看">
+  <img id="lightbox-img" alt="">
+  <div class="lb-foot"><button type="button" class="btn btn-secondary" id="lightbox-close">关闭</button></div>
+</dialog>
+
 <script>
-  // 主题切换(ADR-18 同思路:手动选择存 localStorage,未选择时跟随系统)
-  (function () {
-    var root = document.documentElement;
-    var btn = document.getElementById('theme-toggle');
-    function apply(mode) {
-      if (mode === 'light') { root.dataset.theme = 'light'; btn.textContent = '🌙'; }
-      else if (mode === 'dark') { root.dataset.theme = 'dark'; btn.textContent = '☀'; }
-      else { delete root.dataset.theme; btn.textContent = '☀'; }
+(function(){
+  "use strict";
+  var $$ = function(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); };
+  var $ = function(s){ return document.querySelector(s); };
+
+  /* ── RELEASE 数据块渲染 (逐版只改顶部 const RELEASE) ── */
+  if (typeof RELEASE === "object" && RELEASE) {
+    $$('[data-rel="version"]').forEach(function(el){ el.textContent = RELEASE.version; });
+    $$('[data-rel="date"]').forEach(function(el){ el.textContent = RELEASE.date; });
+    var set = function(sel, val){ var el = $(sel); if (el && val != null) el.textContent = val; };
+    var setHref = function(sel, val){ var el = $(sel); if (el && val) el.setAttribute("href", val); };
+    ["windows","linux","macos"].forEach(function(k){
+      var p = RELEASE.platforms && RELEASE.platforms[k];
+      if (!p) return;
+      set('[data-rel="spec-' + k + '"]', p.spec);
+      set('[data-rel="file-' + k + '"]', p.file);
+      set('[data-rel="sha-' + k + '"]', p.sha256);
+      setHref('[data-rel="link-' + k + '"]', p.url);
+    });
+    setHref('[data-rel="releases"]', RELEASE.releases);
+    setHref('[data-rel="changelog"]', RELEASE.changelog);
+  }
+
+  /* ── 版本新鲜度自检 (页面数据落后时提示, 不静默改链 —— SHA 只背书已核对的版本) ── */
+  fetch("https://api.github.com/repos/MisakaMikoto128/mini-rtt-viewer/releases/latest")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(latest){
+      if (!latest || !latest.tag_name || latest.tag_name === RELEASE.version) return;
+      var box = document.getElementById("dl-freshness");
+      if (!box) return;
+      box.textContent = "";
+      var t = document.createTextNode("检测到新版本 ");
+      var b = document.createElement("strong"); b.textContent = latest.tag_name;
+      var t2 = document.createTextNode(" 已发布（本页数据 " + RELEASE.version + "）：");
+      var a = document.createElement("a");
+      a.href = latest.html_url; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = "前往 GitHub Releases 下载最新版 →";
+      box.appendChild(t); box.appendChild(b); box.appendChild(t2); box.appendChild(a);
+      box.hidden = false;
+    })
+    .catch(function(){});
+
+  /* ── 复制按钮 (navigator.clipboard, 非 HTTPS 回退 execCommand) ── */
+  function legacyCopy(text){
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copyText(text){
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(function(){ return true; }, function(){ return legacyCopy(text); });
     }
-    var saved = localStorage.getItem('theme');
-    apply(saved); // null = 跟随系统(CSS media query 接管)
-    btn.onclick = function () {
-      var cur = root.dataset.theme === 'light' ? 'light'
-        : root.dataset.theme === 'dark' ? 'dark'
-        : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-      var next = cur === 'light' ? 'dark' : 'light';
-      localStorage.setItem('theme', next);
-      apply(next);
-    };
-  })();
+    return Promise.resolve(legacyCopy(text));
+  }
+  $$(".copy-btn").forEach(function(btn){
+    var host = btn.closest(".sha-bar") || btn.closest(".cmdbar");
+    var code = host ? host.querySelector("code") : null;
+    if (!code) return;
+    var timer = null;
+    btn.addEventListener("click", function(){
+      copyText(code.textContent).then(function(ok){
+        btn.classList.remove("ok", "err");
+        btn.classList.add(ok ? "ok" : "err");
+        btn.textContent = ok ? "已复制" : "复制失败";
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(function(){
+          btn.classList.remove("ok", "err");
+          btn.textContent = "复制";
+        }, 1500);
+      });
+    });
+  });
+
+  /* ── 截图点击放大 (原生 <dialog>, 无 JS 退化为新标签原图) ── */
+  var lb = $("#lightbox"), lbImg = $("#lightbox-img");
+  if (lb && lbImg && typeof lb.showModal === "function") {
+    $$("a.shot").forEach(function(a){
+      a.addEventListener("click", function(e){
+        e.preventDefault();
+        var img = a.querySelector("img");
+        lbImg.src = a.getAttribute("href");
+        lbImg.alt = img ? img.alt : "";
+        lb.showModal();
+      });
+    });
+    $("#lightbox-close").addEventListener("click", function(){ lb.close(); });
+    lb.addEventListener("click", function(e){ if (e.target === lb) lb.close(); }); /* 点背板关闭 */
+  }
+})();
 </script>
-<div class="wrap">
-  <h1>Mini <code>RTT</code> Viewer</h1>
-  <p class="tagline">轻量级 SEGGER RTT 日志查看器 —— 为 UTF-8 / emoji 而生。连接快、体积小、不添乱。</p>
-  <p class="badges">
-    <img alt="CI" src="https://github.com/MisakaMikoto128/mini-rtt-viewer/actions/workflows/ci.yml/badge.svg">
-    <img alt="Release" src="https://img.shields.io/github/v/release/MisakaMikoto128/mini-rtt-viewer">
-    <img alt="License" src="https://img.shields.io/github/license/MisakaMikoto128/mini-rtt-viewer">
-    <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue">
-  </p>
-
-  <div class="cta">
-    <a class="btn primary" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/latest">下载最新版</a>
-    <a class="btn ghost" href="https://github.com/MisakaMikoto128/mini-rtt-viewer">GitHub 仓库</a>
-  </div>
-
-  <h2>它是什么</h2>
-  <p class="lead">单片机调试时,printf 依旧是最快的排查方式。RTT 比串口快得多,但官方 RTT Viewer 界面臃肿,
-  而且对 UTF-8 的支持是坏的:中文乱码、emoji 直接丢失。Mini RTT Viewer 只做一件事:
-  <b>连上 J-Link,把 RTT 日志漂亮地显示出来</b>——10kHz+ 吞吐不卡 UI,启动到可连接 &lt; 1 秒。</p>
-
-  <div class="grid2" style="margin-top:16px">
-    <div class="card">
-      <h3>🖥️ 桌面版 <code>mini-rtt-viewer.exe</code></h3>
-      <p>Rust + Slint,单文件约 3MB,免安装,拷给同事就能用。</p>
-      <ul>
-        <li>双击即开,没有 Python 运行时、没有 WebView</li>
-        <li>ANSI 真彩日志、正则搜索、HEX 收发,全部本地完成</li>
-        <li>数据不上网:无遥测、无自动更新</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3>🌐 浏览器管理台 <code>rtt-web.exe</code></h3>
-      <p>独立小二进制,起本机服务(127.0.0.1:8686),浏览器打开即用。</p>
-      <ul>
-        <li>WebSocket 实时日志流,四主题 / 发送 / 暂停 / 清空全可操作</li>
-        <li>不接鼠标键盘共享的机器上,躺浏览器里看日志更舒服</li>
-        <li>Playwright 黑盒测试进 CI(按 spec 条目命名)</li>
-      </ul>
-    </div>
-  </div>
-  <p class="form-note">两种形态跑的是<b>同一套数据管线</b>(同一 worker、同一日志泵、同一设备库),功能同一水平,选顺手的用。</p>
-
-  <h2>截图</h2>
-  <img class="shot" src="images/desktop.png" alt="Mini RTT Viewer 桌面版主界面" width="1946" height="1351">
-  <p class="caption">桌面版:左侧连接配置与收发控制,右侧彩色日志流(深色主题,emoji 与中文原样显示)。</p>
-  <img class="shot" src="images/web-console.png" alt="rtt-web 浏览器管理台" width="1440" height="900">
-  <p class="caption">浏览器管理台:同一套数据管线的 Web 呈现,浏览器即开即用,支持深色 / 浅色 / OLED / 护眼四主题。</p>
-
-  <h2>特性</h2>
-  <div class="grid4">
-    <div class="card">
-      <h3>连接与设备</h3>
-      <ul>
-        <li>自动扫描本机 J-Link,多台调试器下拉选择、记住上次</li>
-        <li>芯片型号输入即筛选,约 1.2 万型号自动补全</li>
-        <li>SWD / JTAG,速率 100–12000 kHz,RTT 通道 0–15</li>
-        <li>J-Link 19 脚给目标供电;目标复位:原位续收 / 断开重连</li>
-        <li>连接后显示固件 / 硬件版本、序列号、核心信息</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3>日志显示</h3>
-      <ul>
-        <li>ANSI 全解析:16 / 256 / RGB 真彩,颜色状态跨行跨块保持</li>
-        <li>UTF-8 / emoji 原样显示,跨读取块的多字节自动拼接</li>
-        <li>VS Code 式搜索:正则开关、命中高亮、n/m 计数、↑↓ 导航</li>
-        <li>自动断帧(1–200ms 可调),按显示列硬换行(CJK 2 列、emoji 3 列)</li>
-        <li>列级拖选即复制(PuTTY 惯例);暂停接收、会话标记、导出 .log</li>
-        <li>滚轮逐行对齐,滚离底部失随、滚回恢复跟随</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3>收发控制</h3>
-      <ul>
-        <li>HEX 收发:容忍空格 / 冒号 / 0x 前缀,开关切换时文本↔hex 双向转换</li>
-        <li>定时发送 0.001–999 s,连接态才触发</li>
-        <li>发送行尾 CRLF / LF / CR / 无;历史 ↑↓ 翻阅、草稿恢复</li>
-        <li>字符集 UTF-8 / GBK / UTF-16 LE / Latin-1 / ASCII,切换即生效,无需重连</li>
-        <li>Enter 快捷发送,发送内容灰色回显</li>
-      </ul>
-    </div>
-    <div class="card">
-      <h3>工程化</h3>
-      <ul>
-        <li>四套主题:深色 / 浅色 / OLED 纯黑 / 护眼暖色,即时切换</li>
-        <li>偏好全量记住:连接参数、字号、主题、窗口几何、发送历史,重启原样恢复</li>
-        <li>统计栏 TX/RX 字节 + 会话时长;采集挂机屏幕常亮;单实例互斥</li>
-        <li>UPX 后 ≤ 4MB;fmt / clippy / test 三道 CI 门禁,clippy 零警告</li>
-      </ul>
-    </div>
-  </div>
-
-  <h2>快速开始</h2>
-  <ol class="steps">
-    <li><b>装 SEGGER J-Link 软件包</b> —— 程序运行时加载 <code>JLink_x64.dll</code>,需已安装
-      <a href="https://www.segger.com/downloads/jlink/">SEGGER J-Link 驱动</a>(本工具不捆绑、不分发该 DLL)。</li>
-    <li><b>下载</b> —— 从 <a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/latest">Releases</a>
-      下载 zip,解压即用,无需安装。</li>
-    <li><b>连接</b> —— 选 J-Link、填芯片型号(输入即补全,如 <code>STM32F030C8</code>),点连接。</li>
-  </ol>
-  <div class="demo-tip">
-    手头没板子?命令行运行 <code>mini-rtt-viewer.exe --demo-log</code>(或 <code>rtt-web.exe --demo-log</code>)
-    启动内置演示数据流:中英混排 + emoji + ANSI 颜色样例,滚动 / 断行 / 搜索 / 收发全流程随便试。
-  </div>
-
-  <h2>FAQ</h2>
-  <details>
-    <summary>为什么只有 Windows 版?</summary>
-    <p>RTT 依赖 SEGGER 的 <code>JLinkARM.dll</code>,本工具用 FFI 直调该 DLL —— 它只有 Windows 版,且不捆绑分发,
-    需要你已装 SEGGER J-Link 软件包。不走纯 USB 协议实现,是因为那需要 Zadig 换驱动,会破坏 SEGGER 工具链的共存。
-    好处是与官方工具、驱动完全兼容,不抢 USB。</p>
-  </details>
-  <details>
-    <summary>和官方 J-Link RTT Viewer 有什么区别?</summary>
-    <p>起因就是官方对 UTF-8 的支持是坏的:中文乱码、emoji 直接丢失。这个项目从第一天起就为 UTF-8 / emoji 而生:
-    跨读取块的多字节序列自动拼接、按显示列硬换行(CJK 2 列、emoji 3 列不越界)、ANSI 真彩色。
-    其次是轻和快:单文件约 3MB、免安装、启动到可连接 &lt; 1 秒,只聚焦"连接 + 看日志 + 发数据"。</p>
-  </details>
-  <details>
-    <summary>需要准备什么?</summary>
-    <p>Windows 10/11 x64 + 已安装的 SEGGER J-Link 软件包 + J-Link 调试器;目标板固件需已初始化
-    SEGGER RTT(<code>SEGGER_RTT</code> 组件)。芯片型号填写 J-Link 支持的完整型号名(如 <code>STM32H750VB</code>),
-    与官方 RTT Viewer 中的写法一致。</p>
-  </details>
-  <details>
-    <summary>我的数据会上传吗?</summary>
-    <p>不会。这是一个纯本地工具:无遥测、无自动更新、无任何联网功能(见仓库 SECURITY.md);
-    浏览器管理台也只监听 <code>127.0.0.1</code> 本机回环,日志数据不出你的电脑。</p>
-  </details>
-  <details>
-    <summary>没有 J-Link 和板子,能先体验吗?</summary>
-    <p>能。<code>--demo-log</code> 演示模式(桌面版和浏览器管理台都支持)会启动内置仿真数据流,
-    中英混排 + emoji + 颜色样例,连接 / 断开循环也会模拟——不接任何硬件就能体验滚动、断行、搜索、收发等全部交互。</p>
-  </details>
-
-  <h2>文档</h2>
-  <ul class="doclinks">
-    <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/docs/product/spec.md">需求规格(spec,FR-1..26 完整功能表)</a></li>
-    <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md">变更日志(版本历程)</a></li>
-    <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CONTRIBUTING.md">贡献指南</a></li>
-    <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer">GitHub 仓库</a></li>
-  </ul>
-
-  <footer>MIT License · 用 Rust + Slint 构建 · Windows 10/11 x64</footer>
-</div>
 </body>
 </html>

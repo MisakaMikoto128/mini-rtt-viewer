@@ -198,3 +198,139 @@ def test_fr14_clear_wipes_log(page):
     )
     assert page.evaluate("document.querySelectorAll('#log .row').length") < 10
     wait_rows(page, 1)  # demo 流继续
+
+
+def test_fr18_web_search_p0(page):
+    """FR-18(UX P0):VS Code 式搜索条——Ctrl+F 打开并聚焦、输入即搜词级命中
+    高亮(底色取 --search-hit,不污染整行底色)、n/m 计数(无命中 0/0 err 色、
+    空 query 显示 —)、Enter 导航计数递增、Esc 清高亮且 query 保留在内存。"""
+    page.goto(BASE)  # 全新加载,排除前序用例的交互残留
+    wait_rows(page, 3)
+
+    def rgb(s: str) -> list:
+        """'rgba(255, 213, 79, 0.28)' / '#cc4455' → [r, g, b, a] 数值列表。"""
+        s = s.strip()
+        if s.startswith("#"):
+            return [int(s[i : i + 2], 16) for i in (1, 3, 5)] + [1.0]
+        parts = s[s.index("(") + 1 : s.index(")")].split(",")
+        vals = [float(p) for p in parts[:3]]
+        vals.append(float(parts[3]) if len(parts) > 3 else 1.0)
+        return vals
+
+    # Ctrl+F:初始隐藏 → 打开,焦点入输入框
+    assert (
+        page.evaluate("getComputedStyle(document.getElementById('search-bar')).display")
+        == "none"
+    ), "未按 Ctrl+F 时搜索条应隐藏"
+    page.keyboard.press("Control+f")
+    page.wait_for_function(
+        "getComputedStyle(document.getElementById('search-bar')).display !== 'none'",
+        timeout=3000,
+    )
+    assert (
+        page.evaluate("document.activeElement && document.activeElement.id")
+        == "s-input"
+    ), "Ctrl+F 后焦点应落入搜索输入框"
+
+    # 输入即搜:出现词级命中 mark,底色 == --search-hit,计数为 n/m 格式
+    page.keyboard.type("Heartbeat", delay=10)
+    page.wait_for_function(
+        "document.querySelectorAll('#log mark.s-hit').length > 0", timeout=5000
+    )
+    page.wait_for_function(
+        r"/^\d+\/\d+$/.test(document.getElementById('s-count').textContent)",
+        timeout=5000,
+    )
+    style = page.evaluate(
+        """() => {
+            const m = document.querySelector('#log mark.s-hit');
+            const hitRow = m.closest('.row');
+            const cleanRow = [...document.querySelectorAll('#log .row')]
+                .find(r => !r.querySelector('mark.s-hit'));
+            return {
+                hits: document.querySelectorAll('#log mark.s-hit').length,
+                varHit: getComputedStyle(document.documentElement)
+                    .getPropertyValue('--search-hit').trim(),
+                hitBg: getComputedStyle(m).backgroundColor,
+                hitRowClass: hitRow.getAttribute('class'),
+                hitRowBg: getComputedStyle(hitRow).backgroundColor,
+                cleanRowBg: cleanRow ? getComputedStyle(cleanRow).backgroundColor : null};
+        }"""
+    )
+    assert style["hits"] > 0, "应有词级命中高亮元素"
+    assert rgb(style["hitBg"]) == rgb(style["varHit"]), (
+        f"命中底色应等于 --search-hit:实测 {style['hitBg']} vs 变量 {style['varHit']}"
+    )
+    assert "hit" not in (style["hitRowClass"] or ""), (
+        f"命中所在行不应被加行级高亮类:实测 class={style['hitRowClass']}"
+    )
+    if style["cleanRowBg"] is not None:
+        assert style["hitRowBg"] == style["cleanRowBg"], (
+            f"命中行底色不应被整行染色:命中行 {style['hitRowBg']} vs 普通行 {style['cleanRowBg']}"
+        )
+
+    # 无命中:0/0 且 err 色 == --err;空 query:— 且无 err
+    page.fill("#s-input", "")
+    page.wait_for_function(
+        "document.getElementById('s-count').textContent === '—'", timeout=5000
+    )
+    page.keyboard.type("zzzznohitxyz", delay=5)
+    page.wait_for_function(
+        "document.getElementById('s-count').textContent === '0/0'", timeout=5000
+    )
+    nohit = page.evaluate(
+        """() => ({
+            cls: document.getElementById('s-count').className,
+            color: getComputedStyle(document.getElementById('s-count')).color,
+            varErr: getComputedStyle(document.documentElement)
+                .getPropertyValue('--err').trim()})"""
+    )
+    assert "err" in nohit["cls"], f"无命中计数应带 err 类:实测 {nohit['cls']}"
+    assert rgb(nohit["color"]) == rgb(nohit["varErr"]), (
+        f"无命中计数颜色应为 --err:实测 {nohit['color']} vs {nohit['varErr']}"
+    )
+
+    # Enter 导航:当前命中序号递增(流式追加只影响分母,不影响分子)
+    # 注意:debounce 窗口内计数可能残留上一轮的 "0/0",必须等分母 ≥3 的真结果,
+    # 否则 Enter 落在空命中态,导航永不发生(假超时)。
+    page.fill("#s-input", "")
+    page.keyboard.type("Heartbeat", delay=10)
+    page.wait_for_function(
+        """() => {
+            const t = document.getElementById('s-count').textContent;
+            const m = Number(t.split('/')[1]);
+            return /^\\d+\\/\\d+$/.test(t) && m >= 3;
+        }""",
+        timeout=5000,
+    )
+    page.focus("#s-input")
+    page.keyboard.press("Enter")
+    page.wait_for_function(
+        "document.getElementById('s-count').textContent.startsWith('1/')",
+        timeout=3000,
+    )
+    page.keyboard.press("Enter")
+    page.wait_for_function(
+        "document.getElementById('s-count').textContent.startsWith('2/')",
+        timeout=3000,
+    )
+
+    # Esc:关闭 + 清高亮;重开 Ctrl+F 后 query 保留(内存)
+    page.keyboard.press("Escape")
+    page.wait_for_function(
+        "document.querySelectorAll('#log mark.s-hit').length === 0", timeout=3000
+    )
+    assert (
+        page.evaluate("getComputedStyle(document.getElementById('search-bar')).display")
+        == "none"
+    ), "Esc 后搜索条应关闭"
+    page.keyboard.press("Control+f")
+    page.wait_for_function(
+        "getComputedStyle(document.getElementById('search-bar')).display !== 'none'",
+        timeout=3000,
+    )
+    assert page.input_value("#s-input") == "Heartbeat", (
+        f"Esc 后重开应保留 query:实测 {page.input_value('#s-input')!r}"
+    )
+    page.keyboard.press("Escape")  # 收尾:关闭搜索条,还给后续用例干净状态
+    page.wait_for_timeout(200)

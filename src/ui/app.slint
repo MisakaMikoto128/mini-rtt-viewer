@@ -218,13 +218,16 @@ export component AppWindow inherits Window {
                         spacing: AppTheme.gap;
                         Text {
                             text: "主题";
-                            width: 116px;
+                            width: 84px;
                             color: AppTheme.text-secondary;
                             font-family: AppTheme.ui-font;
                             font-size: AppTheme.ui-font-size;
                             vertical-alignment: center;
                         }
                         ComboBox {
+                            // min-width 锁 0:fluent ComboBox 的固有最小宽会把布局
+                            // 撑出面板右缘(实测下拉框被裁),拉伸语义下必须显式放宽
+                            min-width: 0px;
                             horizontal-stretch: 1;
                             model: ["深色", "浅色", "OLED 纯黑", "护眼暖色"];
                             // changed(而非 toggled):Rust 启动恢复 set_theme 的变化
@@ -704,6 +707,8 @@ export component AppWindow inherits Window {
                     horizontal-stretch: 1;
                     horizontal-alignment: right;
                 }
+                // 统计与芯片信息之间固定间距:两个右对齐文本相邻会视觉粘连
+                Rectangle { width: 16px; }
                 Text {
                     text: root.chip-name + " · " + (root.iface-index == 0 ? "SWD" : "JTAG");
                     color: AppTheme.text-muted;

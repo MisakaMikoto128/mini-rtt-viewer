@@ -45,7 +45,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "pack/$name" | Out-Null
           Copy-Item target/release/mini-rtt-viewer.exe "pack/$name/"
           Copy-Item target/release/rtt-web.exe "pack/$name/"
-          Copy-Item README.md LICENSE "pack/$name/"
+          Copy-Item README.md,LICENSE "pack/$name/"
           Compress-Archive -Force -Path "pack/$name" -DestinationPath "pack/$name.zip"
           Get-ChildItem pack
 

@@ -85,6 +85,22 @@ def test_fr20_theme_switch_updates_tokens(page):
     assert bg == "rgb(34, 34, 34)"
 
 
+def test_fr2_device_combo_filters_and_picks(page):
+    """FR-2:目标设备可编辑下拉——输入筛选候选,点击候选填充完整型号。"""
+    page.fill("#chip", "STM32F1")
+    opts = page.evaluate(
+        "[...document.querySelectorAll('#chip-list .opt')].map(e => e.dataset.v)"
+    )
+    assert opts, "输入 STM32F1 应有候选"
+    assert all("STM32F1" in o.upper() for o in opts)
+    page.click("#chip-list .opt")
+    assert page.input_value("#chip") == opts[0]
+    # 箭头展开全部候选
+    page.click("#chip-arrow")
+    n_all = page.evaluate("document.querySelectorAll('#chip-list .opt').length")
+    assert n_all >= 5
+
+
 def test_fr11_send_echoes_line(page):
     """FR-11:发送内容以回显行(» 前缀)出现在日志。"""
     rows_before = page.evaluate("document.querySelectorAll('#log .row').length")

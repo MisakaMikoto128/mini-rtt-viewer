@@ -69,6 +69,17 @@
   header .title { font-weight: 700; }
   header .spacer { flex: 1; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互) */
+  .combo { position: relative; flex: 1; min-width: 0; display: flex; }
+  .combo > input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .combo > .arrow { width: 30px; min-width: 30px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+    border-left: none; font-size: 10px; color: var(--muted); padding: 0; }
+  .combo-list { position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px;
+    background: var(--input); border: 1px solid var(--border); border-radius: 6px;
+    max-height: 220px; overflow-y: auto; z-index: 30; display: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+  .combo-list .opt { padding: 7px 12px; cursor: pointer; font-size: 13px; }
+  .combo-list .opt:hover, .combo-list .opt.active { background: var(--accent); color: #fff; }
 </style>
 </head>
 <body>
@@ -91,8 +102,11 @@
       <div class="field"><span class="label">J-Link</span>
         <select id="jlink"></select></div>
       <div class="field"><span class="label">目标设备</span>
-        <input id="chip" list="chip-list" placeholder="STM32F103C8">
-        <datalist id="chip-list"></datalist></div>
+        <div class="combo" id="chip-combo">
+          <input id="chip" autocomplete="off" placeholder="STM32F103C8">
+          <button class="arrow" id="chip-arrow" tabindex="-1" aria-label="展开设备库">▾</button>
+          <div class="combo-list" id="chip-list"></div>
+        </div></div>
       <div class="field"><span class="label">接口</span>
         <select id="iface"><option value="0">SWD</option><option value="1">JTAG</option></select></div>
       <div class="row2 field">
@@ -241,9 +255,55 @@
     put('序列号', d.serial);
     $('chip-line').textContent = (d.target || '—') + ' · ' + (d.iface || '—');
   }
+  // 可编辑下拉:输入即筛选,↑↓ 选择,Enter 确认,Esc 关闭,箭头展开全部
+  let chipOptions = [];
   function fillDatalist(names) {
-    $('chip-list').innerHTML = names.map(n => '<option value="' + n.replace(/"/g, '&quot;') + '">').join('');
+    chipOptions = names;
+    renderChipList($('chip').value);
   }
+  function renderChipList(filter) {
+    const list = $('chip-list');
+    const f = (filter || '').toUpperCase();
+    const opts = chipOptions.filter(o => o.toUpperCase().includes(f));
+    list.innerHTML = opts.map(o => '<div class="opt" data-v="' + o.replace(/"/g, '&quot;') + '">' + o + '</div>').join('');
+    list.style.display = opts.length ? 'block' : 'none';
+    list.querySelectorAll('.opt').forEach(el => {
+      el.addEventListener('mousedown', e => { e.preventDefault(); pickChip(el.dataset.v); });
+    });
+  }
+  function pickChip(v) {
+    $('chip').value = v;
+    $('chip-list').style.display = 'none';
+  }
+  (function initChipCombo() {
+    const input = $('chip'), list = $('chip-list');
+    input.addEventListener('input', () => renderChipList(input.value));
+    input.addEventListener('focus', () => renderChipList(input.value));
+    input.addEventListener('blur', () => setTimeout(() => { list.style.display = 'none'; }, 150));
+    input.addEventListener('keydown', e => {
+      const items = [...list.querySelectorAll('.opt')];
+      let active = items.findIndex(el => el.classList.contains('active'));
+      if (e.key === 'ArrowDown' && items.length) {
+        e.preventDefault();
+        active = Math.min(active + 1, items.length - 1);
+        items.forEach((el, i) => el.classList.toggle('active', i === active));
+        items[active].scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'ArrowUp' && items.length) {
+        e.preventDefault();
+        active = Math.max(active - 1, 0);
+        items.forEach((el, i) => el.classList.toggle('active', i === active));
+        items[active].scrollIntoView({ block: 'nearest' });
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (active >= 0) pickChip(items[active].dataset.v);
+        else if (items.length === 1) pickChip(items[0].dataset.v);
+      } else if (e.key === 'Escape') {
+        list.style.display = 'none';
+      }
+    });
+    $('chip-arrow').addEventListener('mousedown', e => e.preventDefault());
+    $('chip-arrow').onclick = () => renderChipList('');
+  })();
   function fillJlinks(list) {
     $('jlink').innerHTML = '<option value="">自动</option>' +
       list.map(j => '<option value="' + j.sn + '">' + j.name + '</option>').join('');

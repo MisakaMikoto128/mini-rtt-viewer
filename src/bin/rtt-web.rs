@@ -77,6 +77,7 @@ struct Shared {
     device_names: Mutex<Vec<String>>,
     jlinks: Mutex<Vec<(u32, String)>>,
     device_info: Mutex<Option<rtt::DeviceInfo>>,
+    demo_mode: bool,
 }
 
 #[derive(Deserialize)]
@@ -185,6 +186,7 @@ async fn main() {
         device_names: Mutex::new(Vec::new()),
         jlinks: Mutex::new(Vec::new()),
         device_info: Mutex::new(None),
+        demo_mode,
     });
 
     if demo_mode {
@@ -412,6 +414,17 @@ async fn api_themes() -> Json<serde_json::Value> {
 }
 
 async fn api_devices(State(shared): State<Arc<Shared>>) -> Json<Vec<String>> {
+    // demo 模式返回演示设备库:无 J-Link 环境也能体验/测试补全交互
+    if shared.demo_mode {
+        return Json(vec![
+            "STM32F103C8".into(),
+            "STM32F030C8".into(),
+            "STM32G474VET6".into(),
+            "STM32H743ZIT6".into(),
+            "GD32F303CCT6".into(),
+            "CH32V307VCT6".into(),
+        ]);
+    }
     Json(shared.device_names.lock().unwrap().clone())
 }
 

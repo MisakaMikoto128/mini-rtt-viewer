@@ -9,11 +9,11 @@
 //! - GET  /            管理台单页
 //! - GET  /api/status  → {connected, phase, rxBytes, txBytes, rowsTotal, uptimeSec}
 //! - GET  /api/themes  → [{id, name}]
-//! - POST /api/send    {text, hex?}  → 回显一行,计数 TX
+//! - POST /api/send    {text}       → 回显一行,计数 TX
 //! - POST /api/pause   {on}          → 暂停/继续接收
 //! - POST /api/clear   → 清空日志
 //! - WS   /ws          推 {type:"rows", rows:[{runs:[{text,fg}]}], dropped}
-//!                      与 {type:"stats", ...}(500ms 节流)
+//!   与 {type:"stats", ...}(500ms 节流)
 
 use axum::{
     extract::{
@@ -59,8 +59,6 @@ struct Shared {
 #[derive(Deserialize)]
 struct SendReq {
     text: String,
-    #[serde(default)]
-    hex: bool,
 }
 
 #[derive(Deserialize)]

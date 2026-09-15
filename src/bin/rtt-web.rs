@@ -132,7 +132,9 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<mini_rtt_viewer::rtt::W
             match msg_rx.try_recv() {
                 Ok(WorkerMsg::Block(text)) => {
                     if !pump.paused {
-                        shared.rx_bytes.fetch_add(text.len() as u64, Ordering::Relaxed);
+                        shared
+                            .rx_bytes
+                            .fetch_add(text.len() as u64, Ordering::Relaxed);
                         pump.absorb_text(&text, rx_ending);
                     }
                 }
@@ -192,7 +194,10 @@ fn rows_json_array(rows: &[Vec<ansi::Run>]) -> String {
 
 /// 增量行消息(dropped>0 时前端同步丢弃头部同量行)
 fn rows_payload(seq: u64, rows: &[Vec<ansi::Run>], dropped: usize) -> String {
-    format!(r#"{{"type":"rows","seq":{seq},"dropped":{dropped},"rows":{}}}"#, rows_json_array(rows))
+    format!(
+        r#"{{"type":"rows","seq":{seq},"dropped":{dropped},"rows":{}}}"#,
+        rows_json_array(rows)
+    )
 }
 
 async fn index() -> Html<&'static str> {
@@ -202,12 +207,7 @@ async fn index() -> Html<&'static str> {
 async fn favicon() -> Response {
     // 复用桌面版应用图标
     match std::fs::read("assets/app-32.png").or_else(|_| std::fs::read("assets/app.png")) {
-        Ok(bytes) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "image/png")],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => (StatusCode::OK, [(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -241,7 +241,9 @@ async fn api_send(State(shared): State<Arc<Shared>>, Json(req): Json<SendReq>) -
     }
     let mut pump = shared.pump.lock().unwrap();
     pump.push_colored_line(&format!("» {}", req.text), (0x8f, 0x8f, 0x9a));
-    shared.tx_bytes.fetch_add(req.text.len() as u64, Ordering::Relaxed);
+    shared
+        .tx_bytes
+        .fetch_add(req.text.len() as u64, Ordering::Relaxed);
     StatusCode::OK
 }
 
@@ -255,14 +257,13 @@ async fn api_clear(State(shared): State<Arc<Shared>>) -> StatusCode {
     // 水位之后的 rows 才有效;清空前的滞留行由前端按 seq 丢弃
     let seq = shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
     shared.clear_seq.store(seq, Ordering::Relaxed);
-    let _ = shared.rows_tx.send(format!(r#"{{"type":"cleared","seq":{seq}}}"#));
+    let _ = shared
+        .rows_tx
+        .send(format!(r#"{{"type":"cleared","seq":{seq}}}"#));
     StatusCode::OK
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(shared): State<Arc<Shared>>,
-) -> Response {
+async fn ws_handler(ws: WebSocketUpgrade, State(shared): State<Arc<Shared>>) -> Response {
     ws.on_upgrade(move |socket| ws_loop(socket, shared))
 }
 

@@ -417,6 +417,18 @@ extern "system" { fn GetLocalTime(out: *mut WinSystemTime); }
 
 ---
 
+## Slint ComboBox 弹出行的 UIA 动作失效:自动化选值走键盘(↓/Return)
+
+**现象**:自动化验证主题下拉时,对弹出行(`row` 元素)发 `AXPress` 无效果,发 `AXSelect` 也无效果(combobox 显示文本不变)——但行明明报了 `actions=[AXSelect,AXPress]`。
+
+**处理**:弹窗展开后焦点自动落在 popup,走键盘:`AXExpand` → `key Down`(选项间移动,循环)→ `key Return` 提交。这是 Slint a11y 实现的缺口(popup 行的 UIA action 未接线到内部 TouchArea clicked),也是 UI 换栈评估里"生态小、坑自己趟"的又一实证。
+
+验证主题是否生效的可靠手段:UIA 只能确认 combobox 显示文本变了,**颜色要像素采样**(PIL 采日志区众数色,比对设计令牌值)——别信肉眼截图(模型不吃图时也一样)。
+
+参考:`src/ui/theme.slint` 四套令牌、`src/ui/app.slint` 主题下拉、demo 实测(深/浅/OLED/护眼四套全过)。
+
+---
+
 ---
 
 ## 已知未修(用户知情,勿"顺手修")

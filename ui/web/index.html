@@ -69,26 +69,16 @@
   header .title { font-weight: 700; }
   header .spacer { flex: 1; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
-  /* 可编辑下拉:整体一个容器——聚焦蓝框含箭头区一体,输入大字,
-     候选浮层是独立卡片(大圆角+阴影),选中项完整蓝条(参考工程质感) */
-  .combo { position: relative; flex: 1; min-width: 0; display: flex;
-    border: 2px solid var(--border); border-radius: 10px; background: var(--input);
-    transition: border-color .12s, box-shadow .12s; }
-  .combo:focus-within { border-color: var(--accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
-  .combo > input { flex: 1; min-width: 0; border: none; background: transparent;
-    padding: 11px 13px; font-size: 15px; }
-  .combo > input:focus { outline: none; box-shadow: none; }
-  .combo > .arrow { width: 40px; min-width: 40px; border: none; border-left: 1px solid var(--border);
-    background: transparent; color: var(--muted); font-size: 15px; padding: 0;
-    border-radius: 0 8px 8px 0; transition: color .12s; }
-  .combo:focus-within > .arrow { color: var(--accent); }
-  .combo-list { position: absolute; top: calc(100% + 5px); left: 0; right: 0;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: 5px; max-height: 264px; overflow-y: auto; z-index: 30; display: none;
-    box-shadow: 0 10px 28px rgba(0,0,0,.35); }
-  .combo-list .opt { padding: 11px 14px; margin: 2px 3px; border-radius: 8px;
-    cursor: pointer; font-size: 14px; }
+  /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互) */
+  .combo { position: relative; flex: 1; min-width: 0; display: flex; }
+  .combo > input { flex: 1; min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .combo > .arrow { width: 30px; min-width: 30px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+    border-left: none; font-size: 10px; color: var(--muted); padding: 0; }
+  .combo-list { position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px;
+    background: var(--input); border: 1px solid var(--border); border-radius: 6px;
+    max-height: 220px; overflow-y: auto; z-index: 30; display: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+  .combo-list .opt { padding: 7px 12px; cursor: pointer; font-size: 13px; }
   .combo-list .opt:hover, .combo-list .opt.active { background: var(--accent); color: #fff; }
 </style>
 </head>

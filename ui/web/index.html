@@ -4,98 +4,181 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mini RTT Viewer — 管理台</title>
+<link rel="icon" type="image/png" href="favicon.png">
 <style>
-  /* 主题 = CSS 变量集(ADR-18 同款插件化):THEMES 表加一项即新主题 */
+  /* 主题表(插件化:THEMES 加一项即新主题;与桌面版四主题对齐) */
   :root, :root[data-theme="dark"] {
     --bg:#1b1b1f; --panel:#222228; --card:#2a2a31; --input:#26262c;
-    --text:#e8e8ea; --muted:#a0a0a8; --border:#3a3a42;
-    --accent:#28afe9; --ok:#2e7d32; --err:#cc4455; --log-bg:#222222; --log-fg:#dddddd;
+    --text:#e8e8ea; --secondary:#a0a0a8; --muted:#6a6a72; --border:#3a3a42;
+    --accent:#28afe9; --ok:#4caf50; --err:#cc4455; --log-bg:#222222; --log-fg:#dddddd;
   }
   :root[data-theme="light"] {
     --bg:#f2f3f5; --panel:#ffffff; --card:#eceef1; --input:#ffffff;
-    --text:#1a1a1e; --muted:#55555e; --border:#d0d3d9;
+    --text:#1a1a1e; --secondary:#55555e; --muted:#8a8a94; --border:#d0d3d9;
     --accent:#1c8cc4; --ok:#2e7d32; --err:#cc3344; --log-bg:#ffffff; --log-fg:#222222;
   }
   :root[data-theme="oled"] {
     --bg:#000000; --panel:#0a0a0a; --card:#111114; --input:#060608;
-    --text:#e0e0e0; --muted:#909096; --border:#26262c;
-    --accent:#28afe9; --ok:#2e7d32; --err:#ff5566; --log-bg:#000000; --log-fg:#d8d8d8;
+    --text:#e0e0e0; --secondary:#909096; --muted:#5c5c62; --border:#26262c;
+    --accent:#28afe9; --ok:#4caf50; --err:#ff5566; --log-bg:#000000; --log-fg:#d8d8d8;
   }
   :root[data-theme="sepia"] {
     --bg:#f5efdc; --panel:#fbf7e8; --card:#efe8d2; --input:#fdf9ee;
-    --text:#3d3322; --muted:#7a6c4f; --border:#d8cfae;
+    --text:#3d3322; --secondary:#7a6c4f; --muted:#9a8c6c; --border:#d8cfae;
     --accent:#1c8cc4; --ok:#2e7d32; --err:#b34a44; --log-bg:#faf5e4; --log-fg:#4a3f2a;
   }
   * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--text); font: 14px/1.6 "Segoe UI", system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
-  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
-  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--err); }
-  header .dot.on { background: var(--ok); }
-  header .title { font-weight: 700; }
-  header .stats { color: var(--muted); font-size: 12px; }
-  header .spacer { flex: 1; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.5 "Segoe UI", system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
   select, input, button { background: var(--input); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 6px 10px; font: inherit; }
+  select:focus, input:focus, button:focus { outline: none; border-color: var(--accent); }
   button { cursor: pointer; }
-  button:hover { border-color: var(--accent); }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+  label.check input { width: auto; }
+
   main { flex: 1; display: flex; min-height: 0; }
+  aside { width: 280px; min-width: 280px; background: var(--panel); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+  .group { border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+  .group > .title { font-size: 12px; color: var(--muted); letter-spacing: 1px; margin-bottom: 8px; }
+  .field { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .field > .label { width: 84px; min-width: 84px; font-size: 12px; color: var(--secondary); }
+  .field > select, .field > input { flex: 1; min-width: 0; }
+  .row2 { display: flex; gap: 8px; }
+  .row2 > * { flex: 1; min-width: 0; }
+  .btn-col { display: flex; flex-direction: column; gap: 8px; }
+  .btn-row { display: flex; gap: 8px; }
+  .btn-row button { flex: 1; }
+
   #log { flex: 1; overflow-y: auto; background: var(--log-bg); color: var(--log-fg);
-    font: 13px/1.5 Consolas, monospace; padding: 8px 12px; }
-  #log .row { white-space: pre-wrap; word-break: break-all; min-height: 19.5px; }
-  #log .row .fg-accent { color: var(--accent); }
-  aside { width: 280px; background: var(--panel); border-left: 1px solid var(--border);
-    padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
-  aside h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
-  aside label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
-  aside input[type=text] { width: 100%; }
-  .send-row { display: flex; gap: 8px; }
-  .send-row input { flex: 1; }
-  .hint { color: var(--muted); font-size: 12px; }
-  footer { padding: 8px 16px; background: var(--panel); border-top: 1px solid var(--border);
-    display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--muted); }
+    font-family: Consolas, monospace; font-size: var(--log-fs, 13px); line-height: 1.5; padding: 8px 12px; }
+  #log .row { white-space: pre-wrap; word-break: break-all; min-height: 1.5em; }
+  .info-grid { display: grid; grid-template-columns: 84px 1fr; gap: 4px 8px; font-size: 12px; }
+  .info-grid .k { color: var(--secondary); }
+
+  footer { display: flex; gap: 16px; padding: 8px 16px; background: var(--panel);
+    border-top: 1px solid var(--border); font-size: 12px; color: var(--secondary); align-items: center; }
+  footer .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); }
+  footer .dot.on { background: var(--ok); }
+  footer .spacer { flex: 1; }
+  header { display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  header .title { font-weight: 700; }
+  header .spacer { flex: 1; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
 </style>
 </head>
 <body>
 <header>
-  <span class="dot" id="dot"></span>
-  <span class="title">Mini RTT Viewer · 管理台</span>
-  <span class="stats" id="phase">idle</span>
+  <span class="title">Mini RTT Viewer</span>
+  <span class="hint">浏览器管理台(与桌面版同一数据管线)</span>
   <span class="spacer"></span>
   <span class="hint">主题</span>
-  <select id="theme"></select>
+  <select id="theme" style="width:130px">
+    <option value="dark">深色</option>
+    <option value="light">浅色</option>
+    <option value="oled">OLED 纯黑</option>
+    <option value="sepia">护眼暖色</option>
+  </select>
 </header>
 <main>
-  <div id="log"></div>
   <aside>
-    <h3>发送</h3>
-    <label for="send-text">发送到通道 0(Enter 发送)</label>
-    <div class="send-row">
-      <input type="text" id="send-text" placeholder="hello">
-      <button id="send-btn">发送</button>
+    <div class="group">
+      <div class="title">连接设置</div>
+      <div class="field"><span class="label">J-Link</span>
+        <select id="jlink"></select></div>
+      <div class="field"><span class="label">目标设备</span>
+        <input id="chip" list="chip-list" placeholder="STM32F103C8">
+        <datalist id="chip-list"></datalist></div>
+      <div class="field"><span class="label">接口</span>
+        <select id="iface"><option value="0">SWD</option><option value="1">JTAG</option></select></div>
+      <div class="row2 field">
+        <div style="flex:1"><div style="font-size:12px;color:var(--secondary);margin-bottom:4px">速度 (kHz)</div>
+          <select id="speed" style="width:100%"><option>100</option><option>200</option><option>500</option><option selected>1000</option><option>2000</option><option>4000</option><option>8000</option><option>12000</option></select></div>
+        <div style="flex:1"><div style="font-size:12px;color:var(--secondary);margin-bottom:4px">RTT 通道</div>
+          <select id="channel" style="width:100%"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select></div>
+      </div>
+      <div class="btn-col">
+        <button id="connect-btn" class="primary">连接</button>
+        <button id="disconnect-btn" disabled>断开</button>
+        <button id="reset-btn" disabled>重置目标</button>
+      </div>
     </div>
-    <h3>接收</h3>
-    <div class="send-row">
-      <button id="pause-btn">暂停</button>
-      <button id="clear-btn">清空</button>
+
+    <details class="group" open>
+      <div class="title">► 设备信息</div>
+      <div class="info-grid" id="device-info">
+        <span class="k">固件版本</span><span>—</span>
+        <span class="k">目标芯片</span><span>—</span>
+        <span class="k">接口</span><span>—</span>
+        <span class="k">序列号</span><span>—</span>
+      </div>
+    </details>
+
+    <div class="group">
+      <div class="title">接收</div>
+      <div class="btn-row" style="margin-bottom:8px">
+        <button id="clear-btn">清空</button>
+        <button id="pause-btn">暂停</button>
+        <button id="mark-btn">标记</button>
+      </div>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
+      <div class="field" style="margin-bottom:8px"><span class="label">间隔</span>
+        <input type="text" id="frame-timeout" value="20"><span style="font-size:12px;color:var(--muted)">ms</span></div>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="power" disabled> 电源输出 (19 脚)</label>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
+      <div class="btn-row" style="margin-bottom:8px">
+        <button id="A-minus">A-</button><button id="A-plus">A+</button>
+      </div>
+      <div class="field" style="margin-bottom:8px"><span class="label">行尾</span>
+        <select id="rx-ending">
+          <option value="0" selected>自动</option><option value="1">CRLF</option>
+          <option value="2">LF</option><option value="3">CR</option><option value="4">无</option>
+        </select></div>
+      <div class="field" style="margin-bottom:8px"><span class="label">字符集</span>
+        <select id="encoding">
+          <option value="0" selected>UTF-8</option><option value="1">GBK</option>
+          <option value="2">UTF-16 LE</option><option value="3">Latin-1</option><option value="4">ASCII</option>
+        </select></div>
+      <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收(动态生效)</label>
     </div>
-    <p class="hint">数据源:<span id="src">demo</span>(--demo-log)。真机接入为下一阶段。</p>
+
+    <div class="group">
+      <div class="title">发送</div>
+      <div class="field" style="margin-bottom:8px"><span class="label">发送行尾</span>
+        <select id="tx-ending">
+          <option value="0" selected>CRLF</option><option value="1">LF</option>
+          <option value="2">CR</option><option value="3">无</option>
+        </select></div>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="hex-send"> HEX 发送(输入按十六进制字节)</label>
+      <label for="send-text" style="font-size:12px;color:var(--secondary)">发送到通道 0(Enter 发送)</label>
+      <div class="send-row">
+        <input type="text" id="send-text" placeholder="hello">
+        <button id="send-btn" disabled>发送</button>
+      </div>
+      <p class="hint">行尾 / 字符集 / HEX 接收 / 断帧间隔均动态生效,无需重连。</p>
+    </div>
   </aside>
+  <div id="log"></div>
 </main>
 <footer>
+  <span class="dot" id="dot"></span>
+  <span id="status">未连接</span>
+  <span class="spacer"></span>
+  <span id="chip-line">— · —</span>
   <span id="tx">TX 0 B</span>
   <span id="rx">RX 0 B</span>
   <span id="rows">0 行</span>
-  <span class="spacer" style="flex:1"></span>
-  <span>Mini RTT Viewer · 浏览器管理台</span>
 </footer>
 <script>
-  // 主题表(插件化:加主题 = 这里加一项 + /api/themes 加一条)
+  const $ = id => document.getElementById(id);
   const API = location.origin;
-  const log = document.getElementById('log');
-  const dot = document.getElementById('dot');
-  const phase = document.getElementById('phase');
+  const log = $('log');
   const fmt = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
-  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let connected = false, autoScroll = true;
 
   function appendRow(row) {
     const div = document.createElement('div');
@@ -108,73 +191,133 @@
     }
     log.appendChild(div);
   }
-  function trim(max) {
-    while (log.children.length > max) log.removeChild(log.firstChild);
-  }
+  function trim() { while (log.children.length > 800) log.removeChild(log.firstChild); }
+  function scrollBottom() { if (autoScroll) log.scrollTop = log.scrollHeight; }
   let clearSeq = 0;
   function onMsg(ev) {
     const m = JSON.parse(ev.data);
     if (m.type === 'snapshot') { log.innerHTML = ''; m.rows.forEach(appendRow); scrollBottom(); }
     else if (m.type === 'cleared') { clearSeq = m.seq; log.innerHTML = ''; window.__clearedCount = (window.__clearedCount || 0) + 1; }
     else if (m.type === 'rows') {
-      if (m.seq <= clearSeq) return; // 清空水位之前的滞留行作废
+      if (m.seq <= clearSeq) return;
       for (let i = 0; i < (m.dropped || 0); i++) log.removeChild(log.firstChild);
-      m.rows.forEach(appendRow); trim(800); scrollBottom();
+      m.rows.forEach(appendRow); trim(); scrollBottom();
+    }
+    else if (m.type === 'state') setState(m.connected, m.status);
+    else if (m.type === 'device') renderDevice(m.info);
+    else if (m.type === 'progress') $('status').textContent = m.text.replace('● ', '');
+    else if (m.type === 'names') fillDatalist(m.names);
+    else if (m.type === 'jlinks') fillJlinks(m.list);
+    else if (m.type === 'stats') {
+      $('tx').textContent = 'TX ' + fmt(m.tx);
+      $('rx').textContent = 'RX ' + fmt(m.rx);
+      $('rows').textContent = m.rows + ' 行';
     }
   }
-  function scrollBottom() { log.scrollTop = log.scrollHeight; }
+  function setState(on, status) {
+    connected = on;
+    $('dot').classList.toggle('on', on);
+    if (status) $('status').textContent = status.replace('● ', '');
+    $('connect-btn').textContent = on ? '已连接' : '连接';
+    $('connect-btn').disabled = on;
+    $('disconnect-btn').disabled = !on;
+    $('reset-btn').disabled = !on;
+    $('power').disabled = !on;
+    $('send-btn').disabled = !on;
+    for (const id of ['jlink', 'chip', 'iface', 'speed', 'channel']) $(id).disabled = on;
+  }
+  function renderDevice(d) {
+    if (!d) return;
+    const g = $('device-info');
+    g.innerHTML = '';
+    const put = (k, v) => {
+      const a = document.createElement('span'); a.className = 'k'; a.textContent = k;
+      const b = document.createElement('span'); b.textContent = v || '—';
+      g.append(a, b);
+    };
+    put('固件版本', d.firmware);
+    put('目标芯片', d.target);
+    put('接口', (d.iface || '—') + ' · ' + (d.speedKhz || '—') + 'kHz');
+    put('序列号', d.serial);
+    $('chip-line').textContent = (d.target || '—') + ' · ' + (d.iface || '—');
+  }
+  function fillDatalist(names) {
+    $('chip-list').innerHTML = names.map(n => '<option value="' + n.replace(/"/g, '&quot;') + '">').join('');
+  }
+  function fillJlinks(list) {
+    $('jlink').innerHTML = '<option value="">自动</option>' +
+      list.map(j => '<option value="' + j.sn + '">' + j.name + '</option>').join('');
+  }
+
   function connect() {
-    const ws = new WebSocket(API.replace('http', 'ws') + '/ws');
-    ws.onmessage = onMsg;
-    ws.onclose = () => setTimeout(connect, 1500);
+    const body = {
+      chip: $('chip').value,
+      ifaceIndex: +$('iface').value,
+      speedIndex: $('speed').selectedIndex,
+      channel: +$('channel').value,
+    };
+    fetch(API + '/api/connect', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
+      .then(r => { if (!r.ok) r.text().then(t => { $('status').textContent = t; }); });
   }
-  connect();
+  $('connect-btn').onclick = connect;
+  $('disconnect-btn').onclick = () => fetch(API + '/api/disconnect', { method: 'POST' });
+  $('reset-btn').onclick = () => fetch(API + '/api/reset', { method: 'POST' });
+  $('power').onchange = e => fetch(API + '/api/power', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ on: e.target.checked }) });
 
-  async function pollStatus() {
-    try {
-      const s = await (await fetch(API + '/api/status')).json();
-      dot.classList.toggle('on', s.connected);
-      phase.textContent = s.phase + ' · demo';
-      document.getElementById('tx').textContent = 'TX ' + fmt(s.txBytes);
-      document.getElementById('rx').textContent = 'RX ' + fmt(s.rxBytes);
-      document.getElementById('rows').textContent = s.rowsTotal + ' 行';
-    } catch {}
-  }
-  setInterval(pollStatus, 1000);
-  pollStatus();
-
-  document.getElementById('send-btn').onclick = send;
-  document.getElementById('send-text').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
-  function send() {
-    const input = document.getElementById('send-text');
-    if (!input.value) return;
-    fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ text: input.value }) }).then(() => { input.value = ''; });
-  }
-  document.getElementById('pause-btn').onclick = function () {
-    const paused = this.textContent === '暂停';
-    fetch(API + '/api/pause', { method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ on: paused }) }).then(() => { this.textContent = paused ? '继续' : '暂停'; });
-  };
-  document.getElementById('clear-btn').onclick = () =>
-    fetch(API + '/api/clear', { method: 'POST' }).then(() => { log.innerHTML = ''; });
-
-  // 主题:/api/themes 拉 id 列表,选择存 localStorage,改 data-theme 即切换
-  const themeSel = document.getElementById('theme');
-  fetch(API + '/api/themes').then(r => r.json()).then(themes => {
-    for (const t of themes) {
-      const o = document.createElement('option');
-      o.value = t.id; o.textContent = t.name;
-      themeSel.appendChild(o);
-    }
-    themeSel.value = localStorage.getItem('web-theme') || 'dark';
+  // 运行时设置:changed → POST settings(worker 原子热切换,动态生效)
+  $('rx-ending').onchange = e => postSettings({ rxEnding: +e.target.value });
+  $('encoding').onchange = e => postSettings({ encodingIndex: +e.target.value });
+  $('hex-rx').onchange = e => postSettings({ hexRx: e.target.checked });
+  $('frame-timeout').addEventListener('change', e => {
+    const v = parseInt(e.target.value, 10);
+    if (!isNaN(v)) postSettings({ frameTimeout: v });
   });
-  themeSel.onchange = () => {
-    document.documentElement.dataset.theme = themeSel.value;
-    localStorage.setItem('web-theme', themeSel.value);
+  function postSettings(patch) {
+    return fetch(API + '/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) });
+  }
+
+  $('pause-btn').onclick = function () {
+    const paused = this.textContent === '暂停';
+    fetch(API + '/api/pause', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ on: paused }) })
+      .then(() => { this.textContent = paused ? '继续' : '暂停'; });
   };
+  $('clear-btn').onclick = () => fetch(API + '/api/clear', { method: 'POST' }).then(() => { log.innerHTML = ''; });
+  $('mark-btn').onclick = () => fetch(API + '/api/mark', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: '' }) });
+  $('send-btn').onclick = send;
+  $('send-text').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+  function send() {
+    const input = $('send-text');
+    if (!input.value.trim()) return;
+    fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: input.value }) })
+      .then(r => { if (r.ok) input.value = ''; });
+  }
+  $('auto-scroll').onchange = e => { autoScroll = e.target.checked; if (autoScroll) scrollBottom(); };
+
+  // 字号 A±(纯前端,localStorage 记忆)
+  let logFs = +(localStorage.getItem('web-log-fs') || 13);
+  function applyFs() { log.style.fontSize = logFs + 'px'; localStorage.setItem('web-log-fs', logFs); }
+  $('A-minus').onclick = () => { logFs = Math.max(9, logFs - 1); applyFs(); };
+  $('A-plus').onclick = () => { logFs = Math.min(30, logFs + 1); applyFs(); };
+  applyFs();
+
+  // 主题(localStorage 记忆)
+  const themeSel = $('theme');
+  themeSel.onchange = () => { document.documentElement.dataset.theme = themeSel.value; localStorage.setItem('web-theme', themeSel.value); };
   themeSel.value = localStorage.getItem('web-theme') || 'dark';
   document.documentElement.dataset.theme = themeSel.value;
+
+  function connectWS() {
+    const ws = new WebSocket(API.replace('http', 'ws') + '/ws');
+    ws.onmessage = onMsg;
+    ws.onclose = () => setTimeout(connectWS, 1500);
+  }
+  connectWS();
+  setInterval(() => fetch(API + '/api/status').then(r => r.json()).then(s => {
+    if (connected !== s.connected) setState(s.connected, null);
+  }).catch(() => {}), 2000);
+  fetch(API + '/api/devices').then(r => r.json()).then(fillDatalist).catch(() => {});
+  fetch(API + '/api/jlinks').then(r => r.json()).then(fillJlinks).catch(() => {});
+  fetch(API + '/api/status').then(r => r.json()).then(s => { if (s.device) renderDevice(s.device); }).catch(() => {});
 </script>
 </body>
 </html>

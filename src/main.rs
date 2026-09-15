@@ -6,7 +6,9 @@
 // 管理退出编排。业务规则一律不在这里实现。
 use mini_rtt_viewer::config::{self, StoredPrefs};
 use mini_rtt_viewer::log_model::{char_width_cols, LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS};
-use mini_rtt_viewer::rtt::{self, WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN, ENCODINGS};
+use mini_rtt_viewer::rtt::{
+    self, WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN, ENCODINGS, SPEEDS_KHZ,
+};
 use mini_rtt_viewer::{
     demo, device_db, single_instance, AppTheme, AppWindow, InfoRow, LogRow, LogRun,
 };
@@ -19,8 +21,6 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
-
-const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
 
 /// 发送历史上限(去重后最新在前)
 const SEND_HISTORY_CAP: usize = 50;

@@ -57,6 +57,9 @@ pub enum WorkerCmd {
 /// 检测到后尽快退出,否则非 daemon 线程会让进程在窗口关闭后残留。
 pub static APP_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+/// 速度下拉表(kHz):桌面版与浏览器管理台共用的单一真源,下标即 UI 索引
+pub const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
+
 /// worker 生命周期句柄:stop 请求退出,alive 反映线程是否还在。
 pub struct WorkerHandle {
     pub stop: AtomicBool,

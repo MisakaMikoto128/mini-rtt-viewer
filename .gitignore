@@ -7,3 +7,4 @@ timing_*.log
 __pycache__/
 *.pyc
 .pytest_cache/
+combo_check.png

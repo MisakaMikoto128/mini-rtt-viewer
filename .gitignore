@@ -2,3 +2,8 @@
 /target*
 /tools
 timing_*.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/

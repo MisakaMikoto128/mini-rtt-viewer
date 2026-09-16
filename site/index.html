@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>Mini RTT Viewer — 为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器 | 免费开源 · 免安装</title>
-<meta name="description" content="Mini RTT Viewer 是免费开源(MIT)的轻量级 SEGGER RTT 日志查看器:中文 / emoji 原样显示,ANSI 彩色日志、VS Code 式正则搜索、四套主题,桌面版 + 浏览器管理台双程序。单文件约 3 MB 免安装,10kHz+ 吞吐不卡 UI,启动不到 1 秒。">
+<meta name="description" content="Mini RTT Viewer 是免费开源(MIT)的轻量级 SEGGER RTT 日志查看器:中文 / emoji 原样显示,ANSI 彩色日志、VS Code 式正则搜索、四套主题。单一 exe 约 0.64 MB,双击即用——本机服务 + 自动打开浏览器管理台,10kHz+ 吞吐不卡 UI。">
 <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon.png">
 <link rel="icon" type="image/png" sizes="256x256" href="./assets/icon.png">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Mini RTT Viewer — 为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器">
-<meta property="og:description" content="官方 J-Link RTT Viewer 对 UTF-8 的支持是坏的:中文乱码、emoji 直接丢。Mini RTT Viewer 单文件约 3 MB 免安装,中文和 emoji 原样显示,10kHz+ 吞吐不卡 UI,启动不到 1 秒。桌面版 + 浏览器管理台双程序,免费开源(MIT)。">
+<meta property="og:description" content="官方 J-Link RTT Viewer 对 UTF-8 的支持是坏的:中文乱码、emoji 直接丢。Mini RTT Viewer 单一 exe 约 0.64 MB:双击 = 本机服务 + 浏览器自动打开管理台;中文和 emoji 原样显示,10kHz+ 吞吐不卡 UI。免费开源(MIT)。">
 <meta property="og:url" content="https://misakamikoto128.github.io/mini-rtt-viewer/">
 <!-- ═══════════════════════════════════════════════════════════════════
      RELEASE-DATA (单一数据块, 逐版发布只改此对象)
@@ -19,17 +19,17 @@
      ═══════════════════════════════════════════════════════════════════ -->
 <script>
 const RELEASE = {
-  version: "v0.2.1",
-  date: "2026-09-15",
+  version: "v0.3.0",
+  date: "2026-09-16",
   repo: "https://github.com/MisakaMikoto128/mini-rtt-viewer",
   releases: "https://github.com/MisakaMikoto128/mini-rtt-viewer/releases",
   changelog: "https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md",
   platforms: {
     windows: {
-      file: "mini-rtt-viewer-0.2.1-windows-x86_64.zip",
-      spec: "Windows x86_64 · zip · 约 6.5 MB · 内含桌面版与浏览器管理台双程序",
-      sha256: "cb345279b784d46929a6353c31c896b6c3b5211b343317fe33e092d049c6e9cd",
-      url: "https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.2.1/mini-rtt-viewer-0.2.1-windows-x86_64.zip"
+      file: "mini-rtt-viewer-0.3.0-windows-x86_64.zip",
+      spec: "Windows x86_64 · zip · 约 0.64 MB · 单一 mini-rtt-viewer.exe(UPX 压缩)",
+      sha256: "d6debad8d658ab05b57ca4a5f408104c034e0e09b9baaf272e2fee53ae6c20c0",
+      url: "https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.3.0/mini-rtt-viewer-0.3.0-windows-x86_64.zip"
     }
   }
 };
@@ -356,7 +356,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
   <div class="container">
     <p class="eyebrow">J-LINK RTT CONSOLE</p>
     <h1>为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器</h1>
-    <p class="hero-sub">RTT 比串口快得多,官方 J-Link RTT Viewer 对 UTF-8 的支持却是坏的:中文乱码、emoji 直接丢。Mini RTT Viewer 单文件约 3 MB、免安装,中文和 emoji 原样显示,10kHz+ 吞吐不卡 UI,启动不到 1 秒。</p>
+    <p class="hero-sub">RTT 比串口快得多,官方 J-Link RTT Viewer 对 UTF-8 的支持却是坏的:中文乱码、emoji 直接丢。Mini RTT Viewer 单一 exe 约 0.64 MB:双击启动本机服务,浏览器管理台自动打开——中文和 emoji 原样显示,10kHz+ 吞吐不卡 UI。</p>
     <div class="hero-cta">
       <a class="btn btn-primary btn-lg" href="#download">下载 Mini RTT Viewer</a>
       <a class="btn btn-secondary btn-lg" href="https://github.com/MisakaMikoto128/mini-rtt-viewer" target="_blank" rel="noopener">
@@ -369,7 +369,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       <a class="pill" href="#quickstart">无板演示 --demo-log</a>
       <a class="pill" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/LICENSE" target="_blank" rel="noopener">MIT 开源</a>
     </p>
-    <p class="hero-ver">当前版本 <span data-rel="version">v0.2.1</span> · 一个 zip 内含桌面版与浏览器管理台双程序</p>
+    <p class="hero-ver">当前版本 <span data-rel="version">v0.3.0</span> · 一个 exe:双击 = 本机服务 + 浏览器自动打开管理台</p>
   </div>
 </header>
 
@@ -404,13 +404,13 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         </article>
         <article class="feat-card">
           <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M6.5 6.5h.01"/><path d="M9.5 6.5h.01"/></svg>
-          <h3>桌面版 + 浏览器管理台双形态</h3>
-          <p>rtt-web.exe 在本机起服务,浏览器打开 <code class="inline-code">127.0.0.1:8686</code> 就能用,与桌面版同一套真机连接协议;Playwright 黑盒测试进 CI,不是摆设。</p>
+          <h3>单 exe 双击即用,浏览器即界面</h3>
+          <p>双击 mini-rtt-viewer.exe,本机起服务并自动打开管理台 <code class="inline-code">127.0.0.1:8686</code>;SerialHub 同构——Rust 数据层 + 内嵌 Web UI,服务仅绑定本机回环;Playwright 黑盒测试进 CI,不是摆设。</p>
         </article>
         <article class="feat-card">
           <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>
           <h3>单文件免安装零依赖</h3>
-          <p>解压即用:没有 Python、没有 WebView、没有运行时;主程序约 3 MB,启动不到 1 秒,拷给同事就能跑。</p>
+          <p>解压即用:没有安装器、没有 Python、没有 .NET,界面就是你自己浏览器里的一个标签页;exe UPX 后约 0.64 MB,拷给同事就能跑。</p>
         </article>
       </div>
     </div>
@@ -424,16 +424,16 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         <h2>眼见为实</h2>
       </div>
       <figure class="shot-main">
-        <a class="shot" href="./images/desktop.png" target="_blank" rel="noopener">
-          <img src="./images/desktop.png" alt="Mini RTT Viewer 桌面版" width="1946" height="1351" loading="lazy">
+        <a class="shot" href="./images/web-console.png" target="_blank" rel="noopener">
+          <img src="./images/web-console.png" alt="Mini RTT Viewer 浏览器管理台(深色主题)" width="1440" height="900" loading="lazy">
         </a>
-        <figcaption>桌面版:左侧连接 / 设备信息 / 接收 / 发送分区配置,右侧 ANSI 彩色日志按显示列换行,滚轮逐行对齐、贴底跟随。</figcaption>
+        <figcaption>浏览器管理台(深色主题):左侧连接 / 设备信息 / 接收 / 发送分区配置,右侧 WS 实时日志流——图内为 <code class="inline-code">--demo-log</code> 无板演示流,中英混排 + emoji + ERR 告警行。</figcaption>
       </figure>
       <figure class="shot-main">
-        <a class="shot" href="./images/web-console.png" target="_blank" rel="noopener">
-          <img src="./images/web-console.png" alt="rtt-web 浏览器管理台" width="1440" height="900" loading="lazy">
+        <a class="shot" href="./images/web-console-light.png" target="_blank" rel="noopener">
+          <img src="./images/web-console-light.png" alt="Mini RTT Viewer 浏览器管理台(浅色主题)" width="1440" height="900" loading="lazy">
         </a>
-        <figcaption>浏览器管理台 rtt-web:本机起服务,浏览器打开即用——实时日志流、四主题、发送 / 暂停 / 清空,与桌面版同一套真机连接协议。</figcaption>
+        <figcaption>同一管理台的浅色主题:深色 / 浅色 / OLED 纯黑 / 护眼暖色四套主题下拉即时切换,主题与面板偏好自动记忆。</figcaption>
       </figure>
     </div>
   </section>
@@ -443,20 +443,20 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
     <div class="container">
       <div class="sec-head">
         <p class="eyebrow">DOWNLOAD</p>
-        <h2>下载 Mini RTT Viewer <span class="ver-pill" data-rel="version">v0.2.1</span></h2>
-        <p class="dl-date"><span data-rel="date">2026-09-15</span> 发布</p>
+        <h2>下载 Mini RTT Viewer <span class="ver-pill" data-rel="version">v0.3.0</span></h2>
+        <p class="dl-date"><span data-rel="date">2026-09-16</span> 发布</p>
       </div>
 
       <div class="dl-grid">
         <article class="dl-card" id="dl-windows">
           <h3>Windows</h3>
-          <p class="dl-spec" data-rel="spec-windows">Windows x86_64 · zip · 约 6.5 MB · 内含桌面版与浏览器管理台双程序</p>
-          <p class="dl-file" data-rel="file-windows">mini-rtt-viewer-0.2.1-windows-x86_64.zip</p>
-          <p class="dl-desc">包内双程序——mini-rtt-viewer.exe 桌面版 + rtt-web.exe 浏览器管理台,解压即用。</p>
-          <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.2.1/mini-rtt-viewer-0.2.1-windows-x86_64.zip">下载 Windows 版</a>
+          <p class="dl-spec" data-rel="spec-windows">Windows x86_64 · zip · 约 0.64 MB · 单一 mini-rtt-viewer.exe(UPX 压缩)</p>
+          <p class="dl-file" data-rel="file-windows">mini-rtt-viewer-0.3.0-windows-x86_64.zip</p>
+          <p class="dl-desc">包内单一 mini-rtt-viewer.exe(UPX 压缩),解压双击即用:本机服务启动,浏览器自动打开管理台。</p>
+          <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.3.0/mini-rtt-viewer-0.3.0-windows-x86_64.zip">下载 Windows 版</a>
           <p class="sha-label">SHA256</p>
           <div class="sha-bar">
-            <code data-rel="sha-windows">cb345279b784d46929a6353c31c896b6c3b5211b343317fe33e092d049c6e9cd</code>
+            <code data-rel="sha-windows">d6debad8d658ab05b57ca4a5f408104c034e0e09b9baaf272e2fee53ae6c20c0</code>
             <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
           </div>
         </article>
@@ -492,7 +492,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         </div>
         <div class="qs-step">
           <div class="qs-head"><span class="qs-num" aria-hidden="true">2</span><h3>解压并运行</h3></div>
-          <p class="qs-desc">解压 zip:双击 mini-rtt-viewer.exe 用桌面版;或运行 rtt-web.exe,浏览器打开 <code class="inline-code">http://127.0.0.1:8686</code> 进管理台。</p>
+          <p class="qs-desc">解压 zip,双击 mini-rtt-viewer.exe:本机服务随即启动,浏览器自动打开管理台 <code class="inline-code">http://127.0.0.1:8686</code>。不想自动弹浏览器?加 <code class="inline-code">--no-open</code>(或设 <code class="inline-code">RTT_WEB_NO_BROWSER=1</code>)只起服务;端口被占 = 已有实例在运行。</p>
         </div>
         <div class="qs-step">
           <div class="qs-head"><span class="qs-num" aria-hidden="true">3</span><h3>填芯片型号,点连接</h3></div>
@@ -515,7 +515,11 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       </div>
       <ol class="log-list">
         <li class="log-item">
-          <div class="log-head"><span class="ver-chip latest" data-rel="version">v0.2.1</span><span class="log-date" data-rel="date">2026-09-15</span></div>
+          <div class="log-head"><span class="ver-chip latest" data-rel="version">v0.3.0</span><span class="log-date" data-rel="date">2026-09-16</span></div>
+          <p class="log-sum">架构重构:Slint 桌面 UI 退役,一个 exe 就是全部——双击 mini-rtt-viewer.exe = 本机服务 + 浏览器自动打开管理台,体积 12.3 MB 降到 UPX 后约 0.64 MB(-88.5%);管理台补齐偏好持久化、定时发送、日志导出、目标设备可编辑下拉;新增 --help / --no-open / --port,端口互斥替代单实例互斥。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v0.2.1</span><span class="log-date">2026-09-15</span></div>
           <p class="log-sum">浏览器管理台 rtt-web 独立成第二个程序(桌面版体积零影响),四套主题下拉即时切换,自绘应用图标上岗;顺手修掉连接即崩、滚动裁末行、复制对不齐等一批 bug,发布包改为「双 exe + README/LICENSE」契约。</p>
         </li>
         <li class="log-item">

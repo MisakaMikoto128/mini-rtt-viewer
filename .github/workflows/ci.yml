@@ -53,8 +53,8 @@ jobs:
           pip install pytest playwright
           playwright install chromium
 
-      - name: Build app
-        run: cargo build --release --locked
+      - name: Build rtt-web
+        run: cargo build --release --locked -p mini-rtt-viewer --bin rtt-web
 
       - name: Run Playwright suite
         run: python -m pytest tests/web/test_spec.py -v

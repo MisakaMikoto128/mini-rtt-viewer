@@ -55,17 +55,8 @@ QA/UX/CI 冒烟全部基于它。真机验证仅在发版前由人工执行。
 (WorkPlace/serialhub)裁剪;差异点:本项目 Windows-only(CI 单平台)、无内嵌
 Web 管理台(桌面 GUI)。
 
-## ADR-11 UI 技术栈:Slint 退役,Web UI 为唯一界面(2026-09-16 决策)
+## ADR-11 UI 技术栈迁移(预留)
 
-评估结论(详 docs/team/ui-stack-eval.md):Slint 布局约束反直觉/样式覆盖 hack/
-a11y 缺口(popup 行 UIA 动作失效)/生态小,多轮返工实证;**数据层与 UI 已解耦
-(ADR-7)**,迁移成本低。采纳方案:**本机服务 + 浏览器管理台**(SerialHub 同构,
-不引 Tauri/WebView 依赖):单 exe 起服务 + 自动开浏览器,Playwright 黑盒测试
-进 CI。体积 12.3MB → 1.43MB(-88.5%)。Slint 代码随 git 历史归档(0.2.x 最后版)。
-
-## ADR-12 单 exe 双模式与端口互斥
-
-mini-rtt-viewer.exe = Web 服务 + 自动开浏览器;`--demo-log` 无板体验、
-`--no-open`/`RTT_WEB_NO_BROWSER=1` 无头场景、`--port` 换端口;bind AddrInUse
-即单实例互斥(single_instance 模块退役)。偏好持久化沿用 config 模块
-(%APPDATA%/MiniRttViewer/prefs.json),启动恢复 + tick 500ms 快照落盘。
+backlog「UI 技术栈评估」出结论后回填:候选 Tauri+Web / egui / iced,评估维度:
+开发效率(布局/调试/热重载)、体积与启动、打包复杂度、既有功能迁移成本
+(25 条 FR)。

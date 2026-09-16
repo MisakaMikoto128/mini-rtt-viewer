@@ -1,0 +1,358 @@
+import { AppTheme } from "theme.slint";
+
+// 一行日志里的一段同色文本
+export struct LogRun {
+    text: string,
+    color: color,
+    // true = 设备流的无色段:color 值忽略,渲染时绑定 AppTheme.log-fg——
+    // 切换深/浅主题时存量行也跟随变色(烘焙 RGB 会导致浅底残留深底浅字)
+    default-fg: bool,
+}
+
+// 一行日志 = 若干同色段(ANSI 转义由 Rust 端 vte 解析,这里只渲染)
+export struct LogRow {
+    runs: [LogRun],
+    // 命中搜索(非当前):行底淡黄;当前命中行由 highlight-row 橙底覆盖
+    hit: bool,
+}
+
+// 日志滚动区:滚轮位移按整数行量化对齐,手动滚动位置永远落在行高网格上
+// (逐屏上翻时上一行精确落进上一屏的位置,行位稳定不抖);
+// 贴底跟随用显式 follow 标志(滚离底部失随、滚回底部恢复),新数据不拉扯视口。
+//
+// 滚动实现必须用「行容器 y = 8px - offset」的平移模式,**不能用 ListView/Flickable**:
+// Flickable 的 viewport-y 是它内部托管并自行赋值的属性,初始布局时就会写入,
+// 外部绑定(`viewport-y: -offset`)随即被赋值永久破坏,整个视口冻结——
+// 踩过:彩色日志 v1 用 ListView 驱动,自动滚动与滚轮全部失效。
+export component LogView inherits Rectangle {
+    in property <[LogRow]> rows;
+    in property <int> row-count;      // 跟随逻辑的新行触发器
+    // 搜索命中:当前高亮行(-1 = 无)与跳转目标(Rust 侧 set 后经 changed 驱动)
+    in property <int> highlight-row: -1;
+    in property <int> jump-row: -1;
+    // 列级选中(锚点 a / 游标 b,行+显示列;-1 = 无选中;Ctrl+C 由 Rust 按列切文本)
+    in-out property <int> sel-a-row: -1;
+    in-out property <int> sel-a-col: -1;
+    in-out property <int> sel-b-row: -1;
+    in-out property <int> sel-b-col: -1;
+    // 拖选松手自动复制 / 右键菜单"复制"请求( Rust 侧同一处理器)
+    callback copy-request();
+    // 指针按下(点击日志区)→ 宿主把焦点收走,清掉 ComboBox 残留的焦点环
+    callback focus-request();
+    // 右键菜单位置(LogView 坐标)
+    private property <length> menu-x: 0px;
+    private property <length> menu-y: 0px;
+    // 每行渲染列数(等宽字符单元换算,Rust 侧换行用;0 = 尚未测出)。
+    // 保守减 1 列:探针 cell-w 与实际字符 advance 有亚像素差,满列排版时
+    // 误差沿行累积,行尾 1-2 个字符会被右缘裁掉(实测)——留一列余量
+    out property <int> columns: cell-w > 0px
+        ? max(1, floor((self.width - 16px) / cell-w) - 1) : 0;
+    // 等宽字符单元宽(Consolas 半角宽;探针 "00" 实测取半)
+    private property <length> cell-w: cell-probe.preferred-width > 0px
+        ? cell-probe.preferred-width / 2 : 0px;
+    // 自动滚动状态(follow 的对外呈现):滚离底部自动变 false,滚回底部/用户勾选变 true。
+    // AppWindow 的「自动滚动」checkbox 与它 <=> 双向绑定——checkbox 是状态呈现也是开关。
+    in-out property <bool> auto-scroll: true;
+    background: AppTheme.log-bg;
+    border-radius: AppTheme.radius;
+    border-width: 1px;
+    border-color: AppTheme.border-color;
+    clip: true;
+
+    // 内容总高(上下各 8px 内边距;每行严格一行高,天然行格对齐)
+    private property <length> content-h: root.row-count * root.line-h + 16px;
+    // 最大卷动量
+    private property <length> max-offset: max(0px, content-h - self.height);
+    // 手动滚动的行格上界:floor 到行高网格(自动贴底仍贴死 max-offset,
+    // 从底部上翻第一格落进网格,底部只留不到一行的空隙)
+    private property <length> grid-max: root.line-h > 0px
+        ? floor(root.max-offset / root.line-h) * root.line-h
+        : root.max-offset;
+    // 顶部卷走量(手动滚动时永远为行高整数倍)
+    private property <length> offset: 0px;
+    // 滚轮/触摸板累积量(未量化;floor 取整后亚行残余自然保留在 raw 里,
+    // 触摸板细粒度滚动凑满一行才动,滚轮大步长每格稳定前进整数行)
+    private property <length> raw: 0px;
+    // 本 tick 未夹紧的量化值(撞边界时用于检测并同步 raw)
+    private property <length> u: 0px;
+    // 贴底跟随:滚离底部失随(上翻不被新数据拉扯),滚回底部恢复
+    private property <bool> follow: true;
+    // 单行行高:同字体同字号的隐藏探针实测(字体渲染行高不能靠常数估);
+    // 万一探针返回 0 则退回字号估值,保证滚动可用
+    private property <length> line-fallback: AppTheme.log-font-size * 1.35;
+    private property <length> line-h: probe.preferred-height > 0px
+        ? probe.preferred-height : line-fallback;
+
+    // 统一滚动入口:像素 delta 进入未量化累积量,floor 到行高网格后夹进范围。
+    // 亚行残余留在 raw(触摸板细粒度凑满一行才动,滚轮大步长每格稳定走整数行)。
+    // 撞底必须像素精确贴死 max-offset(与自动跟随同一终点,底部 8px 间隙完整):
+    // grid-max 是 floor 值,比 max-offset 少不足一行的余量,若也停在 grid-max,
+    // 最后会被裁掉 (max-offset mod 行高) 像素——和跟随态的贴底距离不一致。
+    // 行格只服务于上翻的行位稳定;顶部分支同样对齐并同步 raw(不消化攒量)。
+    //
+    // follow 只能被「灭」不能被「点」:用户取消自动滚动(或滚离底部)后,贴底
+    // 状态本身不再恢复跟随——否则滚轮在底部的任何一点向下滑动都会把 checkbox
+    // 重新勾上,与用户意图打架(实测:取消后仍跟滚、checkbox 反复横跳)。
+    // 恢复跟随的唯一途径是用户重新勾选 checkbox(changed auto-scroll 跳底)。
+    function scroll-by-px(delta: length) {
+        root.raw = root.raw - delta;
+        root.u = floor(root.raw / root.line-h) * root.line-h;
+        if (root.u >= root.grid-max) {
+            root.offset = root.max-offset;
+            root.raw = root.offset;
+        } else {
+            root.offset = min(max(root.u, 0px), root.grid-max);
+            if (root.offset != root.u) {
+                root.raw = root.offset;
+            }
+        }
+        if (root.offset < root.max-offset - 0.5px) {
+            root.follow = false;
+            root.auto-scroll = false;
+        }
+    }
+
+    // 跳转到指定行(置顶显示):手动定位解除跟随(checkbox 经 auto-scroll 同步);
+    // 结构化行模型的红利——目标 offset 就是 行号 × 行高
+    public function scroll-to-row(row: int) {
+        root.follow = false;
+        root.auto-scroll = false;
+        root.raw = min(max(row * root.line-h, 0px), root.grid-max);
+        root.offset = root.raw;
+    }
+
+    // 鼠标 y → 行号(行容器顶部内边距 8px,行高固定)
+    function row-at-y(y: length) -> int {
+        min(max(floor((root.offset + y - 8px) / root.line-h), 0), root.row-count - 1)
+    }
+    // 鼠标 x → 显示列(行容器左内边距 8px,等宽单元宽)
+    function col-at-x(x: length) -> int {
+        max(floor((x - 8px) / root.cell-w), 0)
+    }
+    function has-selection() -> bool {
+        root.sel-a-row >= 0 && root.sel-b-row >= 0
+            && !(root.sel-a-row == root.sel-b-row && root.sel-a-col == root.sel-b-col)
+    }
+
+    // 滚轮层在最上,统一量化驱动 offset(行容器 y 随动);
+    // 同时承担行选中的指针交互(下按起选/拖动扩选/抬起提交)
+    wheel := TouchArea {
+        width: 100%;
+        height: 100%;
+        property <bool> dragging: false;
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                root.focus-request();
+                root.sel-a-row = root.row-at-y(self.mouse-y);
+                root.sel-a-col = root.col-at-x(self.mouse-x);
+                root.sel-b-row = root.sel-a-row;
+                root.sel-b-col = root.sel-a-col;
+                self.dragging = true;
+            } else if (e.button == PointerEventButton.left && e.kind == PointerEventKind.up) {
+                self.dragging = false;
+                // 拖选松手即复制(PuTTY 惯例;单击 a==b 无选中不触发)
+                if (root.has-selection()) {
+                    root.copy-request();
+                }
+            } else if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
+                // 右键菜单:贴边收拢防出屏
+                root.menu-x = min(self.mouse-x, root.width - 128px);
+                root.menu-y = min(self.mouse-y, root.height - 72px);
+                sel-menu.show();
+            }
+        }
+        moved => {
+            if (self.dragging) {
+                root.sel-b-row = root.row-at-y(self.mouse-y);
+                root.sel-b-col = root.col-at-x(self.mouse-x);
+            }
+        }
+        scroll-event(e) => {
+            if (root.line-h > 0px) {
+                root.scroll-by-px(e.delta-y);
+            }
+            return EventResult.accept;
+        }
+    }
+
+    // 行高探针:单行同字体文本(visible:false 不渲染,但属性仍可求值)
+    probe := TextInput {
+        visible: false;
+        width: 60px;
+        text: "Ag";
+        font-family: AppTheme.mono-font;
+        font-size: AppTheme.log-font-size;
+    }
+    // 等宽字符单元宽探针("00" 两个半角字符)
+    cell-probe := Text {
+        visible: false;
+        text: "00";
+        font-family: AppTheme.mono-font;
+        font-size: AppTheme.log-font-size;
+    }
+
+    // 行容器:整块随 offset 平移(与文本版滚动同一机制;不用 Flickable,见头部说明)
+    rows-layout := VerticalLayout {
+        x: 8px;
+        y: 8px - root.offset;
+        spacing: 0px;
+
+        for row[i] in root.rows: Rectangle {
+            // 每行严格一行高:内容超高部分裁掉(终端语义;行内不换行——
+            // 超宽行由 Rust 侧按列硬换行成多行,见 log_model wrap_runs)
+            height: root.line-h;
+            // 内容宽度不得反灌布局:断行兜底(MAX_LINE_CHARS)切出的超长行若把
+            // min-width 传播上去,会把 VerticalLayout/日志区整体撑宽、文字画到
+            // 边界外——渲染宽度只归 clip 管,布局宽度锁死视口
+            min-width: 0px;
+            clip: true;
+            // 选中覆盖层:中间行全宽(像素精确),首/尾行按显示列换算;
+            // 单行选中时同行为首+尾(start-col..end-col+1)。
+            // x 相对 row Rectangle——row 原点就是内容列 0(rows-layout 已含 8px
+            // padding),这里**不能**再加 8px:多加一层后高亮整体右移一个字符宽,
+            // 每行首字符永远不被覆盖,复制(按列)与视觉选区对不上。
+            if (root.has-selection()
+                && i >= min(root.sel-a-row, root.sel-b-row)
+                && i <= max(root.sel-a-row, root.sel-b-row)): Rectangle {
+                property <int> first-row: min(root.sel-a-row, root.sel-b-row);
+                property <int> last-row: max(root.sel-a-row, root.sel-b-row);
+                property <int> start-col: root.sel-a-row < root.sel-b-row ? root.sel-a-col
+                    : root.sel-a-row > root.sel-b-row ? root.sel-b-col
+                    : min(root.sel-a-col, root.sel-b-col);
+                property <int> end-col: root.sel-a-row < root.sel-b-row ? root.sel-b-col
+                    : root.sel-a-row > root.sel-b-row ? root.sel-a-col
+                    : max(root.sel-a-col, root.sel-b-col);
+                x: i == first-row ? start-col * root.cell-w : 0px;
+                width: (i == last-row ? (end-col + 1) * root.cell-w : row-line.width) - self.x;
+                background: #28afe926;
+            }
+            // 搜索命中行(VS Code 惯例淡黄;当前命中行 highlight-row 橙色覆盖)
+            if (row.hit && i != root.highlight-row): Rectangle {
+                background: AppTheme.search-hit-bg;
+            }
+            if (i == root.highlight-row): Rectangle {
+                background: AppTheme.search-current-bg;
+            }
+            row-line := HorizontalLayout {
+                for run in row.runs: Text {
+                    text: run.text;
+                    // 无色段跟随主题(切换即时变色),带色段用烘焙 ANSI 颜色
+                    color: run.default-fg ? AppTheme.log-fg : run.color;
+                    font-family: AppTheme.mono-font;
+                    font-size: AppTheme.log-font-size;
+                    vertical-alignment: center;
+                    // 锁定固有宽度且不参与拉伸/压缩:总宽超出行宽时由行容器
+                    // 从右侧整体裁切(否则长行会把中间的段挤窄、位置漂移)
+                    width: self.preferred-width;
+                    horizontal-stretch: 0;
+                }
+            }
+        }
+    }
+
+    // 用户点击「自动滚动」checkbox:勾选=立即跳到底部并恢复跟随;
+    // 取消=停在当前位置,新数据不再拉扯视口。
+    // 滚动路径经由 scroll-by-px 同步 auto-scroll,两条路径在这里汇合成单一 follow 真源。
+    changed auto-scroll => {
+        root.follow = root.auto-scroll;
+        if (root.auto-scroll) {
+            root.offset = root.max-offset;
+            root.raw = root.offset;
+        }
+    }
+
+    // 新行追加:跟随者贴到新底部。行**追加**不动既有行号,选中保持;
+    // 行号真正失稳(裁剪移位/重排/清空)由 Rust 侧主动清选中
+    changed row-count => {
+        if (root.follow) {
+            root.offset = root.max-offset;
+            root.raw = root.offset;
+        }
+    }
+    // 内容变矮(清空/裁剪):夹回范围
+    changed max-offset => {
+        if (root.offset > root.max-offset) {
+            root.offset = root.max-offset;
+            root.raw = root.offset;
+        }
+    }
+    // 视口高度变化(窗口拉伸/首帧布局):跟随者保持贴底
+    changed height => {
+        if (root.follow) {
+            root.offset = root.max-offset;
+            root.raw = root.offset;
+        }
+    }
+    // 搜索跳转:Rust 侧 set jump-row 后驱动定位(属性变化链,不经函数调用)
+    changed jump-row => {
+        if (root.jump-row >= 0) {
+            root.scroll-to-row(root.jump-row);
+        }
+    }
+
+    // 右键菜单:复制 / 全选(选中全部行)
+    sel-menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 120px;
+        height: 64px;
+        Rectangle {
+            background: AppTheme.card-bg;
+            border-radius: AppTheme.radius;
+            border-width: 1px;
+            border-color: AppTheme.border-color;
+
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+
+                Rectangle {
+                    height: 26px;
+                    border-radius: 4px;
+                    copy-t := TouchArea {
+                        clicked => {
+                            root.copy-request();
+                            sel-menu.close();
+                        }
+                        Rectangle {
+                            background: copy-t.has-hover ? AppTheme.hover-bg : transparent;
+                            Text {
+                                text: "复制";
+                                color: AppTheme.text-primary;
+                                font-family: AppTheme.ui-font;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                x: 10px;
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 26px;
+                    border-radius: 4px;
+                    all-t := TouchArea {
+                        clicked => {
+                            root.sel-a-row = 0;
+                            root.sel-a-col = 0;
+                            root.sel-b-row = root.row-count - 1;
+                            root.sel-b-col = 999999;
+                            root.copy-request();
+                            sel-menu.close();
+                        }
+                        Rectangle {
+                            background: all-t.has-hover ? AppTheme.hover-bg : transparent;
+                            Text {
+                                text: "全选";
+                                color: AppTheme.text-primary;
+                                font-family: AppTheme.ui-font;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                                x: 10px;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

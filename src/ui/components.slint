@@ -1,0 +1,39 @@
+import { AppTheme } from "theme.slint";
+
+// 字段标签:配置面板里每行控件上方的小标题。
+export component FieldLabel inherits Text {
+    color: AppTheme.text-secondary;
+    font-size: 11px;
+    font-family: AppTheme.ui-font;
+    vertical-alignment: center;
+}
+
+// 区块标题 + 内容的面板区块壳:高度由内容自适应(固定高度会随控件尺寸变化溢出遮挡)。
+// vertical-stretch 0:在父布局中按内容收缩,不被拉伸成巨块。
+export component PanelSection inherits Rectangle {
+    in property <string> title;
+    border-radius: AppTheme.radius;
+    background: AppTheme.panel-bg;
+    vertical-stretch: 0;
+    horizontal-stretch: 0;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            Text {
+                text: root.title;
+                color: AppTheme.text-primary;
+                font-size: 13px;
+                font-weight: 700;
+                font-family: AppTheme.ui-font;
+                vertical-alignment: center;
+            }
+        }
+        VerticalLayout {
+            spacing: 6px;
+            @children
+        }
+    }
+}

@@ -1,18 +1,5 @@
 # Changelog
 
-## 0.3.0 (2026-09-16)
-
-**架构重构:单一 exe,Web UI 为唯一界面(ADR-11 落地)**
-
-- 双击 mini-rtt-viewer.exe = 本机服务 + 自动打开浏览器管理台(RTT_WEB_NO_BROWSER=1 或 --no-open 跳过)
-- **体积 12.3MB → 1.43MB(-88.5%)**:Slint/winit/femtovg 全部移除,数据层原样保留
-- 浏览器管理台补齐桌面版能力:偏好持久化(启动恢复+变化落盘)、定时发送、日志导出、
-  目标设备可编辑下拉(输入即筛选)
-- 新增 API:/api/prefs /api/timer /api/export;/api/settings 增 autoFrame/searchRegex;
-  端口互斥替代单实例互斥(8686)
-- 新增 --help / --no-open;双产物(rtt-web.exe)与 Slint UI 代码退役(git 历史归档)
-- 修复:请求体 camelCase 字段被静默丢弃的 7 处 serde 匹配问题;demo 模式连接校验同源
-
 ## 0.2.1 (2026-09-15)
 
 反馈修复批(QA/UX 验收报告观察项全清):

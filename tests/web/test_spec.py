@@ -10,9 +10,7 @@
 """
 
 import json
-import os
 import subprocess
-import tempfile
 import time
 import urllib.request
 
@@ -21,8 +19,7 @@ from playwright.sync_api import sync_playwright
 
 PORT = 18080
 BASE = f"http://127.0.0.1:{PORT}"
-# 单一产物 mini-rtt-viewer.exe(ADR-11:rtt-web 独立二进制已合并退役)
-EXE = r"target\release\mini-rtt-viewer.exe"
+EXE = r"target\release\rtt-web.exe"
 
 # UX 规格中的 accent 色 #28afe9(getComputedStyle 返回 rgb 形式)
 _ACCENT_RGB = "rgb(40, 175, 233)"
@@ -30,13 +27,7 @@ _ACCENT_RGB = "rgb(40, 175, 233)"
 
 @pytest.fixture(scope="session")
 def server():
-    # 偏好文件隔离(RTT_PREFS_FILE):测试实例使用临时文件,不读/写真实用户偏好;
-    # RTT_WEB_NO_BROWSER=1:测试/无头场景跳过自动打开浏览器
-    fd, prefs_path = tempfile.mkstemp(suffix=".json")
-    os.close(fd)
-    os.unlink(prefs_path)  # 从缺失状态启动,回落默认偏好
-    env = {**os.environ, "RTT_WEB_NO_BROWSER": "1", "RTT_PREFS_FILE": prefs_path}
-    proc = subprocess.Popen([EXE, "--demo-log", "--port", str(PORT)], env=env)
+    proc = subprocess.Popen([EXE, "--demo-log", "--port", str(PORT)])
     for _ in range(50):
         try:
             urllib.request.urlopen(f"{BASE}/api/status", timeout=1)
@@ -45,13 +36,9 @@ def server():
             time.sleep(0.3)
     else:
         proc.terminate()
-        pytest.fail("mini-rtt-viewer 未在 15s 内就绪")
+        pytest.fail("rtt-web 未在 15s 内就绪")
     yield proc
     proc.terminate()
-    try:
-        os.unlink(prefs_path)
-    except FileNotFoundError:
-        pass
 
 
 @pytest.fixture(scope="session")

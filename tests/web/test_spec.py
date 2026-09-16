@@ -10,7 +10,10 @@
 """
 
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 import time
 import urllib.request
 
@@ -19,7 +22,7 @@ from playwright.sync_api import sync_playwright
 
 PORT = 18080
 BASE = f"http://127.0.0.1:{PORT}"
-EXE = r"target\release\rtt-web.exe"
+EXE = r"target\release\mini-rtt-viewer.exe"
 
 # UX 规格中的 accent 色 #28afe9(getComputedStyle 返回 rgb 形式)
 _ACCENT_RGB = "rgb(40, 175, 233)"
@@ -27,7 +30,14 @@ _ACCENT_RGB = "rgb(40, 175, 233)"
 
 @pytest.fixture(scope="session")
 def server():
-    proc = subprocess.Popen([EXE, "--demo-log", "--port", str(PORT)])
+    # --no-window:纯服务模式(不开窗口/托盘,供 playwright 黑盒测试)。
+    # APPDATA 指向临时目录:服务与测试环境隔离,不读不写用户真实偏好
+    # (面板初值恢复走的 /api/prefs 会回填持久化的 chip,干扰下拉交互用例)
+    tmp_appdata = tempfile.mkdtemp(prefix="rtt-test-appdata-")
+    env = {**os.environ, "APPDATA": tmp_appdata}
+    proc = subprocess.Popen(
+        [EXE, "--demo-log", "--no-window", "--port", str(PORT)], env=env
+    )
     for _ in range(50):
         try:
             urllib.request.urlopen(f"{BASE}/api/status", timeout=1)
@@ -36,9 +46,11 @@ def server():
             time.sleep(0.3)
     else:
         proc.terminate()
-        pytest.fail("rtt-web 未在 15s 内就绪")
+        shutil.rmtree(tmp_appdata, ignore_errors=True)
+        pytest.fail("mini-rtt-viewer 未在 15s 内就绪")
     yield proc
     proc.terminate()
+    shutil.rmtree(tmp_appdata, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

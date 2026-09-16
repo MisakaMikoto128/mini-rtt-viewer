@@ -2,17 +2,9 @@
 name = "mini-rtt-viewer"
 version = "0.2.1"
 edition = "2021"
+description = "Mini RTT Viewer — J-Link RTT 查看器:Rust 数据层 + 内嵌 Web 管理台(桌面壳 / 纯服务双形态)"
 
 [dependencies]
-# 精简 features:桌面只需 winit + femtovg;renderer-software 作为显示异常时的兜底
-slint = { version = "1", default-features = false, features = [
-    "std",
-    "compat-1-2",
-    "backend-winit",
-    "renderer-femtovg",
-    "renderer-software",
-    "accessibility",
-] }
 libloading = "0.8"
 anyhow = "1"
 # 字符集解码(UTF-8/GBK/UTF-16 LE/Latin-1/ASCII;Firefox 同款,增量解码跨块安全)
@@ -25,28 +17,25 @@ serde_json = "1"
 regex-lite = "0.1"
 # 字符显示宽度(换行按显示列切:CJK/全角 2 列;零依赖纯表)
 unicode-width = "0.2"
-# 原生文件对话框(保存日志用;Windows 走 IFileDialog,无额外运行时)
-rfd = "0.15"
 # ANSI/VT 转义序列解析(Alacritty/WezTerm 同款状态机;增量式,颜色状态跨块跨行保持)
 vte = "0.13"
-# ---- 浏览器管理台(仅 rtt-web 二进制使用;主 exe 不链接,体积零影响)----
+# ---- 浏览器管理台服务(内嵌 Web UI,桌面壳与 --no-window 共用)----
 # SerialHub 同构:Rust 数据层 + 内嵌 Web UI,浏览器/Playwright 可测
 axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-
-# 浏览器管理台服务:与桌面版共享 lib 数据层,产物独立分发
-[[bin]]
-name = "rtt-web"
-path = "src/bin/rtt-web.rs"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
+# ---- 桌面壳(SerialHub gui.rs 同款:tao 事件循环 + wry WebView + tray-icon)----
+wry = "0.57.0"
+tao = "0.37.0"
+tray-icon = "0.25.0"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
-slint-build = "1"
-# exe 图标嵌入(Windows 资源编译)
-winres = "0.1"
+png = "0.17"   # 构建期把托盘/窗口 PNG 解码成 RGBA(存在才嵌入,见 build.rs)
+winres = "0.1" # exe 内嵌 app.ico(build.rs 仅在 Windows 目标且文件存在时调用)
 
 [profile.release]
-# opt-level 3(性能优先):RTT 数据路径(UTF-8 增量解码/ANSI 解析/行切分)与
-# UI 布局计算受益于向量化与更激进的内联;体积代价见 CHANGELOG 0.1.8 后的对比
+# opt-level 3(性能优先):RTT 数据路径(UTF-8 增量解码/ANSI 解析/行切分)受益于
+# 向量化与更激进的内联
 opt-level = 3
 lto = true
 codegen-units = 1

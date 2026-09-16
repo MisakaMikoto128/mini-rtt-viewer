@@ -190,6 +190,7 @@
         <button id="clear-btn">清空</button>
         <button id="pause-btn">暂停</button>
         <button id="mark-btn">标记</button>
+        <button id="export-btn">导出</button>
       </div>
       <label class="check" style="margin-bottom:8px"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
       <div class="field" style="margin-bottom:8px"><span class="label">间隔</span>
@@ -220,6 +221,9 @@
           <option value="2">CR</option><option value="3">无</option>
         </select></div>
       <label class="check" style="margin-bottom:8px"><input type="checkbox" id="hex-send"> HEX 发送(输入按十六进制字节)</label>
+      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="timer-on"> 定时发送(重发最近发送内容)</label>
+      <div class="field" style="margin-bottom:8px"><span class="label">间隔</span>
+        <input type="text" id="timer-interval" value="1"><span style="font-size:12px;color:var(--muted)">秒</span></div>
       <label for="send-text" style="font-size:12px;color:var(--secondary)">发送到通道 0(Enter 发送)</label>
       <div class="send-row">
         <input type="text" id="send-text" placeholder="hello">
@@ -430,6 +434,25 @@
   function postSettings(patch) {
     return fetch(API + '/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) });
   }
+  // 定时发送:连接态才触发,重发最近一次发送的内容(0.001-999 秒);
+  // 间隔非法自动停,不弹错误
+  $('timer-on').onchange = e => postTimer({ on: e.target.checked });
+  $('timer-interval').addEventListener('change', e => {
+    const v = parseFloat(e.target.value);
+    if (v >= 0.001 && v <= 999) postTimer({ on: $('timer-on').checked, intervalSec: v });
+    else { $('timer-on').checked = false; postTimer({ on: false }); }
+  });
+  function postTimer(body) {
+    const box = $('send-text');
+    if (box.value.trim()) body.text = box.value;  // 可选:显式指定定时内容(默认最近发送)
+    return fetch(API + '/api/timer', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  }
+  // 导出日志:全部行文本附件下载(rtt_<时间戳>.log,服务端 Content-Disposition)
+  $('export-btn').onclick = () => {
+    const a = document.createElement('a');
+    a.href = API + '/api/export'; a.download = '';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
 
   $('pause-btn').onclick = function () {
     const paused = this.textContent === '暂停';
@@ -656,6 +679,8 @@
   sRegexBtn.onclick = () => {
     sregex = !sregex; localStorage.setItem('search.regex', sregex ? '1' : '0');
     refreshToggles(); if (searchOpen) rebuild();
+    // 正则开关同步服务端偏好(重启后面板初值恢复)
+    postSettings({ searchRegex: sregex }).catch(() => {});
   };
   sInput.addEventListener('input', () => {        // 输入即搜:150ms debounce 全量重算
     clearTimeout(sDebT);
@@ -698,6 +723,26 @@
   fetch(API + '/api/devices').then(r => r.json()).then(fillDatalist).catch(() => {});
   fetch(API + '/api/jlinks').then(r => r.json()).then(fillJlinks).catch(() => {});
   fetch(API + '/api/status').then(r => r.json()).then(s => { if (s.device) renderDevice(s.device); }).catch(() => {});
+  // 面板初值恢复:服务端持久化偏好(%APPDATA% prefs.json,500ms 快照)。
+  // 主题/字号仍走 localStorage,不经此通道
+  fetch(API + '/api/prefs').then(r => r.json()).then(p => {
+    if (p.chip) $('chip').value = p.chip;
+    $('iface').value = String(p.ifaceIndex);
+    $('speed').selectedIndex = Math.min(p.speedIndex, $('speed').length - 1);
+    $('channel').selectedIndex = Math.min(p.channel, $('channel').length - 1);
+    $('rx-ending').value = String(p.rxEnding);
+    $('frame-timeout').value = p.frameTimeout;
+    $('encoding').value = String(p.encodingIndex);
+    $('hex-rx').checked = !!p.hexRx;
+    $('auto-frame').checked = !!p.autoFrame;
+    if (p.timerIntervalSec != null) $('timer-interval').value = p.timerIntervalSec;
+    $('timer-on').checked = !!p.timerOn;
+    if (typeof p.searchRegex === 'boolean') {
+      sregex = p.searchRegex;
+      localStorage.setItem('search.regex', sregex ? '1' : '0');
+      refreshToggles();
+    }
+  }).catch(() => {});
 </script>
 </body>
 </html>

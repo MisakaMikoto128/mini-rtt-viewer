@@ -49,8 +49,6 @@ jobs:
           $sha = (Get-FileHash "pack/$name.zip" -Algorithm SHA256).Hash.ToLower()
           Write-Host "=== RELEASE SHA256 ($name.zip) ==="
           Write-Host $sha
-          "pack/$name.zip" >> $env:GITHUB_OUTPUT
-          "sha=$sha" >> $env:GITHUB_OUTPUT
           Get-ChildItem pack
 
       - name: Upload to Release

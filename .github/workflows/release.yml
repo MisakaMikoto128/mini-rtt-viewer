@@ -35,7 +35,7 @@ jobs:
           exit 0
 
       # 产物命名契约:mini-rtt-viewer-<版本>-windows-x86_64.zip,
-      # 双形态包(桌面版 + 浏览器管理台)+ README + LICENSE(解压即用)
+      # 单一 exe(浏览器管理台内含,ADR-11)+ README + LICENSE(解压即用)
       - name: Collect artifact
         shell: pwsh
         run: |
@@ -44,7 +44,6 @@ jobs:
           $name = "mini-rtt-viewer-$ver-windows-x86_64"
           New-Item -ItemType Directory -Force -Path "pack/$name" | Out-Null
           Copy-Item target/release/mini-rtt-viewer.exe "pack/$name/"
-          Copy-Item target/release/rtt-web.exe "pack/$name/"
           Copy-Item README.md,LICENSE "pack/$name/"
           Compress-Archive -Force -Path "pack/$name" -DestinationPath "pack/$name.zip"
           Get-ChildItem pack

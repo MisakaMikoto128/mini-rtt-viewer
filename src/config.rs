@@ -98,8 +98,13 @@ impl Default for StoredPrefs {
 }
 
 /// 配置文件路径:`%APPDATA%/MiniRttViewer/prefs.json`;无 APPDATA 环境变量时
-/// 返回 None(保存静默跳过,功能照常)
+/// 返回 None(保存静默跳过,功能照常)。
+/// 测试/无头场景可设 `RTT_PREFS_FILE` 重定向到指定文件(黑盒套件隔离,
+/// 不读写真实用户偏好)
 fn prefs_path() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("RTT_PREFS_FILE") {
+        return Some(PathBuf::from(p));
+    }
     std::env::var("APPDATA")
         .ok()
         .map(|d| PathBuf::from(d).join("MiniRttViewer").join("prefs.json"))

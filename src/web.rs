@@ -599,16 +599,12 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                         // 十六进制大写文本再上屏,演示 HEX 接收效果。仅 demo
                         // 生效——真机路径已在 worker 内转换,这里再转就是二次
                         // 转换(真机 hex 文本会被再 hex 一次)
-                        let shown = if shared.demo_mode
-                            && shared.hex_rx.load(Ordering::Relaxed)
-                        {
+                        let shown = if shared.demo_mode && shared.hex_rx.load(Ordering::Relaxed) {
                             text_to_hex_upper(&text)
                         } else {
                             text
                         };
-                        shared
-                            .rx_bytes
-                            .fetch_add(raw_len as u64, Ordering::Relaxed);
+                        shared.rx_bytes.fetch_add(raw_len as u64, Ordering::Relaxed);
                         pump.absorb_text(&shown, rx_ending);
                     }
                 }
@@ -636,8 +632,11 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                         // pump,严禁再借——见 AGENTS「tick 持 RefCell borrow」条)
                         pump.push_colored_line(&state_marker_line(connected), MARK_COLOR);
                         // 会话计时:连接记起点,断开清零
-                        *shared.session_start.lock().unwrap() =
-                            if connected { Some(Instant::now()) } else { None };
+                        *shared.session_start.lock().unwrap() = if connected {
+                            Some(Instant::now())
+                        } else {
+                            None
+                        };
                         if let Some(cb) = &shared.on_state {
                             cb(ServiceEvent::ConnectedChanged(connected));
                         }
@@ -1061,10 +1060,7 @@ async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
         match serde_json::from_slice(&body) {
             Ok(r) => r,
             Err(e) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("请求体 JSON 解析失败:{e}"),
-                )
+                return (StatusCode::BAD_REQUEST, format!("请求体 JSON 解析失败:{e}"))
                     .into_response()
             }
         }
@@ -1215,10 +1211,7 @@ fn marker_line(label: &str, stamp: &str) -> String {
 
 /// State 迁移的自动标记行:已连接 / 已断开
 fn state_marker_line(connected: bool) -> String {
-    marker_line(
-        if connected { "已连接" } else { "已断开" },
-        &hms_stamp(),
-    )
+    marker_line(if connected { "已连接" } else { "已断开" }, &hms_stamp())
 }
 
 /// worker 状态文案 → /api/status 展示文案:去横幅圆点前缀

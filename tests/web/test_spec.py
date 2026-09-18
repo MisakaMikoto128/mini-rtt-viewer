@@ -377,12 +377,13 @@ def test_ui_layout_p0(page):
     assert 410 <= aside_w <= 430, f"左面板宽应 420±10:实测 {aside_w}"
 
     # 2) 控件高 40±2(select/input/combo 容器 40,按钮 42;全部在容差内)
+    #    例外:#send-text/#send-btn 为加高的多行发送区,单独断言 72±2
     heights = page.evaluate(
         """() => {
             const h = el => el.getBoundingClientRect().height;
             const ids = ['jlink', 'chip-combo', 'iface', 'speed', 'channel',
                          'connect-btn', 'reset-btn', 'clear-btn', 'pause-btn',
-                         'mark-btn', 'export-btn', 'send-text', 'send-btn',
+                         'mark-btn', 'export-btn',
                          'rx-ending', 'encoding', 'tx-ending', 'timer-interval',
                          'frame-timeout', 'theme'];
             return Object.fromEntries(ids.map(id => [id, h(document.getElementById(id))]));
@@ -390,6 +391,13 @@ def test_ui_layout_p0(page):
     )
     bad = {k: v for k, v in heights.items() if not (38 <= v <= 42)}
     assert not bad, f"控件高应 40±2:越界 {bad}"
+    send_h = page.evaluate(
+        "(() => { const t = document.getElementById('send-text').getBoundingClientRect().height;"
+        " const b = document.getElementById('send-btn').getBoundingClientRect().height;"
+        " return {t: Math.round(t), b: Math.round(b), aligned: Math.abs(t - b) < 2}; })()"
+    )
+    assert 70 <= send_h["t"] <= 74 and 70 <= send_h["b"] <= 74 and send_h["aligned"], \
+        f"发送区应 72±2 且按钮贴底:实测 {send_h}"
 
     # 3) 日志行高 32±1(computed line-height + 未换行短行实际高度)
     lh = page.evaluate("parseFloat(getComputedStyle(document.getElementById('log')).lineHeight)")

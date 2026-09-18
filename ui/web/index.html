@@ -6,66 +6,110 @@
 <title>Mini RTT Viewer — 管理台</title>
 <link rel="icon" type="image/png" href="favicon.png">
 <style>
-  /* 主题表(插件化:THEMES 加一项即新主题;与桌面版四主题对齐) */
+  /* 主题表(四主题按降饱和钢蓝系统一重配;与桌面版四主题对齐)
+     基准:body/日志底 #0E1013、卡片 #16181D、边框 #262A31、accent #2B6E8F */
   :root, :root[data-theme="dark"] {
-    --bg:#1b1b1f; --panel:#222228; --card:#2a2a31; --input:#26262c;
-    --text:#e8e8ea; --secondary:#a0a0a8; --muted:#6a6a72; --border:#3a3a42;
-    --accent:#28afe9; --ok:#4caf50; --err:#cc4455; --log-bg:#222222; --log-fg:#dddddd;
+    --bg:#0E1013; --panel:#0E1013; --card:#16181D; --input:#0F1216; --btn:#232830;
+    --text:#E6E8EB; --secondary:#9AA0A8; --muted:#6A7078; --border:#262A31;
+    --accent:#2B6E8F; --ok:#4C9E62; --err:#C95F68; --danger:#A84E58;
+    --log-bg:#0E1013; --log-fg:#D8DBE0; --log-fs:15px;
     --search-hit:rgba(255,213,79,.28); --search-hit-current:rgba(255,152,0,.55);
   }
   :root[data-theme="light"] {
-    --bg:#f2f3f5; --panel:#ffffff; --card:#eceef1; --input:#ffffff;
-    --text:#1a1a1e; --secondary:#55555e; --muted:#8a8a94; --border:#d0d3d9;
-    --accent:#1c8cc4; --ok:#2e7d32; --err:#cc3344; --log-bg:#ffffff; --log-fg:#222222;
+    --bg:#EEF1F4; --panel:#EEF1F4; --card:#FFFFFF; --input:#F3F5F7; --btn:#E7EBEF;
+    --text:#1E2226; --secondary:#5F6B76; --muted:#8B949D; --border:#D3D8DE;
+    --accent:#2B6E8F; --ok:#2E7D32; --err:#C4454E; --danger:#C05A54;
+    --log-bg:#FFFFFF; --log-fg:#24282C;
     --search-hit:rgba(230,180,0,.40); --search-hit-current:rgba(255,145,0,.60);
   }
   :root[data-theme="oled"] {
-    --bg:#000000; --panel:#0a0a0a; --card:#111114; --input:#060608;
-    --text:#e0e0e0; --secondary:#909096; --muted:#5c5c62; --border:#26262c;
-    --accent:#28afe9; --ok:#4caf50; --err:#ff5566; --log-bg:#000000; --log-fg:#d8d8d8;
+    --bg:#000000; --panel:#000000; --card:#0C0E11; --input:#050607; --btn:#181C22;
+    --text:#E2E4E7; --secondary:#9AA0A8; --muted:#5E646B; --border:#22262C;
+    --accent:#2B6E8F; --ok:#4C9E62; --err:#D0606A; --danger:#B0505A;
+    --log-bg:#000000; --log-fg:#D4D7DB;
     --search-hit:rgba(255,213,79,.33); --search-hit-current:rgba(255,152,0,.60);
   }
   :root[data-theme="sepia"] {
-    --bg:#f5efdc; --panel:#fbf7e8; --card:#efe8d2; --input:#fdf9ee;
-    --text:#3d3322; --secondary:#7a6c4f; --muted:#9a8c6c; --border:#d8cfae;
-    --accent:#1c8cc4; --ok:#2e7d32; --err:#b34a44; --log-bg:#faf5e4; --log-fg:#4a3f2a;
+    --bg:#F0E8D5; --panel:#F0E8D5; --card:#F9F3E3; --input:#F2EBD9; --btn:#EAE0C6;
+    --text:#3A3222; --secondary:#7C6E52; --muted:#9C8F70; --border:#D8CCAA;
+    --accent:#356A80; --ok:#4E7D46; --err:#B34A44; --danger:#AC5548;
+    --log-bg:#F6F0DF; --log-fg:#463C28;
     --search-hit:rgba(210,160,30,.35); --search-hit-current:rgba(224,120,32,.55);
   }
   * { box-sizing: border-box; margin: 0; }
   body { background: var(--bg); color: var(--text); font: 13px/1.5 "Segoe UI", system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  select, input, button { background: var(--input); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 10px; font: inherit; }
+
+  /* 控件基线(UX 规格):统一高 40px / 字号 14px / 圆角 6px;按钮高 42px
+     (特例:#send-btn 115×40;搜索条内 s-btn / combo 箭头由更specific选择器覆盖) */
+  select, input:not([type="checkbox"]), button {
+    background: var(--input); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0 12px; font-family: inherit; font-size: 14px; height: 40px; }
   select:focus, input:focus, button:focus { outline: none; border-color: var(--accent); }
-  button { cursor: pointer; }
+  button { cursor: pointer; height: 42px; padding: 0 14px; background: var(--btn); }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .45; cursor: default; }
+  select:disabled, input:disabled { opacity: .55; }
   button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
-  label.check input { width: auto; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.12); }
+  button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+  label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--secondary);
+    cursor: pointer; min-height: 20px; }
+  label.check input { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; flex: none; }
+  .unit { font-size: 12px; color: var(--muted); }
 
   main { flex: 1; display: flex; min-height: 0; }
-  aside { width: 280px; min-width: 280px; background: var(--panel); border-right: 1px solid var(--border);
-    overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 14px; }
-  .group { border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
-  .group > .title { font-size: 12px; color: var(--muted); letter-spacing: 1px; margin-bottom: 8px; }
-  .field { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .field > .label { width: 84px; min-width: 84px; font-size: 12px; color: var(--secondary); }
-  .field > select, .field > input { flex: 1; min-width: 0; }
+  /* 左面板 420px(1280 视口下约 1/3);组间距 12px,内容超出才滚动 */
+  aside { width: 420px; min-width: 420px; background: var(--panel); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 12px; }
+  /* 分组卡:bg #16181D / border 1px #262A31 / radius 8px / padding 14px */
+  .group { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+    display: flex; flex-direction: column; gap: 6px; }
+  .group > .title, summary.title { font-size: 14px; font-weight: 600; color: var(--text); }
+  summary.title { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; }
+  summary.title::-webkit-details-marker { display: none; }
+  summary.title::before { content: '▸'; color: var(--muted); font-size: 12px; }
+  details[open] > summary.title::before { content: '▾'; }
+  /* 标签在控件上方:label 13px #9AA0A8 在上,控件全宽在下 */
+  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .field > .label { font-size: 13px; line-height: 1.2; color: var(--secondary); }
+  .field > select, .field > input, .field > .combo { width: 100%; }
+  /* .combo 的 flex:1 是给横排共享宽度用的;在纵向 .field 里必须关掉,否则
+     flex-basis:0 吃进主轴(纵向=高度)把容器压瘪 */
+  .field > .combo { flex: none; }
   .row2 { display: flex; gap: 8px; }
-  .row2 > * { flex: 1; min-width: 0; }
-  .btn-col { display: flex; flex-direction: column; gap: 8px; }
+  .row2 > .field { flex: 1; min-width: 0; }
   .btn-row { display: flex; gap: 8px; }
-  .btn-row button { flex: 1; }
+  .btn-row button { flex: 1; padding: 0; }
+  /* 断帧行合并:checkbox + label + input(80px)+ ms 同排 */
+  .aframe-row { display: flex; align-items: center; gap: 8px; }
+  .aframe-row label.check { flex: 1; }
+  #frame-timeout { width: 80px; flex: none; }
+  .check2 { display: flex; gap: 12px; }
+  .check2 > label.check { flex: 1; }
+  /* 字号 A± 与主题下拉同区(接收组底部) */
+  .theme-row { display: flex; align-items: center; gap: 8px; }
+  .theme-row button { width: 44px; padding: 0; flex: none; }
+  .theme-row select { flex: 1; min-width: 0; }
+  .info-grid { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px 10px; font-size: 12px; }
+  .info-grid .k { color: var(--secondary); }
 
+  /* 右列:日志(flex:1)+ 发送条(通栏,border-top 分隔) */
+  #content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   /* #log 包一层 position:relative wrapper:搜索条浮层锚定其视口右上,
      绝对定位不占用流内空间 → 不改变 #log 可用宽高(无 reflow) */
-  #log-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
+  #log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
   #log { flex: 1; min-width: 0; overflow-y: auto; background: var(--log-bg); color: var(--log-fg);
-    font-family: Consolas, monospace; font-size: var(--log-fs, 13px); line-height: 1.5; padding: 8px 12px; }
-  #log .row { white-space: pre-wrap; word-break: break-all; min-height: 1.5em; }
+    font-family: Consolas, monospace; font-size: var(--log-fs, 15px); line-height: 32px; padding: 8px 12px; }
+  #log .row { white-space: pre-wrap; word-break: break-all; min-height: 32px; }
   /* 命中标记:词级 mark,保留行内 ANSI span 结构(命中子串包 mark,前景色不变) */
   #log mark.s-hit { background: var(--search-hit); color: inherit; border-radius: 2px; }
   #log mark.s-hit.cur { background: var(--search-hit-current); }
+
+  /* 发送条:日志区下方通栏,input flex:1 高 40px + 发送按钮 115×40 */
+  #send-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-top: 1px solid var(--border); background: var(--panel); }
+  #send-text { flex: 1; min-width: 0; }
+  #send-btn { width: 115px; flex: none; height: 40px; }
 
   /* VS Code 式日志搜索条(P0):浮于 #log 视口右上,深浅两档投影 */
   #search-bar { position: absolute; top: 8px; right: 12px; width: 340px; height: 32px;
@@ -89,28 +133,31 @@
   #s-count { font-size: 12px; color: var(--muted); min-width: 36px; text-align: center;
     white-space: nowrap; }
   #s-count.err { color: var(--err); }
-  .info-grid { display: grid; grid-template-columns: 84px 1fr; gap: 4px 8px; font-size: 12px; }
-  .info-grid .k { color: var(--secondary); }
 
-  footer { display: flex; gap: 16px; padding-right: 16px; padding: 8px 16px; background: var(--panel);
+  /* 日志区右键菜单(复制选中文本 / 全选) */
+  #ctx-menu { position: fixed; z-index: 60; min-width: 150px; background: var(--card);
+    border: 1px solid var(--border); border-radius: 8px; padding: 4px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+  #ctx-menu[hidden] { display: none; }
+  .ctx-item { padding: 7px 12px; font-size: 13px; border-radius: 5px; cursor: pointer; color: var(--text); }
+  .ctx-item:hover { background: var(--accent); color: #fff; }
+  .ctx-item.disabled { opacity: .4; pointer-events: none; }
+
+  footer { display: flex; gap: 16px; padding: 8px 16px; background: var(--panel);
     border-top: 1px solid var(--border); font-size: 12px; color: var(--secondary); align-items: center; }
   footer .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); }
   footer .dot.on { background: var(--ok); }
   footer .spacer { flex: 1; }
-  header { display: flex; align-items: center; gap: 12px; padding: 8px 16px;
-    background: var(--panel); border-bottom: 1px solid var(--border); }
-  header .title { font-weight: 700; }
-  header .spacer { flex: 1; }
-  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+
   /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互)
      容器化:边框/圆角/底色收归 .combo,input 与箭头透明无边框(P0-1/P2-9) */
   .combo { position: relative; flex: 1; min-width: 0; display: flex; height: 40px;
-    background: var(--input); border: 1px solid var(--border); border-radius: 8px; }
+    background: var(--input); border: 1px solid var(--border); border-radius: 6px; }
   .combo:focus-within { border: 2px solid var(--accent); }
   .combo > input { flex: 1; min-width: 0; border: none; background: transparent;
-    padding: 9px 12px; font-size: 14px; }
+    height: 100%; padding: 0 12px; font-size: 14px; }
   .combo > input:focus { border: none; }
-  .combo > .arrow { width: 34px; min-width: 34px; border: none; background: transparent;
+  .combo > .arrow { width: 34px; min-width: 34px; height: 100%; border: none; background: transparent;
     color: var(--accent); padding: 0; display: flex; align-items: center; justify-content: center;
     cursor: pointer; }
   .combo > .arrow:hover { opacity: .75; }
@@ -133,18 +180,6 @@
 </style>
 </head>
 <body>
-<header>
-  <span class="title">Mini RTT Viewer</span>
-  <span class="hint">浏览器管理台(与桌面版同一数据管线)</span>
-  <span class="spacer"></span>
-  <span class="hint">主题</span>
-  <select id="theme" style="width:130px">
-    <option value="dark">深色</option>
-    <option value="light">浅色</option>
-    <option value="oled">OLED 纯黑</option>
-    <option value="sepia">护眼暖色</option>
-  </select>
-</header>
 <main>
   <aside>
     <div class="group">
@@ -159,23 +194,20 @@
           </button>
           <div class="combo-list" id="chip-list"></div>
         </div></div>
-      <div class="field"><span class="label">接口</span>
-        <select id="iface"><option value="0">SWD</option><option value="1">JTAG</option></select></div>
-      <div class="row2 field">
-        <div style="flex:1"><div style="font-size:12px;color:var(--secondary);margin-bottom:4px">速度 (kHz)</div>
-          <select id="speed" style="width:100%"><option>100</option><option>200</option><option>500</option><option selected>1000</option><option>2000</option><option>4000</option><option>8000</option><option>12000</option></select></div>
-        <div style="flex:1"><div style="font-size:12px;color:var(--secondary);margin-bottom:4px">RTT 通道</div>
-          <select id="channel" style="width:100%"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select></div>
+      <div class="row2">
+        <div class="field"><span class="label">接口</span>
+          <select id="iface"><option value="0">SWD</option><option value="1">JTAG</option></select></div>
+        <div class="field"><span class="label">速度 (kHz)</span>
+          <select id="speed"><option>100</option><option>200</option><option>500</option><option selected>1000</option><option>2000</option><option>4000</option><option>8000</option><option>12000</option></select></div>
       </div>
-      <div class="btn-col">
-        <button id="connect-btn" class="primary">连接</button>
-        <button id="disconnect-btn" disabled>断开</button>
-        <button id="reset-btn" disabled>重置目标</button>
-      </div>
+      <div class="field"><span class="label">RTT 通道</span>
+        <select id="channel"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select></div>
+      <button id="connect-btn" class="primary">连接</button>
+      <button id="reset-btn" disabled>重置目标</button>
     </div>
 
-    <details class="group" open>
-      <div class="title">► 设备信息</div>
+    <details class="group" id="device-details">
+      <summary class="title">设备信息</summary>
       <div class="info-grid" id="device-info">
         <span class="k">固件版本</span><span>—</span>
         <span class="k">目标芯片</span><span>—</span>
@@ -186,64 +218,79 @@
 
     <div class="group">
       <div class="title">接收</div>
-      <div class="btn-row" style="margin-bottom:8px">
+      <div class="btn-row">
         <button id="clear-btn">清空</button>
         <button id="pause-btn">暂停</button>
         <button id="mark-btn">标记</button>
         <button id="export-btn">导出</button>
       </div>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
-      <div class="field" style="margin-bottom:8px"><span class="label">间隔</span>
-        <input type="text" id="frame-timeout" value="20"><span style="font-size:12px;color:var(--muted)">ms</span></div>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="power" disabled> 电源输出 (19 脚)</label>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
-      <div class="btn-row" style="margin-bottom:8px">
-        <button id="A-minus">A-</button><button id="A-plus">A+</button>
+      <div class="aframe-row">
+        <label class="check"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
+        <input type="text" id="frame-timeout" value="20">
+        <span class="unit">ms</span>
       </div>
-      <div class="field" style="margin-bottom:8px"><span class="label">行尾</span>
-        <select id="rx-ending">
-          <option value="0" selected>自动</option><option value="1">CRLF</option>
-          <option value="2">LF</option><option value="3">CR</option><option value="4">无</option>
-        </select></div>
-      <div class="field" style="margin-bottom:8px"><span class="label">字符集</span>
-        <select id="encoding">
-          <option value="0" selected>UTF-8</option><option value="1">GBK</option>
-          <option value="2">UTF-16 LE</option><option value="3">Latin-1</option><option value="4">ASCII</option>
-        </select></div>
+      <div class="check2">
+        <label class="check"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
+        <label class="check"><input type="checkbox" id="power" disabled> 电源输出 (19 脚)</label>
+      </div>
+      <div class="row2">
+        <div class="field"><span class="label">行尾</span>
+          <select id="rx-ending">
+            <option value="0" selected>自动</option><option value="1">CRLF</option>
+            <option value="2">LF</option><option value="3">CR</option><option value="4">无</option>
+          </select></div>
+        <div class="field"><span class="label">字符集</span>
+          <select id="encoding">
+            <option value="0" selected>UTF-8</option><option value="1">GBK</option>
+            <option value="2">UTF-16 LE</option><option value="3">Latin-1</option><option value="4">ASCII</option>
+          </select></div>
+      </div>
       <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收(动态生效)</label>
+      <div class="theme-row">
+        <button id="A-minus" title="减小日志字号">A-</button>
+        <button id="A-plus" title="增大日志字号">A+</button>
+        <select id="theme">
+          <option value="dark">深色</option>
+          <option value="light">浅色</option>
+          <option value="oled">OLED 纯黑</option>
+          <option value="sepia">护眼暖色</option>
+        </select>
+      </div>
     </div>
 
     <div class="group">
       <div class="title">发送</div>
-      <div class="field" style="margin-bottom:8px"><span class="label">发送行尾</span>
-        <select id="tx-ending">
-          <option value="0" selected>CRLF</option><option value="1">LF</option>
-          <option value="2">CR</option><option value="3">无</option>
-        </select></div>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="hex-send"> HEX 发送(输入按十六进制字节)</label>
-      <label class="check" style="margin-bottom:8px"><input type="checkbox" id="timer-on"> 定时发送(重发最近发送内容)</label>
-      <div class="field" style="margin-bottom:8px"><span class="label">间隔</span>
-        <input type="text" id="timer-interval" value="1"><span style="font-size:12px;color:var(--muted)">秒</span></div>
-      <label for="send-text" style="font-size:12px;color:var(--secondary)">发送到通道 0(Enter 发送)</label>
-      <div class="send-row">
-        <input type="text" id="send-text" placeholder="hello">
-        <button id="send-btn" disabled>发送</button>
+      <div class="row2">
+        <div class="field"><span class="label">发送行尾</span>
+          <select id="tx-ending">
+            <option value="0" selected>CRLF</option><option value="1">LF</option>
+            <option value="2">CR</option><option value="3">无</option>
+          </select></div>
+        <div class="field"><span class="label">定时间隔 (秒)</span>
+          <input type="text" id="timer-interval" value="1"></div>
       </div>
-      <p class="hint">行尾 / 字符集 / HEX 接收 / 断帧间隔均动态生效,无需重连。</p>
+      <label class="check"><input type="checkbox" id="hex-send"> HEX 发送(输入按十六进制字节)</label>
+      <label class="check"><input type="checkbox" id="timer-on"> 定时发送(重发最近发送内容)</label>
     </div>
   </aside>
-  <div id="log-wrap">
-    <div id="log"></div>
-    <div id="search-bar" hidden>
-      <button class="s-btn" id="s-case" title="区分大小写" tabindex="-1">Aa</button>
-      <button class="s-btn" id="s-regex" title="使用正则表达式" tabindex="-1">.*</button>
-      <input id="s-input" type="text" placeholder="查找" spellcheck="false" autocomplete="off">
-      <span id="s-count">—</span>
-      <button class="s-btn" id="s-prev" title="上一处 (Shift+Enter)" tabindex="-1">↑</button>
-      <button class="s-btn" id="s-next" title="下一处 (Enter)" tabindex="-1">↓</button>
-      <button class="s-btn" id="s-close" title="关闭 (Esc)" tabindex="-1">×</button>
+  <section id="content">
+    <div id="log-wrap">
+      <div id="log"></div>
+      <div id="search-bar" hidden>
+        <button class="s-btn" id="s-case" title="区分大小写" tabindex="-1">Aa</button>
+        <button class="s-btn" id="s-regex" title="使用正则表达式" tabindex="-1">.*</button>
+        <input id="s-input" type="text" placeholder="查找" spellcheck="false" autocomplete="off">
+        <span id="s-count">—</span>
+        <button class="s-btn" id="s-prev" title="上一处 (Shift+Enter)" tabindex="-1">↑</button>
+        <button class="s-btn" id="s-next" title="下一处 (Enter)" tabindex="-1">↓</button>
+        <button class="s-btn" id="s-close" title="关闭 (Esc)" tabindex="-1">×</button>
+      </div>
     </div>
-  </div>
+    <div id="send-bar">
+      <input type="text" id="send-text" placeholder="发送到通道 0… (Enter 发送)" autocomplete="off">
+      <button id="send-btn" disabled>发送</button>
+    </div>
+  </section>
 </main>
 <footer>
   <span class="dot" id="dot"></span>
@@ -254,12 +301,36 @@
   <span id="rx">RX 0 B</span>
   <span id="rows">0 行</span>
 </footer>
+<div id="ctx-menu" hidden>
+  <div class="ctx-item" id="ctx-copy">复制选中文本</div>
+  <div class="ctx-item" id="ctx-selectall">全选</div>
+</div>
 <script>
   const $ = id => document.getElementById(id);
   const API = location.origin;
   const log = $('log');
   const fmt = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
   let connected = false, autoScroll = true;
+
+  // 偏好 localStorage(key 前缀 web-):change 写入,加载回填;
+  // /api/prefs(服务端持久化)到达后覆盖其管辖字段,此处为离线/失败兜底
+  function lsGet(k) { return localStorage.getItem('web-' + k); }
+  function lsSet(k, v) { localStorage.setItem('web-' + k, v); }
+  (function restorePrefs() {
+    const g = lsGet;
+    if (g('rx-ending')) $('rx-ending').value = g('rx-ending');
+    if (g('tx-ending')) $('tx-ending').value = g('tx-ending');
+    if (g('encoding')) $('encoding').value = g('encoding');
+    if (g('channel') !== null && g('channel') !== '') $('channel').value = g('channel');
+    if (g('iface')) $('iface').value = g('iface');
+    const sp = g('speed');
+    if (sp !== null && sp !== '') $('speed').selectedIndex = Math.min(+sp, $('speed').length - 1);
+    if (g('hex-rx')) $('hex-rx').checked = g('hex-rx') === '1';
+    if (g('hex-send')) $('hex-send').checked = g('hex-send') === '1';
+    if (g('auto-frame')) $('auto-frame').checked = g('auto-frame') === '1';
+    if (g('auto-scroll')) { $('auto-scroll').checked = g('auto-scroll') === '1'; autoScroll = $('auto-scroll').checked; }
+    if (g('frame-timeout')) $('frame-timeout').value = g('frame-timeout');
+  })();
 
   function appendRow(row) {
     const div = document.createElement('div');
@@ -312,13 +383,15 @@
       $('rows').textContent = m.rows + ' 行';
     }
   }
+  // 单只主按钮:「连接」(accent)⇄「断开」(红色系 danger)切换
   function setState(on, status) {
     connected = on;
     $('dot').classList.toggle('on', on);
     if (status) $('status').textContent = status.replace('● ', '');
-    $('connect-btn').textContent = on ? '已连接' : '连接';
-    $('connect-btn').disabled = on;
-    $('disconnect-btn').disabled = !on;
+    const btn = $('connect-btn');
+    btn.textContent = on ? '断开' : '连接';
+    btn.classList.toggle('danger', on);
+    btn.classList.toggle('primary', !on);
     $('reset-btn').disabled = !on;
     $('power').disabled = !on;
     $('send-btn').disabled = !on;
@@ -326,6 +399,7 @@
   }
   function renderDevice(d) {
     if (!d) return;
+    $('device-details').open = true; // 有设备数据时展开(平时折叠保持面板一屏)
     const g = $('device-info');
     g.innerHTML = '';
     const put = (k, v) => {
@@ -418,18 +492,25 @@
     fetch(API + '/api/connect', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
       .then(r => { if (!r.ok) r.text().then(t => { $('status').textContent = t; }); });
   }
-  $('connect-btn').onclick = connect;
-  $('disconnect-btn').onclick = () => fetch(API + '/api/disconnect', { method: 'POST' });
+  function disconnect() {
+    fetch(API + '/api/disconnect', { method: 'POST' });
+  }
+  $('connect-btn').onclick = () => { connected ? disconnect() : connect(); };
   $('reset-btn').onclick = () => fetch(API + '/api/reset', { method: 'POST' });
   $('power').onchange = e => fetch(API + '/api/power', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ on: e.target.checked }) });
 
   // 运行时设置:changed → POST settings(worker 原子热切换,动态生效)
-  $('rx-ending').onchange = e => postSettings({ rxEnding: +e.target.value });
-  $('encoding').onchange = e => postSettings({ encodingIndex: +e.target.value });
-  $('hex-rx').onchange = e => postSettings({ hexRx: e.target.checked });
+  // 断帧间隔 clamp 1-200(change 时夹取)+ localStorage 持久化
+  $('rx-ending').onchange = e => { postSettings({ rxEnding: +e.target.value }); lsSet('rx-ending', e.target.value); };
+  $('encoding').onchange = e => { postSettings({ encodingIndex: +e.target.value }); lsSet('encoding', e.target.value); };
+  $('hex-rx').onchange = e => { postSettings({ hexRx: e.target.checked }); lsSet('hex-rx', e.target.checked ? '1' : '0'); };
   $('frame-timeout').addEventListener('change', e => {
-    const v = parseInt(e.target.value, 10);
-    if (!isNaN(v)) postSettings({ frameTimeout: v });
+    let v = parseInt(e.target.value, 10);
+    if (isNaN(v)) v = 20;
+    v = Math.min(200, Math.max(1, v));
+    e.target.value = String(v);
+    postSettings({ frameTimeout: v });
+    lsSet('frame-timeout', String(v));
   });
   function postSettings(patch) {
     return fetch(API + '/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) });
@@ -461,24 +542,114 @@
   };
   $('clear-btn').onclick = () => fetch(API + '/api/clear', { method: 'POST' }).then(() => resetRows());
   $('mark-btn').onclick = () => fetch(API + '/api/mark', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: '' }) });
-  $('send-btn').onclick = send;
-  $('send-text').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
-  function send() {
-    const input = $('send-text');
-    if (!input.value.trim()) return;
-    fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: input.value }) })
-      .then(r => { if (r.ok) input.value = ''; });
-  }
-  $('auto-scroll').onchange = e => { autoScroll = e.target.checked; if (autoScroll) scrollBottom(); };
 
-  // 字号 A±(纯前端,localStorage 记忆)
-  let logFs = +(localStorage.getItem('web-log-fs') || 13);
-  function applyFs() { log.style.fontSize = logFs + 'px'; localStorage.setItem('web-log-fs', logFs); }
+  // 发送 + 会话内历史:↑ 浏览(最新在前)/ ↓ 返回 / ↓ 到底恢复草稿;
+  // IME composing 期间不响应方向键与 Enter
+  const sendBox = $('send-text');
+  const sendHistory = [];
+  let histIdx = -1, draft = '';
+  sendBox.addEventListener('keydown', e => {
+    if (e.isComposing || e.keyCode === 229) return; // IME 组合输入中
+    if (e.key === 'Enter') { e.preventDefault(); send(); return; }
+    if (e.key === 'ArrowUp') {
+      if (!sendHistory.length || histIdx >= sendHistory.length - 1) return;
+      if (histIdx === -1) draft = sendBox.value;
+      histIdx++;
+      sendBox.value = sendHistory[histIdx];
+      e.preventDefault();
+    } else if (e.key === 'ArrowDown') {
+      if (histIdx === -1) return;
+      histIdx--;
+      sendBox.value = histIdx === -1 ? draft : sendHistory[histIdx];
+      e.preventDefault();
+    }
+  });
+  sendBox.addEventListener('input', () => { histIdx = -1; }); // 编辑即回到草稿模式
+  $('send-btn').onclick = send;
+  function send() {
+    if (!sendBox.value.trim()) return;
+    fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: sendBox.value }) })
+      .then(r => {
+        if (r.ok) {
+          const v = sendBox.value;
+          const i = sendHistory.indexOf(v);
+          if (i >= 0) sendHistory.splice(i, 1);
+          sendHistory.unshift(v);
+          if (sendHistory.length > 50) sendHistory.pop();
+          histIdx = -1; draft = '';
+          sendBox.value = '';
+        }
+      });
+  }
+  $('auto-scroll').onchange = e => { autoScroll = e.target.checked; lsSet('auto-scroll', autoScroll ? '1' : '0'); if (autoScroll) scrollBottom(); };
+
+  // 面板偏好 localStorage 写入(发送组/连接组控件,加载时已回填)
+  $('tx-ending').addEventListener('change', e => lsSet('tx-ending', e.target.value));
+  $('channel').addEventListener('change', e => lsSet('channel', e.target.value));
+  $('iface').addEventListener('change', e => lsSet('iface', e.target.value));
+  $('speed').addEventListener('change', e => lsSet('speed', String(e.target.selectedIndex)));
+  $('hex-send').addEventListener('change', e => lsSet('hex-send', e.target.checked ? '1' : '0'));
+  $('auto-frame').addEventListener('change', e => lsSet('auto-frame', e.target.checked ? '1' : '0'));
+
+  // ===== 日志区右键菜单 + 拖选自动复制 =====
+  const ctxMenu = $('ctx-menu');
+  // 复制:优先 navigator.clipboard(安全上下文);失败(无焦点/无 API)退回 execCommand
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).catch(fallbackCopy.bind(null, t));
+    } else { fallbackCopy(t); }
+  }
+  function fallbackCopy(t) {
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* 无剪贴板权限时静默 */ }
+    ta.remove();
+  }
+  function openCtxMenu(x, y) {
+    ctxMenu.hidden = false;
+    const t = selectionInLog();
+    $('ctx-copy').classList.toggle('disabled', !t);
+    const w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
+    ctxMenu.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
+    ctxMenu.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
+  }
+  log.addEventListener('contextmenu', e => { e.preventDefault(); openCtxMenu(e.clientX, e.clientY); });
+  window.addEventListener('mousedown', e => { if (!ctxMenu.contains(e.target)) ctxMenu.hidden = true; });
+  window.addEventListener('blur', () => { ctxMenu.hidden = true; });
+  $('ctx-copy').addEventListener('click', () => {
+    const t = selectionInLog();
+    if (t) copyText(t);
+    ctxMenu.hidden = true;
+  });
+  $('ctx-selectall').addEventListener('click', () => {
+    const range = document.createRange();
+    range.selectNodeContents(log);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    ctxMenu.hidden = true;
+  });
+  // 拖选 mouseup 后自动复制选中文本(需选中非空)
+  log.addEventListener('mouseup', () => {
+    setTimeout(() => {
+      const t = selectionInLog();
+      if (t) copyText(t);
+    }, 0);
+  });
+
+  // 字号 A±(纯前端,localStorage 记忆;--log-fs 默认 15,范围 9-30)
+  let logFs = +(lsGet('log-fs') || localStorage.getItem('web-log-fs') || 15);
+  function applyFs() {
+    document.documentElement.style.setProperty('--log-fs', logFs + 'px');
+    lsSet('log-fs', String(logFs));
+  }
   $('A-minus').onclick = () => { logFs = Math.max(9, logFs - 1); applyFs(); };
   $('A-plus').onclick = () => { logFs = Math.min(30, logFs + 1); applyFs(); };
   applyFs();
 
-  // 主题(localStorage 记忆)
+  // 主题(localStorage 记忆;下拉已迁入左面板接收组底部,与 A± 同区)
   const themeSel = $('theme');
   themeSel.onchange = () => { document.documentElement.dataset.theme = themeSel.value; localStorage.setItem('web-theme', themeSel.value); };
   themeSel.value = localStorage.getItem('web-theme') || 'dark';
@@ -491,8 +662,8 @@
   const sPrev = $('s-prev'), sNext = $('s-next'), sClose = $('s-close');
   const sCaseBtn = $('s-case'), sRegexBtn = $('s-regex');
   let searchOpen = false;
-  let scase = localStorage.getItem('search.case') === '1';   // 持久化:开关;query 不持久化
-  let sregex = localStorage.getItem('search.regex') === '1';
+  let scase = (lsGet('search-case') ?? localStorage.getItem('search.case')) === '1';  // 持久化:开关;query 不持久化
+  let sregex = (lsGet('search-regex') ?? localStorage.getItem('search.regex')) === '1';
   let sre = null, serrMsg = '';       // 编译后的行匹配正则 / 非法正则原始消息
   let matches = [];                   // 有序命中 [{rec, rg}](与 DOM 行序一致,裁剪时构成前缀)
   let sCur = -1;                      // 当前命中下标,-1 = 未定位
@@ -673,11 +844,11 @@
     sRegexBtn.classList.toggle('on', sregex);
   }
   sCaseBtn.onclick = () => {                      // 开关切换:立即重算
-    scase = !scase; localStorage.setItem('search.case', scase ? '1' : '0');
+    scase = !scase; lsSet('search-case', scase ? '1' : '0');
     refreshToggles(); if (searchOpen) rebuild();
   };
   sRegexBtn.onclick = () => {
-    sregex = !sregex; localStorage.setItem('search.regex', sregex ? '1' : '0');
+    sregex = !sregex; lsSet('search-regex', sregex ? '1' : '0');
     refreshToggles(); if (searchOpen) rebuild();
     // 正则开关同步服务端偏好(重启后面板初值恢复)
     postSettings({ searchRegex: sregex }).catch(() => {});
@@ -728,18 +899,26 @@
   fetch(API + '/api/prefs').then(r => r.json()).then(p => {
     if (p.chip) $('chip').value = p.chip;
     $('iface').value = String(p.ifaceIndex);
+    lsSet('iface', String(p.ifaceIndex));
     $('speed').selectedIndex = Math.min(p.speedIndex, $('speed').length - 1);
+    lsSet('speed', String($('speed').selectedIndex));
     $('channel').selectedIndex = Math.min(p.channel, $('channel').length - 1);
+    lsSet('channel', String($('channel').selectedIndex));
     $('rx-ending').value = String(p.rxEnding);
+    lsSet('rx-ending', String(p.rxEnding));
     $('frame-timeout').value = p.frameTimeout;
+    lsSet('frame-timeout', String(p.frameTimeout));
     $('encoding').value = String(p.encodingIndex);
+    lsSet('encoding', String(p.encodingIndex));
     $('hex-rx').checked = !!p.hexRx;
+    lsSet('hex-rx', p.hexRx ? '1' : '0');
     $('auto-frame').checked = !!p.autoFrame;
+    lsSet('auto-frame', p.autoFrame ? '1' : '0');
     if (p.timerIntervalSec != null) $('timer-interval').value = p.timerIntervalSec;
     $('timer-on').checked = !!p.timerOn;
     if (typeof p.searchRegex === 'boolean') {
       sregex = p.searchRegex;
-      localStorage.setItem('search.regex', sregex ? '1' : '0');
+      lsSet('search-regex', sregex ? '1' : '0');
       refreshToggles();
     }
   }).catch(() => {});

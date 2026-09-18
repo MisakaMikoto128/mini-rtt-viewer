@@ -5,7 +5,11 @@
 //!
 //! API 契约(与前端/测试对齐,改这里必同步 ui/web/index.html 与 tests/web):
 //! - GET  /                管理台单页
-//! - GET  /api/status      → {connected, phase, port, rxBytes, txBytes, rowsTotal, uptimeSec, device}
+//! - GET  /api/status      → {connected, phase, port, rxBytes, txBytes, rowsTotal,
+//!   uptimeSec, sessionSec, sessionStatus, device};device 8 字段
+//!   {firmware,hardware,serial,core,cpu,target,iface,speedKhz}(demo 模式为演示
+//!   数据);sessionSec=连接会话秒(State 连接迁移记起点,断开清零,demo 启动即
+//!   计);sessionStatus=当前状态文案(如「已连接 (demo)」)
 //! - GET  /api/prefs       → 持久化偏好快照(面板初值恢复)
 //! - GET  /api/themes      → [{id, name}]
 //! - GET  /api/devices     → [芯片型号]
@@ -14,7 +18,10 @@
 //!   快照源;demo 模式只记录参数,不 spawn 真 worker
 //! - POST /api/disconnect
 //! - POST /api/power       {on}
-//! - POST /api/reset
+//! - POST /api/reset       {mode?: "in-place"|"reconnect"};缺省 in-place(现有
+//!   Reset 命令,复位目标并重挂 RTT 续收);reconnect=先走断开逻辑,1 秒后用
+//!   上次连接参数重新 spawn worker(无上次参数 409;demo 无真实目标,两模式
+//!   均 200 空操作);空请求体容忍为缺省 in-place(旧前端兼容)
 //! - POST /api/settings    逐字段可选(camelCase):rxEnding / frameTimeout /
 //!   encodingIndex / hexRx / autoFrame / searchRegex
 //! - POST /api/send        {text, hex?} → 回显一行,计数 TX,内容记为定时发送源
@@ -51,6 +58,7 @@ use crate::device_db;
 use crate::log_model::LogPump;
 use crate::rtt::{self, WorkerCmd, WorkerConfig, WorkerHandle, WorkerMsg, SPEEDS_KHZ};
 use axum::{
+    body::Bytes,
     extract::{
         ws::{Message, WebSocket},
         State, WebSocketUpgrade,
@@ -81,6 +89,10 @@ const MARK_COLOR: (u8, u8, u8) = (0x28, 0xaf, 0xe9);
 const ECHO_COLOR: (u8, u8, u8) = (0x8f, 0x8f, 0x9a);
 /// 定时发送间隔上下界(秒),与桌面版同范围
 const TIMER_INTERVAL_RANGE: std::ops::RangeInclusive<f64> = 0.001..=999.0;
+/// 复位模式字段值(API 契约):in-place = 现有 Reset 命令(重挂 RTT 续收)
+const RESET_MODE_IN_PLACE: &str = "in-place";
+/// 复位模式字段值(API 契约):reconnect = 先断开,1 秒后用上次参数重连
+const RESET_MODE_RECONNECT: &str = "reconnect";
 
 /// 服务启动选项(main 解析命令行后传入)
 pub struct WebOptions {
@@ -196,6 +208,14 @@ struct Shared {
     /// 定时发送内容:最近一次 /api/send 的文本(可经 /api/timer 显式指定)
     timer_text: Mutex<String>,
     timer_hex: AtomicBool,
+    // ---- /api/status 会话扩展 + reset reconnect 模式 ----
+    /// 连接会话计时起点:State 迁移到已连接时记,断开清零;demo 启动即记
+    session_start: Mutex<Option<Instant>>,
+    /// 当前状态文案(State 消息携带,去横幅圆点前缀;初始"未连接")
+    status_text: Mutex<String>,
+    /// 上次成功连接的参数(reset reconnect 的重连来源;/api/connect 成功时
+    /// 刷新,启动时从偏好底版恢复)
+    last_connect: Mutex<Option<SavedConnect>>,
 }
 
 impl Shared {
@@ -280,6 +300,17 @@ fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// 文本 → 十六进制大写文本(UTF-8 字节,每字节两位、空格分隔,与真机 worker
+/// 的 HEX 接收输出同格式,如 "[ de" → "5B 20 64 65 ")
+fn text_to_hex_upper(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.as_bytes() {
+        let _ = write!(out, "{b:02X} ");
+    }
+    out
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PauseReq {
@@ -296,6 +327,50 @@ struct ConnectReq {
     speed_index: usize,
     #[serde(default)]
     channel: u32,
+}
+
+/// 上次成功连接的参数(reset reconnect 模式 1 秒后用它重连;字段均已夹取)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SavedConnect {
+    chip: String,
+    iface_index: usize,
+    speed_index: usize,
+    channel: u32,
+}
+
+impl SavedConnect {
+    /// 偏好底版 → 上次连接参数(启动恢复;chip 为空 = 从未连接过 → None,
+    /// reset reconnect 对此返回 409)
+    fn from_prefs(p: &StoredPrefs) -> Option<Self> {
+        let chip = p.chip_name.trim().to_string();
+        if chip.is_empty() {
+            return None;
+        }
+        Some(Self {
+            iface_index: p.iface_index.clamp(0, 1) as usize,
+            speed_index: p.speed_index.clamp(0, SPEEDS_KHZ.len() as i32 - 1) as usize,
+            channel: p.channel.clamp(0, 15) as u32,
+            chip,
+        })
+    }
+}
+
+/// 复位模式:in-place = 现有 Reset 命令(worker 复位目标并重挂 RTT 续收);
+/// reconnect = 先走断开逻辑,1 秒后用上次连接参数重新 spawn worker
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResetMode {
+    InPlace,
+    Reconnect,
+}
+
+/// 解析复位模式:缺省/未知值一律回落 in-place(容忍旧前端空请求体与拼写
+/// 失误,复位不至于整体失效)
+fn parse_reset_mode(mode: Option<&str>) -> ResetMode {
+    match mode.map(str::trim) {
+        Some(m) if m.eq_ignore_ascii_case(RESET_MODE_RECONNECT) => ResetMode::Reconnect,
+        Some(m) if m.eq_ignore_ascii_case(RESET_MODE_IN_PLACE) => ResetMode::InPlace,
+        _ => ResetMode::InPlace,
+    }
 }
 
 #[derive(Deserialize)]
@@ -384,6 +459,9 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         prefs_base: saved.clone(),
         auto_frame: AtomicBool::new(saved.auto_frame),
         search_regex: AtomicBool::new(saved.search_regex),
+        // 上次连接参数从偏好底版恢复(chip 为空 = 从未连接 → reconnect 复位
+        // 409);必须在 saved.chip_name 被 move 之前借用
+        last_connect: Mutex::new(SavedConnect::from_prefs(&saved)),
         chip_name: Mutex::new(saved.chip_name),
         iface_index: Mutex::new(saved.iface_index.clamp(0, 1)),
         speed_index: Mutex::new(saved.speed_index.clamp(0, SPEEDS_KHZ.len() as i32 - 1)),
@@ -392,12 +470,24 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         timer_interval: Mutex::new(timer_interval_init),
         timer_text: Mutex::new(String::new()),
         timer_hex: AtomicBool::new(false),
+        session_start: Mutex::new(None),
+        status_text: Mutex::new("未连接".into()),
         on_state: on_event.clone(),
     });
 
     if opts.demo {
         demo::spawn(msg_tx);
         shared.connected.store(true, Ordering::Relaxed);
+        // demo 虚拟会话启动即"已连接":会话计时起点 + 状态文案 + 初始连接
+        // 标记行(与 State 迁移标记同款式;demo 的 State(true) 5 秒后才到,
+        // 期间 status/会话口径保持一致)
+        *shared.session_start.lock().unwrap() = Some(Instant::now());
+        *shared.status_text.lock().unwrap() = "已连接 (demo)".into();
+        shared
+            .pump
+            .lock()
+            .unwrap()
+            .push_colored_line(&state_marker_line(true), MARK_COLOR);
         // gui 壳在途:托盘图标立即反映"已连接"(事件在事件循环启动前排队的语义,
         // 见 gui.rs 模块头)
         if let Some(cb) = &shared.on_state {
@@ -503,10 +593,23 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
             match msg_rx.try_recv() {
                 Ok(WorkerMsg::Block(text)) => {
                     if !pump.paused {
+                        // RX 统计按原始块长计(hex 转换只是 demo 的显示变换)
+                        let raw_len = text.len();
+                        // demo 流是文本:hexRx 开启时把块文本按 UTF-8 字节转
+                        // 十六进制大写文本再上屏,演示 HEX 接收效果。仅 demo
+                        // 生效——真机路径已在 worker 内转换,这里再转就是二次
+                        // 转换(真机 hex 文本会被再 hex 一次)
+                        let shown = if shared.demo_mode
+                            && shared.hex_rx.load(Ordering::Relaxed)
+                        {
+                            text_to_hex_upper(&text)
+                        } else {
+                            text
+                        };
                         shared
                             .rx_bytes
-                            .fetch_add(text.len() as u64, Ordering::Relaxed);
-                        pump.absorb_text(&text, rx_ending);
+                            .fetch_add(raw_len as u64, Ordering::Relaxed);
+                        pump.absorb_text(&shown, rx_ending);
                     }
                 }
                 Ok(WorkerMsg::Log(text)) => {
@@ -529,10 +632,18 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                     // 翻变才回调(gui 壳驱动托盘图标;数据泵线程非阻塞,只 send_event)
                     let prev = shared.connected.swap(connected, Ordering::Relaxed);
                     if prev != connected {
+                        // 自动连接/断开标记行(与手动标记同款式;直接用已持有的
+                        // pump,严禁再借——见 AGENTS「tick 持 RefCell borrow」条)
+                        pump.push_colored_line(&state_marker_line(connected), MARK_COLOR);
+                        // 会话计时:连接记起点,断开清零
+                        *shared.session_start.lock().unwrap() =
+                            if connected { Some(Instant::now()) } else { None };
                         if let Some(cb) = &shared.on_state {
                             cb(ServiceEvent::ConnectedChanged(connected));
                         }
                     }
+                    // 状态文案每条 State 都刷新(连接失败的错误详情也随 false 态带出)
+                    *shared.status_text.lock().unwrap() = clean_status_text(&status);
                     let _ = shared.events_tx.send(format!(
                         r#"{{"type":"state","connected":{},"status":{}}}"#,
                         connected,
@@ -570,13 +681,32 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                     ));
                 }
                 Ok(WorkerMsg::Exited) => {
-                    *shared.worker.lock().unwrap() = None;
-                    *shared.cmd_tx.lock().unwrap() = None;
-                    let prev = shared.connected.swap(false, Ordering::Relaxed);
-                    if prev {
-                        if let Some(cb) = &shared.on_state {
-                            cb(ServiceEvent::ConnectedChanged(false));
+                    // 只清"确实已停"的登记句柄:reset reconnect 场景下旧 worker
+                    // 的 Exited 可能晚于新 worker 登记到达,不能误清新句柄
+                    // (alive=false 由 worker 线程在发出 Exited 前置位)
+                    let mine = {
+                        let mut w = shared.worker.lock().unwrap();
+                        let mine = match w.as_ref() {
+                            // 句柄已被 reset reconnect 提前取走:按幂等清理处理
+                            None => true,
+                            Some(h) => !h.alive.load(Ordering::Relaxed),
+                        };
+                        if mine {
+                            *w = None;
                         }
+                        mine
+                    };
+                    if mine {
+                        *shared.cmd_tx.lock().unwrap() = None;
+                        let prev = shared.connected.swap(false, Ordering::Relaxed);
+                        if prev {
+                            if let Some(cb) = &shared.on_state {
+                                cb(ServiceEvent::ConnectedChanged(false));
+                            }
+                        }
+                        // worker 线程已退:会话计时清零(State(false) 通常已先行
+                        // 处理,这里兜底)
+                        *shared.session_start.lock().unwrap() = None;
                     }
                 }
                 Err(_) => break,
@@ -671,21 +801,49 @@ async fn favicon() -> Response {
         .into_response()
 }
 
+/// demo 模式的演示设备信息(/api/status 的 device 字段;8 字段与真机同形,
+/// WS device 事件同字段名)
+fn demo_device_json() -> serde_json::Value {
+    serde_json::json!({
+        "firmware": "J-Link V11 demo", "hardware": "V11",
+        "serial": "600788888", "core": "Cortex-M4",
+        "cpu": "ARM 32-Bit", "target": "STM32F103C8",
+        "iface": "SWD", "speedKhz": 4000,
+    })
+}
+
 async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value> {
-    let device = shared.device_info.lock().unwrap().as_ref().map(|d| {
-        serde_json::json!({
-            "firmware": d.firmware, "target": d.target, "iface": d.iface,
-            "speedKhz": d.speed_khz, "serial": d.serial,
+    let connected = shared.connected.load(Ordering::Relaxed);
+    // device 8 字段(与 WS device 事件同形):demo 为演示数据,真机取最近一次
+    // DeviceInfo(断开后保留上次信息,与桌面版同语义)
+    let device = if shared.demo_mode {
+        Some(demo_device_json())
+    } else {
+        shared.device_info.lock().unwrap().as_ref().map(|d| {
+            serde_json::json!({
+                "firmware": d.firmware, "hardware": d.hardware,
+                "serial": d.serial, "core": d.core_name,
+                "cpu": d.core_cpu, "target": d.target,
+                "iface": d.iface, "speedKhz": d.speed_khz,
+            })
         })
-    });
+    };
+    let session_sec = shared
+        .session_start
+        .lock()
+        .unwrap()
+        .map(|t| t.elapsed().as_secs())
+        .unwrap_or(0);
     Json(serde_json::json!({
-        "connected": shared.connected.load(Ordering::Relaxed),
-        "phase": if shared.connected.load(Ordering::Relaxed) { "connected" } else { "idle" },
-        "port": if shared.connected.load(Ordering::Relaxed) { "jlink" } else { "demo" },
+        "connected": connected,
+        "phase": if connected { "connected" } else { "idle" },
+        "port": if connected { "jlink" } else { "demo" },
         "rxBytes": shared.rx_bytes.load(Ordering::Relaxed),
         "txBytes": shared.tx_bytes.load(Ordering::Relaxed),
         "rowsTotal": shared.pump.lock().unwrap().rows_len(),
         "uptimeSec": shared.started.elapsed().as_secs(),
+        "sessionSec": session_sec,
+        "sessionStatus": shared.status_text.lock().unwrap().clone(),
         "device": device,
     }))
 }
@@ -745,6 +903,28 @@ async fn api_jlinks(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value
         .collect::<Vec<_>>()))
 }
 
+/// spawn 真 worker 并登记句柄/命令通道(api_connect 与 reset reconnect 共用;
+/// selected_sn 取 J-Link 列表首台,与原逻辑一致)
+fn spawn_worker(shared: &Shared, params: &SavedConnect) {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCmd>();
+    let handle = rtt::spawn(
+        WorkerConfig {
+            chip: params.chip.clone(),
+            iface_index: params.iface_index,
+            speed_khz: SPEEDS_KHZ[params.speed_index.min(SPEEDS_KHZ.len() - 1)],
+            channel: params.channel.min(15),
+            frame_timeout_ms: shared.frame_timeout_ms.clone(),
+            selected_sn: shared.jlinks.lock().unwrap().first().map(|(sn, _)| *sn),
+            encoding_index: shared.encoding_index.clone(),
+            hex_rx: shared.hex_rx.clone(),
+        },
+        shared.msg_tx.clone(),
+        cmd_rx,
+    );
+    *shared.worker.lock().unwrap() = Some(handle);
+    *shared.cmd_tx.lock().unwrap() = Some(cmd_tx);
+}
+
 /// 连接:芯片名补全(库内子串匹配首个全称,与桌面版同规则)→ 连接参数写入
 /// 偏好快照源 → spawn worker(demo 模式只记录参数,不加载 DLL)
 async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectReq>) -> Response {
@@ -785,34 +965,30 @@ async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectR
     };
     drop(full);
 
+    // 连接参数夹取一次,偏好快照源 / 上次连接参数 / worker 配置三者同源
+    let iface_index = req.iface_index.min(1);
+    let speed_index = req.speed_index.min(SPEEDS_KHZ.len() - 1);
+    let channel = req.channel.min(15);
+
     // 连接参数进偏好快照源(tick 内 500ms 落盘;重启后面板初值恢复)
     *shared.chip_name.lock().unwrap() = chip.clone();
-    *shared.iface_index.lock().unwrap() = req.iface_index.min(1) as i32;
-    *shared.speed_index.lock().unwrap() = req.speed_index.min(SPEEDS_KHZ.len() - 1) as i32;
-    *shared.channel.lock().unwrap() = req.channel.min(15);
+    *shared.iface_index.lock().unwrap() = iface_index as i32;
+    *shared.speed_index.lock().unwrap() = speed_index as i32;
+    *shared.channel.lock().unwrap() = channel;
+    // 上次连接参数:reset reconnect 模式的重连来源(demo 也记录,语义一致)
+    let params = SavedConnect {
+        chip: chip.clone(),
+        iface_index,
+        speed_index,
+        channel,
+    };
+    *shared.last_connect.lock().unwrap() = Some(params.clone());
 
     if shared.demo_mode {
         return StatusCode::OK.into_response();
     }
 
-    let selected_sn = shared.jlinks.lock().unwrap().first().map(|(sn, _)| *sn);
-    let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCmd>();
-    let handle = rtt::spawn(
-        WorkerConfig {
-            chip,
-            iface_index: req.iface_index.min(1),
-            speed_khz: SPEEDS_KHZ[req.speed_index.min(SPEEDS_KHZ.len() - 1)],
-            channel: req.channel.min(15),
-            frame_timeout_ms: shared.frame_timeout_ms.clone(),
-            selected_sn,
-            encoding_index: shared.encoding_index.clone(),
-            hex_rx: shared.hex_rx.clone(),
-        },
-        shared.msg_tx.clone(),
-        cmd_rx,
-    );
-    *shared.worker.lock().unwrap() = Some(handle);
-    *shared.cmd_tx.lock().unwrap() = Some(cmd_tx);
+    spawn_worker(&shared, &params);
     StatusCode::OK.into_response()
 }
 
@@ -835,12 +1011,103 @@ async fn api_power(State(shared): State<Arc<Shared>>, Json(req): Json<PowerReq>)
     StatusCode::OK.into_response()
 }
 
-async fn api_reset(State(shared): State<Arc<Shared>>) -> Response {
-    let Some(tx) = shared.cmd_tx.lock().unwrap().clone() else {
-        return (StatusCode::CONFLICT, "未连接").into_response();
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResetReq {
+    /// 复位模式:"in-place"(缺省)| "reconnect";缺省/未知值一律 in-place
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+/// 断开 worker 供重连(reset reconnect 专用):置停止标志 + 空发送唤醒阻塞中
+/// 的读循环,引用立即清空;旧句柄返回给重连线程,等线程真正退出后才重连。
+/// 与 /api/disconnect 有意不同:那边保留句柄到 Exited 到达,维持"worker 存活
+/// 期间拒绝新连接"的门闩;这边等待职责由重连线程接管。
+fn take_worker_down(shared: &Shared) -> Option<Arc<WorkerHandle>> {
+    let old = shared.worker.lock().unwrap().take();
+    if let Some(h) = &old {
+        h.stop.store(true, Ordering::Relaxed);
+    }
+    if let Some(tx) = shared.cmd_tx.lock().unwrap().take() {
+        let _ = tx.send(WorkerCmd::Send(Vec::new())); // 唤醒阻塞中的 worker 尽快退出
+    }
+    old
+}
+
+/// 等旧 worker 线程退出(alive=false 由线程在发出 Exited 前置位);超时返回
+/// false——此时严禁 spawn 新 worker,见 rtt.rs「worker 生命周期铁律」
+fn wait_worker_exit(h: Option<&Arc<WorkerHandle>>, timeout: Duration) -> bool {
+    let Some(h) = h else {
+        return true;
     };
-    let _ = tx.send(WorkerCmd::Reset);
-    StatusCode::OK.into_response()
+    let deadline = Instant::now() + timeout;
+    while h.alive.load(Ordering::Relaxed) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// 复位两模式:in-place = 现有 Reset 命令(worker 复位目标并重挂 RTT 续收);
+/// reconnect = 先走断开逻辑,1 秒后用上次连接参数重新 spawn worker(重启服务
+/// 且无上次参数 → 409)。demo 无真实目标,两模式均 200 空操作。
+async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
+    // 兼容旧前端:POST 无请求体 = 缺省 in-place;非空则必须是合法 JSON
+    let req: ResetReq = if body.is_empty() {
+        ResetReq { mode: None }
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("请求体 JSON 解析失败:{e}"),
+                )
+                    .into_response()
+            }
+        }
+    };
+    if shared.demo_mode {
+        return StatusCode::OK.into_response();
+    }
+    match parse_reset_mode(req.mode.as_deref()) {
+        ResetMode::InPlace => {
+            let Some(tx) = shared.cmd_tx.lock().unwrap().clone() else {
+                return (StatusCode::CONFLICT, "未连接").into_response();
+            };
+            let _ = tx.send(WorkerCmd::Reset);
+            StatusCode::OK.into_response()
+        }
+        ResetMode::Reconnect => {
+            let Some(params) = shared.last_connect.lock().unwrap().clone() else {
+                return (StatusCode::CONFLICT, "无上次连接参数,无法重连").into_response();
+            };
+            // 断开 → 1 秒后用上次参数重连(独立线程,HTTP 立即返回 200)
+            let old = take_worker_down(&shared);
+            let shared2 = Arc::clone(&shared);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(1));
+                // 铁律:旧 worker 线程存活期间严禁 spawn 新 worker(双 worker
+                // 抢 J-Link 是数据损坏/状态错乱的根源)——先等旧线程真正退出
+                if !wait_worker_exit(old.as_ref(), Duration::from_secs(3)) {
+                    let _ = shared2.msg_tx.send(WorkerMsg::Log(
+                        "[自动重连] 上一连接未退出,已放弃本次重连\r\n".into(),
+                    ));
+                    return;
+                }
+                // 等待期内用户已手动连接则让位;进程退出中不再拉起 worker
+                if shared2.worker.lock().unwrap().is_some()
+                    || rtt::APP_SHUTDOWN.load(Ordering::Relaxed)
+                {
+                    return;
+                }
+                spawn_worker(&shared2, &params);
+            });
+            StatusCode::OK.into_response()
+        }
+    }
 }
 
 /// 运行时参数:逐字段可选,worker 共享原子热切换(与桌面版同语义)
@@ -940,6 +1207,26 @@ fn hms_stamp() -> String {
     format!("{:02}:{:02}:{:02}", t.hour, t.minute, t.second)
 }
 
+/// 会话标记行(手动 /api/mark 与自动连接/断开标记共用款式):
+/// 「── [HH:MM:SS] {label} ──」
+fn marker_line(label: &str, stamp: &str) -> String {
+    format!("── [{stamp}] {label} ──")
+}
+
+/// State 迁移的自动标记行:已连接 / 已断开
+fn state_marker_line(connected: bool) -> String {
+    marker_line(
+        if connected { "已连接" } else { "已断开" },
+        &hms_stamp(),
+    )
+}
+
+/// worker 状态文案 → /api/status 展示文案:去横幅圆点前缀
+/// ("● 已连接 (demo)" → "已连接 (demo)")
+fn clean_status_text(s: &str) -> String {
+    s.trim().trim_start_matches('●').trim().to_string()
+}
+
 /// "YYYYMMDD_HHMMSS"(导出文件名)
 fn now_stamp() -> String {
     let t = local_time();
@@ -956,7 +1243,7 @@ async fn api_mark(State(shared): State<Arc<Shared>>, Json(req): Json<MarkReq>) -
         req.text
     };
     let mut pump = shared.pump.lock().unwrap();
-    pump.push_colored_line(&format!("── [{}] {label} ──", hms_stamp()), MARK_COLOR);
+    pump.push_colored_line(&marker_line(&label, &hms_stamp()), MARK_COLOR);
     StatusCode::OK
 }
 
@@ -1108,5 +1395,76 @@ mod tests {
         assert_eq!(req.interval_sec, Some(0.5));
         assert_eq!(req.text.as_deref(), Some("led on"));
         assert_eq!(req.hex, Some(false));
+    }
+
+    #[test]
+    fn reset_req_tolerates_missing_mode() {
+        // 契约:mode 缺省 in-place;显式 reconnect 命中
+        let req: ResetReq = serde_json::from_str(r#"{"mode":"reconnect"}"#).unwrap();
+        assert_eq!(req.mode.as_deref(), Some("reconnect"));
+        let empty: ResetReq = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.mode, None);
+    }
+
+    #[test]
+    fn reset_mode_defaults_and_falls_back_on_unknown() {
+        assert_eq!(parse_reset_mode(None), ResetMode::InPlace); // 缺省
+        assert_eq!(parse_reset_mode(Some("in-place")), ResetMode::InPlace);
+        assert_eq!(parse_reset_mode(Some("reconnect")), ResetMode::Reconnect);
+        assert_eq!(parse_reset_mode(Some("")), ResetMode::InPlace); // 未知值回落
+        assert_eq!(parse_reset_mode(Some("garbage")), ResetMode::InPlace);
+    }
+
+    #[test]
+    fn text_to_hex_upper_matches_worker_hex_format() {
+        assert_eq!(text_to_hex_upper(""), "");
+        assert_eq!(text_to_hex_upper("AB"), "41 42 ");
+        // 契约示例:"5B 20 64 65…" = "[ de" 的 UTF-8 字节(4 字节)
+        assert_eq!(text_to_hex_upper("[ de"), "5B 20 64 65 ");
+        // 多字节 UTF-8 按字节展开:"你" = E4 BD A0
+        assert_eq!(text_to_hex_upper("你"), "E4 BD A0 ");
+    }
+
+    #[test]
+    fn state_marker_line_uses_manual_mark_style() {
+        assert_eq!(marker_line("已连接", "01:02:03"), "── [01:02:03] 已连接 ──");
+        assert_eq!(marker_line("已断开", "23:59:59"), "── [23:59:59] 已断开 ──");
+        // 自动标记行 = 同款式 + 实时时间戳(时间不定,只验证标签与骨架)
+        let up = state_marker_line(true);
+        assert!(
+            up.starts_with("── [") && up.ends_with("] 已连接 ──"),
+            "{up}"
+        );
+        let down = state_marker_line(false);
+        assert!(
+            down.starts_with("── [") && down.ends_with("] 已断开 ──"),
+            "{down}"
+        );
+    }
+
+    #[test]
+    fn clean_status_text_strips_banner_bullet() {
+        assert_eq!(clean_status_text("● 已连接 (demo)"), "已连接 (demo)");
+        assert_eq!(clean_status_text("● 未连接"), "未连接");
+        assert_eq!(clean_status_text("plain"), "plain");
+    }
+
+    #[test]
+    fn saved_connect_from_prefs_clamps_and_requires_chip() {
+        let mut p = StoredPrefs::default();
+        assert_eq!(SavedConnect::from_prefs(&p), None); // 从未连接过
+        p.chip_name = "  STM32F103C8 ".into();
+        p.iface_index = 5; // 越界 → 夹到 1
+        p.speed_index = 99; // 越界 → 夹到 7(SPEEDS_KHZ 上限)
+        p.channel = 99; // 越界 → 夹到 15
+        assert_eq!(
+            SavedConnect::from_prefs(&p),
+            Some(SavedConnect {
+                chip: "STM32F103C8".into(),
+                iface_index: 1,
+                speed_index: 7,
+                channel: 15,
+            })
+        );
     }
 }

@@ -20,12 +20,13 @@ import urllib.request
 import pytest
 from playwright.sync_api import sync_playwright
 
-PORT = 18080
+PORT = 18099  # QA 纪律:固定 18099,避开开发常用端口
 BASE = f"http://127.0.0.1:{PORT}"
 EXE = r"target\release\mini-rtt-viewer.exe"
 
-# UX 规格中的 accent 色 #28afe9(getComputedStyle 返回 rgb 形式)
-_ACCENT_RGB = "rgb(40, 175, 233)"
+# UX 新色板 accent #2B6E8F(降饱和钢蓝,2026-09 色板重构;
+# getComputedStyle 返回 rgb 形式,2026-09-19 实测确认)
+_ACCENT_RGB = "rgb(43, 110, 143)"
 
 
 @pytest.fixture(scope="session")
@@ -34,7 +35,12 @@ def server():
     # APPDATA 指向临时目录:服务与测试环境隔离,不读不写用户真实偏好
     # (面板初值恢复走的 /api/prefs 会回填持久化的 chip,干扰下拉交互用例)
     tmp_appdata = tempfile.mkdtemp(prefix="rtt-test-appdata-")
-    env = {**os.environ, "APPDATA": tmp_appdata}
+    env = {
+        **os.environ,
+        "APPDATA": tmp_appdata,  # FR-21 prefs 走 %APPDATA%,指向临时目录隔离
+        "RTT_PREFS_FILE": os.path.join(tmp_appdata, "prefs.json"),  # 纪律:显式 prefs 隔离
+        "RTT_WEB_NO_BROWSER": "1",
+    }
     proc = subprocess.Popen(
         [EXE, "--demo-log", "--no-window", "--port", str(PORT)], env=env
     )
@@ -72,10 +78,15 @@ def wait_rows(page, min_rows: int, timeout_ms: int = 15000) -> int:
 
 
 def test_fr22_demo_stream_appends_rows(page):
-    """FR-22:demo 模式产生模拟数据流,页面收到并渲染日志行。"""
+    """FR-22:demo 模式产生模拟数据流,页面收到并渲染日志行。
+    首行可能是「── 已连接 ──」标记行(连接/断开自动标记),不能作为 demo
+    数据判定;断言改为:页面存在含 [demo 前缀的数据行。"""
     assert wait_rows(page, 5) >= 5
-    first = page.text_content("#log .row")
-    assert "[demo" in first
+    has_demo_row = page.evaluate(
+        "[...document.querySelectorAll('#log .row')]"
+        ".some(r => r.textContent.includes('[demo'))"
+    )
+    assert has_demo_row, "页面应存在含 [demo 的数据行"
 
 
 def test_api_status_contract(server):
@@ -88,16 +99,20 @@ def test_api_status_contract(server):
 
 
 def test_fr20_theme_switch_updates_tokens(page):
-    """FR-20:主题切换即时生效——切浅色后日志区背景变白。"""
-    page.select_option("#theme", "light")
-    bg = page.evaluate("getComputedStyle(document.getElementById('log')).backgroundColor")
-    assert bg == "rgb(255, 255, 255)"
-    page.select_option("#theme", "oled")
-    bg = page.evaluate("getComputedStyle(document.getElementById('log')).backgroundColor")
-    assert bg == "rgb(0, 0, 0)"
-    page.select_option("#theme", "dark")
-    bg = page.evaluate("getComputedStyle(document.getElementById('log')).backgroundColor")
-    assert bg == "rgb(34, 34, 34)"
+    """FR-20:主题切换即时生效,日志区背景随主题 token 变化。
+    2026-09 色板重构后实测:dark #0E1013 / light #FFFFFF / OLED #000000 /
+    sepia #F6F0DF。"""
+    for theme, bg in (
+        ("light", "rgb(255, 255, 255)"),
+        ("oled", "rgb(0, 0, 0)"),
+        ("sepia", "rgb(246, 240, 223)"),
+        ("dark", "rgb(14, 16, 19)"),  # #0E1013,结束回到默认 dark
+    ):
+        page.select_option("#theme", theme)
+        bg_actual = page.evaluate(
+            "getComputedStyle(document.getElementById('log')).backgroundColor"
+        )
+        assert bg_actual == bg, f"{theme} 日志底应为 {bg}:实测 {bg_actual}"
 
 
 def test_fr2_device_combo_filters_and_picks(page):
@@ -346,3 +361,119 @@ def test_fr18_web_search_p0(page):
     )
     page.keyboard.press("Escape")  # 收尾:关闭搜索条,还给后续用例干净状态
     page.wait_for_timeout(200)
+
+
+def test_ui_layout_p0(page):
+    """UI P0 视觉断言(2026-09 UI 重构规格,2026-09-19 getComputedStyle 实测定值):
+    左面板宽 420±10、控件高 40±2(按钮基线 42 亦达标)、日志行高 32±1、
+    日志字号 15、无顶部 header、发送条在日志区下方通栏、
+    单连接切换按钮(连接/断开同钮)、通道选项 16 项。"""
+    page.goto(BASE)  # 全新加载,排除前序用例的交互残留
+    page.wait_for_selector("#log .row", timeout=15000)
+    page.wait_for_timeout(1500)  # 等 WS 状态/prefs 回填落定,避免测量到中间态
+
+    # 1) 左面板宽 420±10
+    aside_w = page.evaluate("document.querySelector('aside').getBoundingClientRect().width")
+    assert 410 <= aside_w <= 430, f"左面板宽应 420±10:实测 {aside_w}"
+
+    # 2) 控件高 40±2(select/input/combo 容器 40,按钮 42;全部在容差内)
+    heights = page.evaluate(
+        """() => {
+            const h = el => el.getBoundingClientRect().height;
+            const ids = ['jlink', 'chip-combo', 'iface', 'speed', 'channel',
+                         'connect-btn', 'reset-btn', 'clear-btn', 'pause-btn',
+                         'mark-btn', 'export-btn', 'send-text', 'send-btn',
+                         'rx-ending', 'encoding', 'tx-ending', 'timer-interval',
+                         'frame-timeout', 'theme'];
+            return Object.fromEntries(ids.map(id => [id, h(document.getElementById(id))]));
+        }"""
+    )
+    bad = {k: v for k, v in heights.items() if not (38 <= v <= 42)}
+    assert not bad, f"控件高应 40±2:越界 {bad}"
+
+    # 3) 日志行高 32±1(computed line-height + 未换行短行实际高度)
+    lh = page.evaluate("parseFloat(getComputedStyle(document.getElementById('log')).lineHeight)")
+    assert 31 <= lh <= 33, f"日志行 line-height 应 32±1:实测 {lh}"
+    # 快照环形缓冲可能只剩长数据行;标记行(「── 已连接 ──」,demo 循环周期产生)
+    # 是稳定的短行来源,等待其出现后量实际高度
+    page.wait_for_function(
+        "[...document.querySelectorAll('#log .row')]"
+        ".some(r => r.textContent.length > 0 && r.textContent.length < 60)",
+        timeout=20000,
+    )
+    row_h = page.evaluate(
+        """() => {
+            const s = [...document.querySelectorAll('#log .row')]
+                .find(r => r.textContent.length > 0 && r.textContent.length < 60);
+            return s.getBoundingClientRect().height;
+        }"""
+    )
+    assert 31 <= row_h <= 33, f"日志短行实际高应 32±1:实测 {row_h}"
+
+    # 4) 日志字号 15
+    fs = page.evaluate("parseFloat(getComputedStyle(document.getElementById('log')).fontSize)")
+    assert fs == 15, f"日志字号应 15px:实测 {fs}"
+
+    # 5) 无顶部 header:不存在 header 元素,main 顶到视口顶
+    top = page.evaluate(
+        """() => ({
+            hasHeader: !!document.querySelector('body > header'),
+            mainTop: document.querySelector('main').getBoundingClientRect().top})"""
+    )
+    assert not top["hasHeader"] and abs(top["mainTop"]) < 0.5, (
+        f"不应有顶部 header 且 main 应贴顶:实测 {top}"
+    )
+
+    # 6) 发送条在日志区下方通栏(顶边贴日志区底边,宽度 = 右列宽)
+    sb = page.evaluate(
+        """() => {
+            const r = el => el.getBoundingClientRect();
+            const bar = r(document.getElementById('send-bar'));
+            const wrap = r(document.getElementById('log-wrap'));
+            const content = r(document.getElementById('content'));
+            return {barTop: bar.top, wrapBottom: wrap.bottom,
+                    dw: Math.abs(bar.width - content.width),
+                    dx: Math.abs(bar.left - content.left)};
+        }"""
+    )
+    assert abs(sb["barTop"] - sb["wrapBottom"]) < 1.5, (
+        f"发送条应紧贴日志区下方:实测 bar.top={sb['barTop']} log.bottom={sb['wrapBottom']}"
+    )
+    assert sb["dw"] < 1.5 and sb["dx"] < 1.5, (
+        f"发送条应通栏(宽/左缘对齐右列):实测 dw={sb['dw']} dx={sb['dx']}"
+    )
+
+    # 7) 单连接切换按钮:唯一连接控件,连接/断开同钮,文案与配色联动
+    single = page.evaluate(
+        """() => {
+            const btns = [...document.querySelectorAll('button')];
+            return {
+                connectCount: document.querySelectorAll('#connect-btn').length,
+                hasDisconnectBtn: btns.some(b =>
+                    /disconnect/i.test(b.id) || b.textContent.trim() === '断开连接'),
+            };
+        }"""
+    )
+    assert single["connectCount"] == 1, "应只有一个连接按钮"
+    assert not single["hasDisconnectBtn"], "不应存在独立断开按钮"
+
+    def btn_state_matches_text() -> bool:
+        # 断开 ⟺ danger 配色,连接 ⟺ primary 配色(同钮切换的呈现契约)
+        return page.evaluate(
+            """() => {
+                const b = document.getElementById('connect-btn');
+                const t = b.textContent.trim(), cls = b.classList;
+                if (t === '断开') return cls.contains('danger') && !cls.contains('primary');
+                if (t === '连接') return cls.contains('primary') && !cls.contains('danger');
+                return false;
+            }"""
+        )
+
+    assert btn_state_matches_text(), "连接按钮文案与配色应联动(连接=primary/断开=danger)"
+    pre = page.evaluate("document.getElementById('connect-btn').textContent.trim()")
+    page.click("#connect-btn")  # 发送切换意图(demo 连接态自主循环,翻转可能来自任一方)
+    page.wait_for_function(
+        f"document.getElementById('connect-btn').textContent.trim() !== '{pre}'",
+        timeout=12000,
+    )
+    assert btn_state_matches_text(), "切换后文案与配色应仍联动"

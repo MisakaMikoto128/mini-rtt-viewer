@@ -11,9 +11,13 @@
 //!   数据);sessionSec=连接会话秒(State 连接迁移记起点,断开清零,demo 启动即
 //!   计);sessionStatus=当前状态文案(如「已连接 (demo)」)
 //! - GET  /api/prefs       → 持久化偏好快照(面板初值恢复)
-//! - GET  /api/themes      → [{id, name}]
+//! - GET  /api/themes      → [{id, name, custom}];内置 4 套(custom:false)+
+//!   自定义项(exe 旁 themes/*.css,id=文件名去扩展,name=文件名,custom:true)
+//! - GET  /api/theme-css/{id} → 自定义主题 CSS 文本(text/css);内置主题与未知
+//!   id 一律 404(内置主题由前端内嵌表覆盖,不落盘)
 //! - GET  /api/devices     → [芯片型号]
 //! - GET  /api/jlinks      → [{sn, name}]
+//! - GET  /api/history     → [text] 发送历史(最新在前,上限 50)
 //! - POST /api/connect     {chip, ifaceIndex, speedIndex, channel};连接参数写入偏好
 //!   快照源;demo 模式只记录参数,不 spawn 真 worker
 //! - POST /api/disconnect
@@ -23,8 +27,9 @@
 //!   上次连接参数重新 spawn worker(无上次参数 409;demo 无真实目标,两模式
 //!   均 200 空操作);空请求体容忍为缺省 in-place(旧前端兼容)
 //! - POST /api/settings    逐字段可选(camelCase):rxEnding / frameTimeout /
-//!   encodingIndex / hexRx / autoFrame / searchRegex
-//! - POST /api/send        {text, hex?} → 回显一行,计数 TX,内容记为定时发送源
+//!   encodingIndex / hexRx / autoFrame / searchRegex / sendEnding / hexSend
+//! - POST /api/send        {text, hex?} → 回显一行,计数 TX,内容记为定时发送源;
+//!   成功后记入发送历史(prefs.send_history,去重置顶上限 50,与桌面版同规则)
 //! - POST /api/timer       {on, intervalSec?, text?, hex?};定时重发 0.001-999 秒,
 //!   连接态才触发,复用 /api/send 发送管线,含回显
 //! - POST /api/mark        {text}  → 插入会话标记行
@@ -35,13 +40,20 @@
 //!   {type:"state"/"device"/"progress"/"names"/"jlinks"/"stats"}
 //!
 //! /api/prefs 返回:{chip, ifaceIndex, speedIndex, channel, rxEnding, frameTimeout,
-//! encodingIndex, hexRx, autoFrame, searchRegex, timerOn, timerIntervalSec}
+//! encodingIndex, hexRx, autoFrame, searchRegex, timerOn, timerIntervalSec,
+//! sendEnding, hexSend}
 //!
-//! 偏好持久化(与桌面版同模式):`%APPDATA%/MiniRttViewer/prefs.json`,数据泵
+//! 偏好持久化(与桌面版同模式):`%APPDATA%/MiniRttViewer/prefs.json`(环境变量
+//! `RTT_PREFS_FILE` 显式指定路径时优先,测试/便携场景的 prefs 隔离),数据泵
 //! tick 内 500ms 快照比对——从 Shared 当前状态构建 StoredPrefs 子集,变化才原子
-//! 写(未连接态也保存)。桌面专用字段(window 几何/dark_theme/log_font_px 等)
-//! 沿用启动时读到的原值,serde(default) 兼容旧文件;主题/字号仍由前端
+//! 写(未连接态也保存)。桌面专用字段(window 几何/dark_theme/theme 等)沿用
+//! 启动时读到的原值写回,serde(default) 兼容旧文件;主题/字号仍由前端
 //! localStorage 管理,不经此通道。
+//!
+//! 主题插件化(SerialHub ADR-18 同构):内置 4 套由前端内嵌;exe 旁 themes/
+//! 目录下每个 *.css 即一套自定义主题(只覆盖 :root 设计令牌),`GET /api/themes`
+//! 每次现扫(拖入即生效,零注册),CSS 经 `/api/theme-css/{id}` 服务——路径只
+//! 来自本机扫描列表,不拼用户输入,无穿越面。
 //!
 //! 单实例:端口即互斥——bind AddrInUse 时提示已有实例并以非零码退出。
 //!
@@ -61,7 +73,7 @@ use axum::{
     body::Bytes,
     extract::{
         ws::{Message, WebSocket},
-        State, WebSocketUpgrade,
+        Path, State, WebSocketUpgrade,
     },
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
@@ -71,6 +83,7 @@ use axum::{
 use serde::Deserialize;
 use std::{
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
@@ -93,6 +106,9 @@ const TIMER_INTERVAL_RANGE: std::ops::RangeInclusive<f64> = 0.001..=999.0;
 const RESET_MODE_IN_PLACE: &str = "in-place";
 /// 复位模式字段值(API 契约):reconnect = 先断开,1 秒后用上次参数重连
 const RESET_MODE_RECONNECT: &str = "reconnect";
+/// 内置主题 id(与前端 index.html 内嵌主题表一一对应;themes/ 里的同名 .css
+/// 不进列表,避免下拉出现两个相同 value)
+const BUILTIN_THEME_IDS: [&str; 4] = ["dark", "light", "oled", "sepia"];
 
 /// 服务启动选项(main 解析命令行后传入)
 pub struct WebOptions {
@@ -201,6 +217,12 @@ struct Shared {
     iface_index: Mutex<i32>,
     speed_index: Mutex<i32>,
     channel: Mutex<u32>,
+    /// 发送历史(最新在前,去重,上限 50;/api/history 读,快照落盘)
+    send_history: Mutex<Vec<String>>,
+    /// 发送行尾 0=CRLF 1=LF 2=CR 3=无(纯 UI 习惯记忆,不改发送内容)
+    send_ending: Mutex<i32>,
+    /// HEX 发送模式(前端发送框按十六进制字节解析)
+    hex_send: AtomicBool,
     // ---- 定时发送(复用 /api/send 发送管线)----
     timer_on: AtomicBool,
     /// 定时发送间隔(秒)
@@ -231,19 +253,88 @@ impl Shared {
         } else {
             text.as_bytes().to_vec()
         };
+        // TX 计数按实际发送字节数(HEX 模式 = 解析后字节,非原文长度)
+        let n = payload.len();
         if let Some(tx) = self.cmd_tx.lock().unwrap().clone() {
             let _ = tx.send(WorkerCmd::Send(payload));
         }
-        self.tx_bytes
-            .fetch_add(text.len() as u64, Ordering::Relaxed);
+        self.tx_bytes.fetch_add(n as u64, Ordering::Relaxed);
         self.pump
             .lock()
             .unwrap()
             .push_colored_line(&format!("» {text}"), ECHO_COLOR);
         *self.timer_text.lock().unwrap() = text.to_string();
         self.timer_hex.store(hex, Ordering::Relaxed);
+        history_push(&mut self.send_history.lock().unwrap(), text);
         Ok(())
     }
+}
+
+/// 发送历史入库:去重置顶(最新在前),上限 50 条(与桌面版同规则)。
+/// 自由函数便于单测锁定规则;send_payload 与快照源共用。
+fn history_push(history: &mut Vec<String>, text: &str) {
+    const SEND_HISTORY_CAP: usize = 50;
+    if let Some(i) = history.iter().position(|t| t == text) {
+        history.remove(i);
+    }
+    history.insert(0, text.to_string());
+    history.truncate(SEND_HISTORY_CAP);
+}
+
+/// 扫描到的自定义主题(SerialHub ADR-18 同构)
+struct CustomTheme {
+    /// 主题 id = 文件名去 .css 后缀(/api/theme-css/{id} 的 {id})
+    id: String,
+    /// 显示名 = 文件名(含扩展名,与 id 区分)
+    name: String,
+    /// CSS 文件路径(来自本机 read_dir,非用户输入拼装)
+    path: PathBuf,
+}
+
+/// 自定义主题目录:exe 旁 themes/(exe 定位失败 → 相对路径 themes/)。
+/// 目录不存在 = 无自定义主题(扫描静默返回空)。
+fn themes_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("themes")))
+        .unwrap_or_else(|| PathBuf::from("themes"))
+}
+
+/// 主题文件名白名单:ASCII 字母/数字/点/短横线/下划线、≤64 字节、.css 结尾且
+/// 去后缀后 id 非空(排除分隔符、控制字符、全角/Unicode 混淆名;
+/// 与 SerialHub themes.rs 同规则)
+fn valid_theme_file_name(file: &str) -> bool {
+    file.len() > 4
+        && file.len() <= 64
+        && file.ends_with(".css")
+        && file
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
+/// 扫描自定义主题:目录下每个 *.css = 一套主题,id 字典序;目录不存在/不可读
+/// = 空列表。每次请求现扫(拖入 .css 即新主题,零注册,无需重启)。
+fn scan_custom_themes(dir: &std::path::Path) -> Vec<CustomTheme> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<CustomTheme> = rd
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            if !valid_theme_file_name(&name) {
+                return None;
+            }
+            Some(CustomTheme {
+                id: name[..name.len() - 4].to_string(),
+                name,
+                path: e.path(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
 }
 
 /// 从 Shared 当前状态构建偏好快照(与桌面版 snapshot_prefs 同构)
@@ -261,6 +352,9 @@ fn snapshot_prefs(s: &Shared) -> StoredPrefs {
     p.search_regex = s.search_regex.load(Ordering::Relaxed);
     p.timer_send = s.timer_on.load(Ordering::Relaxed);
     p.timer_interval = format!("{}", *s.timer_interval.lock().unwrap());
+    p.send_history = s.send_history.lock().unwrap().clone();
+    p.send_ending = *s.send_ending.lock().unwrap();
+    p.hex_send = s.hex_send.load(Ordering::Relaxed);
     p
 }
 
@@ -394,6 +488,12 @@ struct SettingsReq {
     auto_frame: Option<bool>,
     #[serde(default)]
     search_regex: Option<bool>,
+    /// 发送行尾 0=CRLF 1=LF 2=CR 3=无(UI 习惯记忆)
+    #[serde(default)]
+    send_ending: Option<i32>,
+    /// HEX 发送模式
+    #[serde(default)]
+    hex_send: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -466,6 +566,9 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         iface_index: Mutex::new(saved.iface_index.clamp(0, 1)),
         speed_index: Mutex::new(saved.speed_index.clamp(0, SPEEDS_KHZ.len() as i32 - 1)),
         channel: Mutex::new(saved.channel.clamp(0, 15) as u32),
+        send_history: Mutex::new(saved.send_history.clone()),
+        send_ending: Mutex::new(saved.send_ending.clamp(0, 3)),
+        hex_send: AtomicBool::new(saved.hex_send),
         timer_on: AtomicBool::new(saved.timer_send),
         timer_interval: Mutex::new(timer_interval_init),
         timer_text: Mutex::new(String::new()),
@@ -523,8 +626,10 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         .route("/api/status", get(api_status))
         .route("/api/prefs", get(api_prefs))
         .route("/api/themes", get(api_themes))
+        .route("/api/theme-css/{id}", get(api_theme_css))
         .route("/api/devices", get(api_devices))
         .route("/api/jlinks", get(api_jlinks))
+        .route("/api/history", get(api_history))
         .route("/api/connect", post(api_connect))
         .route("/api/disconnect", post(api_disconnect))
         .route("/api/power", post(api_power))
@@ -862,16 +967,55 @@ async fn api_prefs(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value>
         "searchRegex": shared.search_regex.load(Ordering::Relaxed),
         "timerOn": shared.timer_on.load(Ordering::Relaxed),
         "timerIntervalSec": *shared.timer_interval.lock().unwrap(),
+        "sendEnding": *shared.send_ending.lock().unwrap(),
+        "hexSend": shared.hex_send.load(Ordering::Relaxed),
     }))
 }
 
+/// 内置主题(前端 index.html 内嵌同款主题表,前端按 id 覆盖,不落盘)+
+/// 自定义主题(exe 旁 themes/*.css,每次现扫:拖入即生效,零注册)
 async fn api_themes() -> Json<serde_json::Value> {
-    Json(serde_json::json!([
-        {"id": "dark", "name": "深色"},
-        {"id": "light", "name": "浅色"},
-        {"id": "oled", "name": "OLED 纯黑"},
-        {"id": "sepia", "name": "护眼暖色"},
-    ]))
+    let mut items = serde_json::json!([
+        {"id": "dark", "name": "深色", "custom": false},
+        {"id": "light", "name": "浅色", "custom": false},
+        {"id": "oled", "name": "OLED 纯黑", "custom": false},
+        {"id": "sepia", "name": "护眼暖色", "custom": false},
+    ]);
+    let arr = items.as_array_mut().unwrap();
+    for t in scan_custom_themes(&themes_dir()) {
+        // 与内置同名的 .css 不进列表(前端内置表覆盖,列出来只会出现两个相同 value)
+        if BUILTIN_THEME_IDS.contains(&t.id.as_str()) {
+            continue;
+        }
+        arr.push(serde_json::json!({"id": t.id, "name": t.name, "custom": true}));
+    }
+    Json(items)
+}
+
+/// 自定义主题 CSS 文本(text/css);内置主题与未知 id 一律 404(前端内置表
+/// 覆盖)。路径安全:只在「本机扫描列表」里按 id 精确匹配,拿到的路径来自
+/// read_dir 而非用户输入,天然无目录穿越面。
+async fn api_theme_css(Path(id): Path<String>) -> Response {
+    let hit = scan_custom_themes(&themes_dir())
+        .into_iter()
+        .find(|t| t.id == id);
+    match hit {
+        Some(t) => match std::fs::read(&t.path) {
+            Ok(bytes) => (
+                [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+                bytes,
+            )
+                .into_response(),
+            // 扫描后文件被删等竞态:按不存在处理
+            Err(_) => StatusCode::NOT_FOUND.into_response(),
+        },
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// 发送历史(最新在前,上限 50;前端 ↑↓ 浏览的数据源)
+async fn api_history(State(shared): State<Arc<Shared>>) -> Json<Vec<String>> {
+    Json(shared.send_history.lock().unwrap().clone())
 }
 
 async fn api_devices(State(shared): State<Arc<Shared>>) -> Json<Vec<String>> {
@@ -1132,6 +1276,12 @@ async fn api_settings(
     }
     if let Some(v) = req.search_regex {
         shared.search_regex.store(v, Ordering::Relaxed);
+    }
+    if let Some(v) = req.send_ending {
+        *shared.send_ending.lock().unwrap() = v.clamp(0, 3);
+    }
+    if let Some(v) = req.hex_send {
+        shared.hex_send.store(v, Ordering::Relaxed);
     }
     StatusCode::OK
 }
@@ -1459,5 +1609,62 @@ mod tests {
                 channel: 15,
             })
         );
+    }
+
+    #[test]
+    fn history_push_dedupes_moves_to_front_and_caps() {
+        let mut h: Vec<String> = Vec::new();
+        history_push(&mut h, "a");
+        history_push(&mut h, "b");
+        history_push(&mut h, "c");
+        assert_eq!(h, vec!["c", "b", "a"]); // 最新在前
+        history_push(&mut h, "a"); // 去重 + 置顶
+        assert_eq!(h, vec!["a", "c", "b"]);
+        for i in 0..60 {
+            history_push(&mut h, &format!("x{i}"));
+        }
+        assert_eq!(h.len(), 50); // 上限 50
+        assert_eq!(h[0], "x59");
+        history_push(&mut h, "b"); // 超限外的旧项重发 → 置顶,尾部挤掉一条
+        assert_eq!(h[0], "b");
+        assert_eq!(h.len(), 50);
+    }
+
+    #[test]
+    fn theme_file_name_whitelist_rules() {
+        assert!(valid_theme_file_name("my-theme_1.css"));
+        assert!(valid_theme_file_name("T.user.css"));
+        // 拒绝:非 css / 分隔符 / 穿越 / 空扩展名 / 超长 / 非 ASCII
+        for bad in [
+            "plain.txt",
+            "a/b.css",
+            "a\\b.css",
+            "../x.css",
+            ".css",
+            "",
+            &format!("{}.css", "x".repeat(64)),
+            "主题.css",
+            "ok .css",
+        ] {
+            assert!(!valid_theme_file_name(bad), "\"{bad}\" 应被拒绝");
+        }
+    }
+
+    #[test]
+    fn scan_custom_themes_sorted_filtered_missing_dir_empty() {
+        let d = std::env::temp_dir().join(format!("mini-rtt-themes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(scan_custom_themes(&d).is_empty()); // 目录不存在 = 空
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("zeta.css"), ":root{}").unwrap();
+        std::fs::write(d.join("alpha.css"), ":root{}").unwrap();
+        std::fs::write(d.join("notes.txt"), "not a theme").unwrap();
+        std::fs::create_dir_all(d.join("fake.css")).unwrap(); // 目录不算
+        let got = scan_custom_themes(&d);
+        let ids: Vec<_> = got.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["alpha", "zeta"], "字典序 + 只收 .css 文件");
+        assert_eq!(got[0].name, "alpha.css");
+        assert!(got[0].path.ends_with("alpha.css"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

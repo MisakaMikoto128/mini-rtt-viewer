@@ -577,7 +577,8 @@
   $('send-btn').onclick = send;
   function send() {
     if (!sendBox.value.trim()) return;
-    fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: sendBox.value }) })
+    fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ text: sendBox.value, hex: $('hex-send').checked }) })
       .then(r => {
         if (r.ok) {
           const v = sendBox.value;
@@ -592,8 +593,10 @@
   }
   $('auto-scroll').onchange = e => { autoScroll = e.target.checked; lsSet('auto-scroll', autoScroll ? '1' : '0'); if (autoScroll) scrollBottom(); };
 
-  // 面板偏好 localStorage 写入(发送组/连接组控件,加载时已回填)
-  $('tx-ending').addEventListener('change', e => lsSet('tx-ending', e.target.value));
+  // 面板偏好 localStorage 写入 + 服务端偏好(发送组/连接组控件,加载时已回填);
+  // 发送行尾/HEX 发送是纯 UI 习惯,经 settings 通道记忆,不改发送内容
+  $('tx-ending').addEventListener('change', e => { lsSet('tx-ending', e.target.value); postSettings({ sendEnding: +e.target.value }); });
+  $('hex-send').addEventListener('change', e => { lsSet('hex-send', e.target.checked ? '1' : '0'); postSettings({ hexSend: e.target.checked }); });
   $('channel').addEventListener('change', e => lsSet('channel', e.target.value));
   $('iface').addEventListener('change', e => lsSet('iface', e.target.value));
   $('speed').addEventListener('change', e => lsSet('speed', String(e.target.selectedIndex)));
@@ -659,10 +662,55 @@
   applyFs();
 
   // 主题(localStorage 记忆;下拉已迁入左面板接收组底部,与 A± 同区)
+  // 内置 4 套内嵌于上方 <style>;自定义主题 = 服务端 exe 旁 themes/*.css
+  // (SerialHub ADR-18 同构):选中即拉 CSS 注入 <style data-custom-theme>,
+  // 切换不刷新页面;移除 data-theme 让内置 :root 退为兜底,注入的 :root
+  // 令牌覆盖才能生效(同级选择器后者胜)
   const themeSel = $('theme');
-  themeSel.onchange = () => { document.documentElement.dataset.theme = themeSel.value; localStorage.setItem('web-theme', themeSel.value); };
-  themeSel.value = localStorage.getItem('web-theme') || 'dark';
-  document.documentElement.dataset.theme = themeSel.value;
+  const BUILTIN_THEMES = ['dark', 'light', 'oled', 'sepia'];
+  let customThemeStyle = null;
+  function setCustomThemeCss(css) {
+    if (customThemeStyle) customThemeStyle.remove();
+    customThemeStyle = null;
+    if (css != null) {
+      customThemeStyle = document.createElement('style');
+      customThemeStyle.setAttribute('data-custom-theme', '');
+      customThemeStyle.textContent = css;
+      document.head.appendChild(customThemeStyle); // 置于主 <style> 之后,同特异性时后者的覆盖生效
+    }
+  }
+  function applyTheme(id) {
+    if (BUILTIN_THEMES.includes(id)) {
+      document.documentElement.dataset.theme = id;
+      setCustomThemeCss(null);
+      return;
+    }
+    fetch(API + '/api/theme-css/' + encodeURIComponent(id))
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
+      .then(css => { document.documentElement.removeAttribute('data-theme'); setCustomThemeCss(css); })
+      .catch(() => { document.documentElement.dataset.theme = 'dark'; setCustomThemeCss(null); }); // 主题文件被删等 → 回落内置深色
+  }
+  themeSel.onchange = () => { localStorage.setItem('web-theme', themeSel.value); applyTheme(themeSel.value); };
+  const savedTheme = localStorage.getItem('web-theme') || 'dark';
+  if (BUILTIN_THEMES.includes(savedTheme)) themeSel.value = savedTheme; // 自定义主题的 option 要等 /api/themes 回来才补齐
+  applyTheme(savedTheme);
+  // 自定义主题选项(exe 旁 themes/*.css,每次进入页面现拉)
+  fetch(API + '/api/themes').then(r => r.json()).then(list => {
+    for (const t of list) {
+      if (BUILTIN_THEMES.includes(t.id)) continue; // 内置项已在 HTML
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.name;
+      themeSel.appendChild(o);
+    }
+    const saved = localStorage.getItem('web-theme') || 'dark';
+    if (!BUILTIN_THEMES.includes(saved)) {
+      themeSel.value = saved;
+      if (themeSel.value !== saved) { // 所存主题已不存在(文件被删)→ 回落深色
+        themeSel.value = 'dark';
+        localStorage.setItem('web-theme', 'dark');
+      }
+    }
+  }).catch(() => {});
 
   // ===== VS Code 式日志搜索(P0)=====
   // 数据源:#log 已渲染行文本(≤500,与服务端 MAX_LOG_ROWS 一致;被裁剪即不可搜);按行匹配,不跨行。
@@ -925,11 +973,18 @@
     lsSet('auto-frame', p.autoFrame ? '1' : '0');
     if (p.timerIntervalSec != null) $('timer-interval').value = p.timerIntervalSec;
     $('timer-on').checked = !!p.timerOn;
+    if (p.sendEnding != null) { $('tx-ending').value = String(p.sendEnding); lsSet('tx-ending', String(p.sendEnding)); }
+    if (typeof p.hexSend === 'boolean') { $('hex-send').checked = !!p.hexSend; lsSet('hex-send', p.hexSend ? '1' : '0'); }
     if (typeof p.searchRegex === 'boolean') {
       sregex = p.searchRegex;
       lsSet('search-regex', sregex ? '1' : '0');
       refreshToggles();
     }
+  }).catch(() => {});
+  // 发送历史:服务端持久化(prefs.send_history,去重置顶上限 50)——启动拉一次,
+  // 最新在前;本次会话新发送在 send() 里即时并入本地(同规则),↑↓ 浏览共用一份
+  fetch(API + '/api/history').then(r => r.json()).then(h => {
+    if (Array.isArray(h)) for (const t of h) if (!sendHistory.includes(t)) sendHistory.push(t);
   }).catch(() => {});
 </script>
 </body>

@@ -22,6 +22,9 @@
 - ☐ 桌面版遗留 UI 问题(状态栏文本间距/面板控件超界)——浏览器版布局体系
   天然规避;桌面版待 ADR-11 决策后定优先级
 - ☐ UI 截图刷新:README/docs/images 换 0.1.9 界面(浅色主题、1280+ 宽)
+- ☐ Web 管理台:暂停态拖选 → Ctrl+F 预填为空(QA E2,复现 1 次,未稳定复现)。
+  推测机制:暂停打点前后流式行仍在途 → trim/onRowsRemoved 触发 renderRow
+  重写行 DOM → selection 被清除;待稳定复现后决定是否在 renderRow 前保护选区
 
 ## 存档(✔ / ✖)
 

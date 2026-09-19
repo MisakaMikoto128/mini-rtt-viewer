@@ -22,7 +22,9 @@ from playwright.sync_api import sync_playwright
 
 PORT = 18099  # QA 纪律:固定 18099,避开开发常用端口
 BASE = f"http://127.0.0.1:{PORT}"
-EXE = r"target\release\mini-rtt-viewer.exe"
+# index.html 经 include_str! 编译期内嵌(2026-09-19 Dev-UI):HTML 改版后旧 exe
+# 不含新 UI。允许 RTT_TEST_EXE 指定待测二进制(如 dev 构建产物);默认路径不变
+EXE = os.environ.get("RTT_TEST_EXE") or r"target\release\mini-rtt-viewer.exe"
 
 # UX 新色板 accent #2B6E8F(降饱和钢蓝,2026-09 色板重构;
 # getComputedStyle 返回 rgb 形式,2026-09-19 实测确认)
@@ -365,9 +367,11 @@ def test_fr18_web_search_p0(page):
 
 def test_ui_layout_p0(page):
     """UI P0 视觉断言(2026-09 UI 重构规格,2026-09-19 getComputedStyle 实测定值):
-    左面板宽 420±10、控件高 40±2(按钮基线 42 亦达标)、日志行高 32±1、
-    日志字号 15、无顶部 header、发送条在日志区下方通栏、
-    单连接切换按钮(连接/断开同钮)、通道选项 16 项。"""
+    左面板宽 420±10、控件高 40±2(按钮统一 40)、日志行高 32±1、日志字号 15、
+    无顶部 header、发送条在日志区下方通栏、单连接切换按钮(连接/断开同钮)、
+    通道选项 16 项。
+    2026-09-19 Dev-UI 结构迁移(P0-2):发送行尾/定时间隔随「发送」组迁入
+    #send-opts 紧凑行(32±2,同搜索条令牌),不再参与 40±2 抽样;其余不变。"""
     page.goto(BASE)  # 全新加载,排除前序用例的交互残留
     page.wait_for_selector("#log .row", timeout=15000)
     page.wait_for_timeout(1500)  # 等 WS 状态/prefs 回填落定,避免测量到中间态
@@ -376,7 +380,7 @@ def test_ui_layout_p0(page):
     aside_w = page.evaluate("document.querySelector('aside').getBoundingClientRect().width")
     assert 410 <= aside_w <= 430, f"左面板宽应 420±10:实测 {aside_w}"
 
-    # 2) 控件高 40±2(select/input/combo 容器 40,按钮 42;全部在容差内)
+    # 2) 控件高 40±2(select/input/combo 容器/按钮统一 40)
     #    例外:#send-text/#send-btn 为加高的多行发送区,单独断言 72±2
     heights = page.evaluate(
         """() => {
@@ -384,13 +388,22 @@ def test_ui_layout_p0(page):
             const ids = ['jlink', 'chip-combo', 'iface', 'speed', 'channel',
                          'connect-btn', 'reset-btn', 'clear-btn', 'pause-btn',
                          'mark-btn', 'export-btn',
-                         'rx-ending', 'encoding', 'tx-ending', 'timer-interval',
-                         'frame-timeout', 'theme'];
+                         'rx-ending', 'encoding', 'frame-timeout', 'theme'];
             return Object.fromEntries(ids.map(id => [id, h(document.getElementById(id))]));
         }"""
     )
     bad = {k: v for k, v in heights.items() if not (38 <= v <= 42)}
     assert not bad, f"控件高应 40±2:越界 {bad}"
+
+    # 2b) 发送选项行 #send-opts(「发送」组迁入发送条的紧凑行):控件 32±2
+    opt_h = page.evaluate(
+        """() => {
+            const h = el => el.getBoundingClientRect().height;
+            return [h(document.getElementById('tx-ending')),
+                    h(document.getElementById('timer-interval'))];
+        }"""
+    )
+    assert all(30 <= v <= 34 for v in opt_h), f"发送选项行控件应 32±2:实测 {opt_h}"
     send_h = page.evaluate(
         "(() => { const t = document.getElementById('send-text').getBoundingClientRect().height;"
         " const b = document.getElementById('send-btn').getBoundingClientRect().height;"
@@ -478,10 +491,28 @@ def test_ui_layout_p0(page):
         )
 
     assert btn_state_matches_text(), "连接按钮文案与配色应联动(连接=primary/断开=danger)"
+    # 确定性切换断言(F9):先点一次进入手动模式——demo 状态机在手动干预后
+    # 挂起自动连接/断开周期(不再自发翻转);第二次翻转只能来自点击。
+    # 旧断言只等文案翻转,可能撞上 demo 20s 自动周期,并非点击生效。
     pre = page.evaluate("document.getElementById('connect-btn').textContent.trim()")
-    page.click("#connect-btn")  # 发送切换意图(demo 连接态自主循环,翻转可能来自任一方)
+    page.click("#connect-btn")
     page.wait_for_function(
         f"document.getElementById('connect-btn').textContent.trim() !== '{pre}'",
-        timeout=12000,
+        timeout=5000,
     )
     assert btn_state_matches_text(), "切换后文案与配色应仍联动"
+    # 第二次点击:手动模式下唯一翻转来源,断言按钮与服务端状态一致翻变
+    pre2 = page.evaluate("document.getElementById('connect-btn').textContent.trim()")
+    page.click("#connect-btn")
+    page.wait_for_function(
+        f"document.getElementById('connect-btn').textContent.trim() !== '{pre2}'",
+        timeout=5000,
+    )
+    now_text = page.evaluate(
+        "document.getElementById('connect-btn').textContent.trim()"
+    )
+    status = json.load(urllib.request.urlopen(f"{BASE}/api/status"))
+    assert status["connected"] == (now_text == "断开"), (
+        f"点击翻转后 /api/status 应与按钮一致:按钮={now_text} "
+        f"connected={status['connected']}"
+    )

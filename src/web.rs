@@ -19,15 +19,17 @@
 //! - GET  /api/jlinks      → [{sn, name}]
 //! - GET  /api/history     → [text] 发送历史(最新在前,上限 50)
 //! - POST /api/connect     {chip, ifaceIndex, speedIndex, channel};连接参数写入偏好
-//!   快照源;demo 模式只记录参数,不 spawn 真 worker
-//! - POST /api/disconnect
-//! - POST /api/power       {on}
+//!   快照源;demo 模式命令进 demo 线程模拟连接(demo 状态机),不加载 DLL
+//! - POST /api/disconnect  demo 模式命令进 demo 线程(手动断开后不自动重连)
+//! - POST /api/power       {on};demo 未连接 409,连接态日志行反馈(demo 无法真供电)
 //! - POST /api/reset       {mode?: "in-place"|"reconnect"};缺省 in-place(现有
 //!   Reset 命令,复位目标并重挂 RTT 续收);reconnect=先走断开逻辑,1 秒后用
-//!   上次连接参数重新 spawn worker(无上次参数 409;demo 无真实目标,两模式
-//!   均 200 空操作);空请求体容忍为缺省 in-place(旧前端兼容)
+//!   上次连接参数重新 spawn worker(无上次参数 409;demo 未连接 409,连接态
+//!   由 demo 线程模拟日志行 + 短暂 State(false→true));空请求体容忍为缺省
+//!   in-place(旧前端兼容)
 //! - POST /api/settings    逐字段可选(camelCase):rxEnding / frameTimeout /
-//!   encodingIndex / hexRx / autoFrame / searchRegex / sendEnding / hexSend
+//!   encodingIndex / hexRx / autoFrame / searchRegex / sendEnding / hexSend /
+//!   chip / ifaceIndex / speedIndex / channel(连接设置组持久化,F1)
 //! - POST /api/send        {text, hex?} → 回显一行,计数 TX,内容记为定时发送源;
 //!   成功后记入发送历史(prefs.send_history,去重置顶上限 50,与桌面版同规则)
 //! - POST /api/timer       {on, intervalSec?, text?, hex?};定时重发 0.001-999 秒,
@@ -253,7 +255,9 @@ impl Shared {
         } else {
             text.as_bytes().to_vec()
         };
-        // TX 计数按实际发送字节数(HEX 模式 = 解析后字节,非原文长度)
+        // 发送行尾(FR-12/F7):按 UI 选择追加行尾字节,文本/HEX 同规则
+        let payload = append_send_ending(payload, *self.send_ending.lock().unwrap());
+        // TX 计数按实际发送字节数(HEX 模式 = 解析后字节 + 行尾,非原文长度)
         let n = payload.len();
         if let Some(tx) = self.cmd_tx.lock().unwrap().clone() {
             let _ = tx.send(WorkerCmd::Send(payload));
@@ -367,13 +371,18 @@ struct SendReq {
     hex: bool,
 }
 
-/// hex 文本 → 字节:容忍空格/冒号/连字符与 0x 前缀;空/奇数位/非法字符报错
+/// hex 文本 → 字节:容忍空格/冒号/连字符分隔与**每段** 0x/0X 前缀
+/// ("0x41 0x42" ≡ "41 42",FR-11);空/奇数位/非法字符报错(错误信息经
+/// /api/send 400 传回前端 toast 展示,F8b)
 fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
     let cleaned: String = s
-        .trim()
-        .trim_start_matches("0x")
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != ':' && *c != '-')
+        .split(|c: char| c.is_whitespace() || c == ':' || c == '-')
+        .filter(|t| !t.is_empty())
+        .map(|tok| {
+            tok.strip_prefix("0x")
+                .or_else(|| tok.strip_prefix("0X"))
+                .unwrap_or(tok)
+        })
         .collect();
     if cleaned.is_empty() {
         return Err("空输入".into());
@@ -392,6 +401,18 @@ fn parse_hex_bytes(s: &str) -> Result<Vec<u8>, String> {
         out.push(((hi << 4) | lo) as u8);
     }
     Ok(out)
+}
+
+/// 按发送行尾选择给 payload 追加行尾字节(FR-12,文本/HEX 同规则):
+/// 0=CRLF 1=LF 2=CR 3=无;TX 计数按追加后的实际字节数
+fn append_send_ending(mut payload: Vec<u8>, ending: i32) -> Vec<u8> {
+    match ending {
+        0 => payload.extend_from_slice(b"\r\n"),
+        1 => payload.extend_from_slice(b"\n"),
+        2 => payload.extend_from_slice(b"\r"),
+        _ => {}
+    }
+    payload
 }
 
 /// 文本 → 十六进制大写文本(UTF-8 字节,每字节两位、空格分隔,与真机 worker
@@ -494,6 +515,20 @@ struct SettingsReq {
     /// HEX 发送模式
     #[serde(default)]
     hex_send: Option<bool>,
+    // ---- 连接设置组(F1:web→服务端保存链路;此前这五项只写 localStorage,
+    // reload 被 /api/prefs 服务端值回填覆盖,改动全部丢失)----
+    /// 目标设备名(存原始输入;连接时才做设备库匹配)
+    #[serde(default)]
+    chip: Option<String>,
+    /// 接口 0=SWD 1=JTAG
+    #[serde(default)]
+    iface_index: Option<i32>,
+    /// 速度下拉索引
+    #[serde(default)]
+    speed_index: Option<i32>,
+    /// RTT 通道 0-15
+    #[serde(default)]
+    channel: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -579,7 +614,12 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
     });
 
     if opts.demo {
-        demo::spawn(msg_tx);
+        // demo 虚拟 worker 的命令通道:连接/断开/重置/电源命令由 demo 线程消费
+        // (F2:此前 demo 无命令消费者,cmd_tx 发出的命令全部无人接收,
+        // 按钮「连接/断开/重置目标/电源输出」在 demo 下全部无效)
+        let (demo_cmd_tx, demo_cmd_rx) = mpsc::channel::<WorkerCmd>();
+        *shared.cmd_tx.lock().unwrap() = Some(demo_cmd_tx);
+        demo::spawn(msg_tx, demo_cmd_rx, shared.frame_timeout_ms.clone());
         shared.connected.store(true, Ordering::Relaxed);
         // demo 虚拟会话启动即"已连接":会话计时起点 + 状态文案 + 初始连接
         // 标记行(与 State 迁移标记同款式;demo 的 State(true) 5 秒后才到,
@@ -724,6 +764,9 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                     }
                 }
                 Ok(WorkerMsg::Progress(text)) => {
+                    // 进度文案同步进 status_text(F3):2s 轮询的 sessionStatus
+                    // 与 WS progress 同源,轮询回填不会倒退/打架
+                    *shared.status_text.lock().unwrap() = clean_status_text(&text);
                     let _ = shared.events_tx.send(format!(
                         r#"{{"type":"progress","text":{}}}"#,
                         serde_json::to_string(&text).unwrap()
@@ -745,6 +788,15 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                         if let Some(cb) = &shared.on_state {
                             cb(ServiceEvent::ConnectedChanged(connected));
                         }
+                    }
+                    if !connected {
+                        // 断开统一口径(F2):会话统计全清 + 设备信息清空,
+                        // 消除「sessionSec 归零而 rxBytes 残留」的口径矛盾
+                        // (demo 周期断开与真机断开走同一分支)
+                        shared.rx_bytes.store(0, Ordering::Relaxed);
+                        shared.tx_bytes.store(0, Ordering::Relaxed);
+                        *shared.session_start.lock().unwrap() = None;
+                        *shared.device_info.lock().unwrap() = None;
                     }
                     // 状态文案每条 State 都刷新(连接失败的错误详情也随 false 态带出)
                     *shared.status_text.lock().unwrap() = clean_status_text(&status);
@@ -918,9 +970,11 @@ fn demo_device_json() -> serde_json::Value {
 
 async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value> {
     let connected = shared.connected.load(Ordering::Relaxed);
-    // device 8 字段(与 WS device 事件同形):demo 为演示数据,真机取最近一次
-    // DeviceInfo(断开后保留上次信息,与桌面版同语义)
-    let device = if shared.demo_mode {
+    // device 8 字段(与 WS device 事件同形):demo 为演示数据且**仅连接态提供**
+    // (断开清空,与统计清零同口径;F2 前断开态仍回演示数据,前端设备信息
+    // 断开后看起来"仍连接"),真机取最近一次 DeviceInfo(State(false) 已清空,
+    // 断开后为 None)
+    let device = if shared.demo_mode && connected {
         Some(demo_device_json())
     } else {
         shared.device_info.lock().unwrap().as_ref().map(|d| {
@@ -1001,11 +1055,9 @@ async fn api_theme_css(Path(id): Path<String>) -> Response {
         .find(|t| t.id == id);
     match hit {
         Some(t) => match std::fs::read(&t.path) {
-            Ok(bytes) => (
-                [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-                bytes,
-            )
-                .into_response(),
+            Ok(bytes) => {
+                ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], bytes).into_response()
+            }
             // 扫描后文件被删等竞态:按不存在处理
             Err(_) => StatusCode::NOT_FOUND.into_response(),
         },
@@ -1069,7 +1121,7 @@ fn spawn_worker(shared: &Shared, params: &SavedConnect) {
 }
 
 /// 连接:芯片名补全(库内子串匹配首个全称,与桌面版同规则)→ 连接参数写入
-/// 偏好快照源 → spawn worker(demo 模式只记录参数,不加载 DLL)
+/// 偏好快照源 → spawn worker(demo 模式命令进 demo 线程模拟连接,不加载 DLL)
 async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectReq>) -> Response {
     if shared
         .worker
@@ -1128,6 +1180,11 @@ async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectR
     *shared.last_connect.lock().unwrap() = Some(params.clone());
 
     if shared.demo_mode {
+        // demo 虚拟 worker:命令进 demo 线程,立即 State(true)(F2 前此处
+        // 只记录参数,「连接」按钮在 demo 下完全无效)
+        if let Some(tx) = shared.cmd_tx.lock().unwrap().as_ref() {
+            let _ = tx.send(WorkerCmd::DemoConnect);
+        }
         return StatusCode::OK.into_response();
     }
 
@@ -1135,8 +1192,15 @@ async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectR
     StatusCode::OK.into_response()
 }
 
-/// 断开:置停止标志,worker 的 Exited 消息回到未连接态(与桌面版同协议)
+/// 断开:置停止标志,worker 的 Exited 消息回到未连接态(与桌面版同协议);
+/// demo 模式命令进 demo 线程(手动断开后不自动重连,由 demo 状态机保证)
 async fn api_disconnect(State(shared): State<Arc<Shared>>) -> StatusCode {
+    if shared.demo_mode {
+        if let Some(tx) = shared.cmd_tx.lock().unwrap().as_ref() {
+            let _ = tx.send(WorkerCmd::DemoDisconnect);
+        }
+        return StatusCode::OK;
+    }
     if let Some(h) = shared.worker.lock().unwrap().as_ref() {
         h.stop.store(true, Ordering::Relaxed);
     }
@@ -1147,6 +1211,10 @@ async fn api_disconnect(State(shared): State<Arc<Shared>>) -> StatusCode {
 }
 
 async fn api_power(State(shared): State<Arc<Shared>>, Json(req): Json<PowerReq>) -> Response {
+    // demo 与真机同语义:未连接拒绝(前端此时也禁用勾选框)
+    if shared.demo_mode && !shared.connected.load(Ordering::Relaxed) {
+        return (StatusCode::CONFLICT, "未连接").into_response();
+    }
     let Some(tx) = shared.cmd_tx.lock().unwrap().clone() else {
         return (StatusCode::CONFLICT, "未连接").into_response();
     };
@@ -1195,7 +1263,8 @@ fn wait_worker_exit(h: Option<&Arc<WorkerHandle>>, timeout: Duration) -> bool {
 
 /// 复位两模式:in-place = 现有 Reset 命令(worker 复位目标并重挂 RTT 续收);
 /// reconnect = 先走断开逻辑,1 秒后用上次连接参数重新 spawn worker(重启服务
-/// 且无上次参数 → 409)。demo 无真实目标,两模式均 200 空操作。
+/// 且无上次参数 → 409)。demo 无真实目标:命令进 demo 线程模拟(日志行 +
+/// 短暂 State(false→true)),未连接态与真机同语义 409。
 async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
     // 兼容旧前端:POST 无请求体 = 缺省 in-place;非空则必须是合法 JSON
     let req: ResetReq = if body.is_empty() {
@@ -1210,6 +1279,12 @@ async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
         }
     };
     if shared.demo_mode {
+        if !shared.connected.load(Ordering::Relaxed) {
+            return (StatusCode::CONFLICT, "未连接").into_response();
+        }
+        if let Some(tx) = shared.cmd_tx.lock().unwrap().as_ref() {
+            let _ = tx.send(WorkerCmd::Reset);
+        }
         return StatusCode::OK.into_response();
     }
     match parse_reset_mode(req.mode.as_deref()) {
@@ -1282,6 +1357,20 @@ async fn api_settings(
     }
     if let Some(v) = req.hex_send {
         shared.hex_send.store(v, Ordering::Relaxed);
+    }
+    // 连接设置组(F1):进偏好快照源,与其它设置同一条「tick 500ms 快照比对
+    // 落盘 → 重启 /api/prefs 回填」链路;夹取口径与 /api/connect 一致
+    if let Some(v) = req.chip {
+        *shared.chip_name.lock().unwrap() = v.trim().to_string();
+    }
+    if let Some(v) = req.iface_index {
+        *shared.iface_index.lock().unwrap() = v.clamp(0, 1);
+    }
+    if let Some(v) = req.speed_index {
+        *shared.speed_index.lock().unwrap() = v.clamp(0, SPEEDS_KHZ.len() as i32 - 1);
+    }
+    if let Some(v) = req.channel {
+        *shared.channel.lock().unwrap() = v.clamp(0, 15);
     }
     StatusCode::OK
 }
@@ -1495,6 +1584,10 @@ mod tests {
         assert_eq!(parse_hex_bytes("41:42-43").unwrap(), vec![0x41, 0x42, 0x43]);
         assert_eq!(parse_hex_bytes("0x4142").unwrap(), vec![0x41, 0x42]);
         assert_eq!(parse_hex_bytes("aabb").unwrap(), vec![0xaa, 0xbb]);
+        // FR-11/F8a:每段容忍 0x/0X 前缀("0x41 0x42" ≡ "41 42")
+        assert_eq!(parse_hex_bytes("0x41 0x42").unwrap(), vec![0x41, 0x42]);
+        assert_eq!(parse_hex_bytes("0X41 0X42").unwrap(), vec![0x41, 0x42]);
+        assert_eq!(parse_hex_bytes("0x41:0x42").unwrap(), vec![0x41, 0x42]);
     }
 
     #[test]
@@ -1502,6 +1595,20 @@ mod tests {
         assert!(parse_hex_bytes("abc").is_err()); // 奇数位
         assert!(parse_hex_bytes("zz").is_err()); // 非法字符
         assert!(parse_hex_bytes("  ").is_err()); // 空
+        assert!(parse_hex_bytes("0x").is_err()); // 只有前缀 = 空
+    }
+
+    #[test]
+    fn send_ending_appends_bytes_per_selection() {
+        // FR-12/F7:0=CRLF 1=LF 2=CR 3=无;TX 计数按追加后字节数
+        assert_eq!(append_send_ending(b"x".to_vec(), 0), b"x\r\n");
+        assert_eq!(append_send_ending(b"x".to_vec(), 1), b"x\n");
+        assert_eq!(append_send_ending(b"x".to_vec(), 2), b"x\r");
+        assert_eq!(append_send_ending(b"x".to_vec(), 3), b"x");
+        assert_eq!(append_send_ending(b"x".to_vec(), 99), b"x"); // 越界回落无行尾
+                                                                 // HEX 模式同理:解析字节 + 行尾字节
+        let hex = parse_hex_bytes("0x41 0x42").unwrap();
+        assert_eq!(append_send_ending(hex, 1), vec![0x41, 0x42, b'\n']);
     }
 
     #[test]
@@ -1515,6 +1622,16 @@ mod tests {
         assert_eq!(req.hex_rx, Some(true));
         assert_eq!(req.auto_frame, Some(false));
         assert_eq!(req.search_regex, Some(true));
+        // F1:连接设置组五项经同一 settings 通道(camelCase 命中)
+        let req: SettingsReq = serde_json::from_str(
+            r#"{"chip":"MYCHIP-TEST1","ifaceIndex":1,"speedIndex":4,"channel":3,"autoFrame":false}"#,
+        )
+        .unwrap();
+        assert_eq!(req.chip.as_deref(), Some("MYCHIP-TEST1"));
+        assert_eq!(req.iface_index, Some(1));
+        assert_eq!(req.speed_index, Some(4));
+        assert_eq!(req.channel, Some(3));
+        assert_eq!(req.auto_frame, Some(false));
     }
 
     #[test]

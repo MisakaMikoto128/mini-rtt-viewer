@@ -27,6 +27,9 @@ def page(server):
         pg = browser.new_page(viewport={"width": 1440, "height": 900})
         pg.goto(BASE)
         pg.wait_for_selector("#send-text", state="visible")
+        # FR-12(F7):发送行尾会附加字节;置「无」隔离出 HEX 解析计数,
+        # 使 +2 断言只反映 0x61 0x62 两个字节
+        pg.select_option("#tx-ending", "3")
         if not pg.is_checked("#hex-send"):
             pg.click("#hex-send")  # 勾选 HEX 发送(矩阵前置)
         assert pg.is_checked("#hex-send"), "前置:HEX 发送应处于勾选态"

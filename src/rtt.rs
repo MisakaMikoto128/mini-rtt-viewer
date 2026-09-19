@@ -51,6 +51,12 @@ pub enum WorkerCmd {
     Power(bool),
     /// 复位目标并恢复运行(复位后重挂 RTT:固件重新初始化后控制块可能移动)
     Reset,
+    /// (demo 数据源专用)模拟「连接」按钮:demo 线程消费并立即转 State(true);
+    /// 真机 worker 永远收不到(真机的连接 = spawn worker 本身),收到即忽略
+    DemoConnect,
+    /// (demo 数据源专用)模拟「断开」按钮:demo 线程消费并转 State(false),
+    /// 且此后不再自动重连(忠实模拟手动断开);真机 worker 收到即忽略
+    DemoDisconnect,
 }
 
 /// 应用退出信号:主窗口关闭后置位,worker 循环(包括阻塞中的轮询间隔)
@@ -398,6 +404,9 @@ fn rtt_read_loop(
                         if on { "开" } else { "关" }
                     )));
                 }
+                // demo 数据源专用命令:真机 worker 永远收不到(web.rs 仅在 demo
+                // 分支发送),防御性忽略即可
+                WorkerCmd::DemoConnect | WorkerCmd::DemoDisconnect => {}
             }
         }
         // 5ms 轮询:自动断帧按"相邻数据间隔"判定,轮询间隔决定间隔测量的精度上限

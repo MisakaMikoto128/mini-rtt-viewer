@@ -9,6 +9,7 @@
   /* 主题表(四主题按降饱和钢蓝系统一重配;与桌面版四主题对齐)
      基准:body/日志底 #0E1013、卡片 #16181D、边框 #262A31、accent #2B6E8F */
   :root, :root[data-theme="dark"] {
+    color-scheme: dark; /* P2-3/V8:原生控件(下拉/滚动条)随主题明暗 */
     --bg:#0E1013; --panel:#0E1013; --card:#16181D; --input:#0F1216; --btn:#232830;
     --text:#E6E8EB; --secondary:#9AA0A8; --muted:#6A7078; --border:#262A31;
     --accent:#2B6E8F; --ok:#4C9E62; --err:#C95F68; --danger:#A84E58;
@@ -16,6 +17,7 @@
     --search-hit:rgba(255,213,79,.28); --search-hit-current:rgba(255,152,0,.55);
   }
   :root[data-theme="light"] {
+    color-scheme: light;
     --bg:#EEF1F4; --panel:#EEF1F4; --card:#FFFFFF; --input:#F3F5F7; --btn:#E7EBEF;
     --text:#1E2226; --secondary:#5F6B76; --muted:#8B949D; --border:#D3D8DE;
     --accent:#2B6E8F; --ok:#2E7D32; --err:#C4454E; --danger:#C05A54;
@@ -23,6 +25,7 @@
     --search-hit:rgba(230,180,0,.40); --search-hit-current:rgba(255,145,0,.60);
   }
   :root[data-theme="oled"] {
+    color-scheme: dark;
     --bg:#000000; --panel:#000000; --card:#0C0E11; --input:#050607; --btn:#181C22;
     --text:#E2E4E7; --secondary:#9AA0A8; --muted:#5E646B; --border:#22262C;
     --accent:#2B6E8F; --ok:#4C9E62; --err:#D0606A; --danger:#B0505A;
@@ -30,6 +33,7 @@
     --search-hit:rgba(255,213,79,.33); --search-hit-current:rgba(255,152,0,.60);
   }
   :root[data-theme="sepia"] {
+    color-scheme: light;
     --bg:#F0E8D5; --panel:#F0E8D5; --card:#F9F3E3; --input:#F2EBD9; --btn:#EAE0C6;
     --text:#3A3222; --secondary:#7C6E52; --muted:#9C8F70; --border:#D8CCAA;
     --accent:#356A80; --ok:#4E7D46; --err:#B34A44; --danger:#AC5548;
@@ -39,13 +43,15 @@
   * { box-sizing: border-box; margin: 0; }
   body { background: var(--bg); color: var(--text); font: 13px/1.5 "Segoe UI", system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 
-  /* 控件基线(UX 规格):统一高 40px / 字号 14px / 圆角 6px;按钮高 42px
-     (特例:#send-btn 115×40;搜索条内 s-btn / combo 箭头由更specific选择器覆盖) */
-  select, input:not([type="checkbox"]), button {
+  /* 控件基线(UX 规格):统一高 40px / 字号 14px / 圆角 6px,按钮同 40(V3,
+     42/40 双高度体系已废);textarea 一并纳入主题(P0-1/V1,原 UA 白底直角)
+     特例:#send-text/#send-btn 72;#send-opts 行内控件 32(紧凑行,同搜索条令牌);
+     搜索条 32、其内 .s-btn/#s-input 24、.combo>.arrow 由更specific选择器覆盖 */
+  select, input:not([type="checkbox"]), textarea, button {
     background: var(--input); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 0 12px; font-family: inherit; font-size: 14px; height: 40px; }
-  select:focus, input:focus, button:focus { outline: none; border-color: var(--accent); }
-  button { cursor: pointer; height: 42px; padding: 0 14px; background: var(--btn); }
+  select:focus, input:focus, textarea:focus, button:focus { outline: none; border-color: var(--accent); }
+  button { cursor: pointer; background: var(--btn); }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .45; cursor: default; }
   select:disabled, input:disabled { opacity: .55; }
@@ -53,20 +59,23 @@
   button.primary:hover:not(:disabled) { filter: brightness(1.12); }
   button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
   label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--secondary);
-    cursor: pointer; min-height: 20px; }
+    cursor: pointer; min-height: 18px; line-height: 18px; } /* 行高 20→18(P0-2 密度) */
   label.check input { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; flex: none; }
-  .unit { font-size: 12px; color: var(--muted); }
+  .unit { font-size: 12px; color: var(--secondary); } /* muted→secondary(P2-2/V7,12px 小字对比度) */
 
   main { flex: 1; display: flex; min-height: 0; }
-  /* 左面板 420px(1280 视口下约 1/3);组间距 12px,内容超出才滚动 */
+  /* 左面板 420px(1280 视口下约 1/3);组间距 8px(V4,原 12 脱离 8pt 档);
+     P0-2 一屏化:内容(含接收组)必须 ≤765 无滚动。水平 padding 16→20 与
+     组 padding 16→12 相抵,卡片内容宽与 label/复选框 x=33 对齐保持不变 */
   aside { width: 420px; min-width: 420px; background: var(--panel); border-right: 1px solid var(--border);
-    overflow-y: auto; padding: 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+    overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; }
   aside::-webkit-scrollbar { width: 6px; }
   aside::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 3px; }
   aside::-webkit-scrollbar-thumb:hover { background: var(--muted); }
   aside::-webkit-scrollbar-track { background: transparent; }
-  /* 分组卡:bg #16181D / border 1px #262A31 / radius 8px / padding 14px */
-  .group { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+  /* 分组卡:bg var(--card) / border 1px var(--border) / radius 8px / padding 12px
+     (P0-2 密度:16→12;水平由 aside 20px 补偿,label x=33 不变) */
+  .group { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
     display: flex; flex-direction: column; gap: 8px; }
   .group > .title { margin-bottom: 0; }
   .group > .title, summary.title { font-size: 14px; font-weight: 600; color: var(--text); }
@@ -83,16 +92,20 @@
   .field > .combo { flex: none; }
   .row2 { display: flex; gap: 8px; }
   .row2 > .field { flex: 1; min-width: 0; }
+  /* 三列行(接口/速度/通道,P0-2 一屏化:通道并入连接参数行) */
+  .row3 { display: flex; gap: 8px; }
+  .row3 > .field { flex: 1; min-width: 0; }
   .btn-row { display: flex; gap: 8px; }
   .btn-row button { flex: 1; padding: 0; }
   .power-row { display: flex; justify-content: space-between; align-items: center; }
-  .power-note { font-size: 12px; color: var(--muted); }
+  /* 右侧电源子组:checkbox 与说明文字恒相邻(P0-2:自动滚动并入本行后,
+     space-between 的第三个子项不再让说明脱离电源复选框) */
+  .power-row .power-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .power-note { font-size: 12px; color: var(--secondary); } /* muted→secondary(P2-2/V7) */
   /* 断帧行合并:checkbox + label + input(80px)+ ms 同排 */
   .aframe-row { display: flex; align-items: center; gap: 8px; }
   .aframe-row label.check { flex: 1; }
   #frame-timeout { width: 80px; flex: none; }
-  .check2 { display: flex; gap: 12px; }
-  .check2 > label.check { flex: 1; }
   /* 字号 A± 与主题下拉同区(接收组底部) */
   .theme-row { display: flex; align-items: center; gap: 8px; }
   .theme-row button { width: 44px; padding: 0; flex: none; }
@@ -108,13 +121,28 @@
   #log { flex: 1; min-width: 0; overflow-y: auto; background: var(--log-bg); color: var(--log-fg);
     font-family: Consolas, monospace; font-size: var(--log-fs, 15px); line-height: 32px; padding: 8px 12px; }
   #log .row { white-space: pre-wrap; word-break: break-all; min-height: 32px; }
+  /* 日志滚动条与 aside 同款(P2-3/V8):6px 细拇指,随主题 --muted 着色 */
+  #log::-webkit-scrollbar { width: 6px; }
+  #log::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 3px; }
+  #log::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  #log::-webkit-scrollbar-track { background: transparent; }
   /* 命中标记:词级 mark,保留行内 ANSI span 结构(命中子串包 mark,前景色不变) */
   #log mark.s-hit { background: var(--search-hit); color: inherit; border-radius: 2px; }
   #log mark.s-hit.cur { background: var(--search-hit-current); }
 
-  /* 发送条:日志区下方通栏,input flex:1 高 40px + 发送按钮 115×40 */
-  #send-bar { display: flex; align-items: flex-end; gap: 10px; padding: 10px 14px;
+  /* 发送条:日志区下方通栏,上排 32px 紧凑选项行(发送行尾/定时间隔/HEX 发送/
+     定时发送,P0-2/V2 自左面板「发送」组迁入;32 同搜索条令牌)+ 下排
+     textarea 72 + 发送按钮 115×72。水平 inset 12 与 #log padding、搜索条右缘
+     同值(V5 三线合一:文本/textarea 左缘 432,按钮/搜索条右缘 1268) */
+  #send-bar { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px;
     border-top: 1px solid var(--border); background: var(--panel); }
+  #send-opts { display: flex; align-items: center; gap: 8px; height: 32px; flex: none; }
+  #send-opts .spacer { flex: 1; }
+  #send-opts .s-label { flex: none; font-size: 12px; color: var(--secondary); }
+  #send-opts select, #send-opts input { height: 32px; font-size: 13px; padding: 0 8px; }
+  #send-opts select { width: 96px; flex: none; }
+  #send-opts #timer-interval { width: 56px; text-align: center; }
+  .send-main { display: flex; align-items: flex-end; gap: 8px; }
   #send-text { flex: 1; min-width: 0; height: 72px; resize: none; padding: 9px 12px;
     font: 14px/1.5 Consolas, monospace; }
   #send-btn { width: 115px; flex: none; height: 72px; font-size: 14px; }
@@ -138,8 +166,8 @@
     font: 13px Consolas, monospace; background: var(--input);
     border: 1px solid var(--border); border-radius: 4px; }
   #s-input.err, #s-input.err:focus { border-color: var(--err); }
-  #s-count { font-size: 12px; color: var(--muted); min-width: 36px; text-align: center;
-    white-space: nowrap; }
+  #s-count { font-size: 12px; color: var(--secondary); min-width: 36px; text-align: center;
+    white-space: nowrap; } /* muted→secondary(P2-2/V7) */
   #s-count.err { color: var(--err); }
 
   /* 日志区右键菜单(复制选中文本 / 全选) */
@@ -147,15 +175,20 @@
     border: 1px solid var(--border); border-radius: 8px; padding: 4px;
     box-shadow: 0 8px 24px rgba(0,0,0,.4); }
   #ctx-menu[hidden] { display: none; }
-  .ctx-item { padding: 7px 12px; font-size: 13px; border-radius: 5px; cursor: pointer; color: var(--text); }
+  .ctx-item { padding: 7px 12px; font-size: 13px; border-radius: 4px; cursor: pointer; color: var(--text); } /* 5→4(P2-5/V10 圆角三档) */
   .ctx-item:hover { background: var(--accent); color: #fff; }
   .ctx-item.disabled { opacity: .4; pointer-events: none; }
 
   footer { display: flex; gap: 16px; padding: 8px 16px; background: var(--panel);
     border-top: 1px solid var(--border); font-size: 12px; color: var(--secondary); align-items: center; }
-  footer .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); }
+  /* dot→#status 8px(V9):灯与文案是同一语义组,负 margin 抵掉 8 gap;
+     右侧集群间保持 16 */
+  footer .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); margin-right: -8px; }
   footer .dot.on { background: var(--ok); }
   footer .spacer { flex: 1; }
+  /* chip-line 分隔符定宽居中(P2-1/V6):· 字形 rightBearing 为负导致
+     「芯片 ·SWD」光学不对称;9px 盒内居中使两侧间距恒等 */
+  #chip-line .sep { display: inline-block; width: 9px; text-align: center; }
 
   /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互)
      容器化:边框/圆角/底色收归 .combo,input 与箭头透明无边框(P0-1/P2-9) */
@@ -169,15 +202,15 @@
     color: var(--accent); padding: 0; display: flex; align-items: center; justify-content: center;
     cursor: pointer; }
   .combo > .arrow:hover { opacity: .75; }
-  /* 浮层卡片质感(P1-6):var(--card) 底 + 10px 圆角 + 深投影;
+  /* 浮层卡片质感(P1-6):var(--card) 底 + 8px 圆角(V10 归档,原 10)+ 深投影;
      间距 8px(P2-10):top:100% 锚在 padding 盒上,扣除聚焦态 2px 边框后实测 6-7px */
   .combo-list { position: absolute; top: 100%; left: 0; right: 0; margin-top: 8px;
-    background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 6px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px;
     max-height: 220px; overflow-y: auto; z-index: 30; display: none;
     box-shadow: 0 8px 24px rgba(0,0,0,.4); }
   /* 候选项胶囊化(P0-3/P1-7):圆角胶囊、项间 2px、hover/激活/当前值 accent 底白字 */
   .combo-list .opt { padding: 9px 12px; margin: 2px 0; cursor: pointer; font-size: 13px;
-    border-radius: 7px; }
+    border-radius: 6px; } /* 7→6(V10) */
   .combo-list .opt:first-child { margin-top: 0; }
   .combo-list .opt:last-child { margin-bottom: 0; }
   .combo-list .opt:hover, .combo-list .opt.active, .combo-list .opt.current {
@@ -185,6 +218,19 @@
   /* 细滚动条(P2-11,可选) */
   .combo-list::-webkit-scrollbar { width: 6px; }
   .combo-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* 设备信息断开置灰(F2,状态驱动:断开后内容为上次数据,置灰示不可信;
+     Dev-UI 如重构设备卡请保留 .off 开关语义) */
+  #device-details.off .info-grid { opacity: .45; }
+  /* 发送错误(F8b):后端 400 错误信息必须可见——输入框红边 + toast */
+  #send-text.send-err { border-color: var(--err); }
+  #toast { position: fixed; right: 16px; bottom: 96px; z-index: 70; max-width: 60vw;
+    background: var(--card); color: var(--err); border: 1px solid var(--err);
+    border-radius: 8px; padding: 8px 14px; font-size: 13px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    opacity: 0; transform: translateY(6px); transition: opacity .15s, transform .15s;
+    pointer-events: none; }
+  #toast.show { opacity: 1; transform: none; }
 </style>
 </head>
 <body>
@@ -202,14 +248,14 @@
           </button>
           <div class="combo-list" id="chip-list"></div>
         </div></div>
-      <div class="row2">
+      <div class="row3">
         <div class="field"><span class="label">接口</span>
           <select id="iface"><option value="0">SWD</option><option value="1">JTAG</option></select></div>
         <div class="field"><span class="label">速度 (kHz)</span>
           <select id="speed"><option>100</option><option>200</option><option>500</option><option selected>1000</option><option>2000</option><option>4000</option><option>8000</option><option>12000</option></select></div>
+        <div class="field"><span class="label">RTT 通道</span>
+          <select id="channel"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select></div>
       </div>
-      <div class="field"><span class="label">RTT 通道</span>
-        <select id="channel"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select></div>
       <button id="connect-btn" class="primary">连接</button>
       <button id="reset-btn" disabled>重置目标</button>
     </div>
@@ -237,10 +283,12 @@
         <input type="text" id="frame-timeout" value="20">
         <span class="unit">ms</span>
       </div>
-      <label class="check"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
       <div class="power-row">
-        <label class="check"><input type="checkbox" id="power" disabled> 电源输出</label>
-        <span class="power-note">J-Link 19 脚供电</span>
+        <label class="check"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
+        <div class="power-group">
+          <label class="check"><input type="checkbox" id="power" disabled> 电源输出</label>
+          <span class="power-note">J-Link 19 脚供电</span>
+        </div>
       </div>
       <div class="row2">
         <div class="field"><span class="label">行尾</span>
@@ -266,21 +314,6 @@
         </select>
       </div>
     </div>
-
-    <div class="group">
-      <div class="title">发送</div>
-      <div class="row2">
-        <div class="field"><span class="label">发送行尾</span>
-          <select id="tx-ending">
-            <option value="0" selected>CRLF</option><option value="1">LF</option>
-            <option value="2">CR</option><option value="3">无</option>
-          </select></div>
-        <div class="field"><span class="label">定时间隔 (秒)</span>
-          <input type="text" id="timer-interval" value="1"></div>
-      </div>
-      <label class="check"><input type="checkbox" id="hex-send"> HEX 发送(输入按十六进制字节)</label>
-      <label class="check"><input type="checkbox" id="timer-on"> 定时发送(重发最近发送内容)</label>
-    </div>
   </aside>
   <section id="content">
     <div id="log-wrap">
@@ -296,8 +329,23 @@
       </div>
     </div>
     <div id="send-bar">
-      <textarea id="send-text" rows="3" placeholder="发送到通道 0… (Enter 发送,Shift+Enter 换行)" autocomplete="off"></textarea>
-      <button id="send-btn" disabled>发送</button>
+      <div id="send-opts">
+        <label class="check" title="输入按十六进制字节发送"><input type="checkbox" id="hex-send"> HEX 发送</label>
+        <label class="check" title="按设定间隔重发最近发送的内容"><input type="checkbox" id="timer-on"> 定时发送</label>
+        <span class="spacer"></span>
+        <span class="s-label">发送行尾</span>
+        <select id="tx-ending">
+          <option value="0" selected>CRLF</option><option value="1">LF</option>
+          <option value="2">CR</option><option value="3">无</option>
+        </select>
+        <span class="s-label">定时间隔</span>
+        <input type="text" id="timer-interval" value="1">
+        <span class="s-label">秒</span>
+      </div>
+      <div class="send-main">
+        <textarea id="send-text" rows="3" placeholder="发送到通道 0… (Enter 发送,Shift+Enter 换行)" autocomplete="off"></textarea>
+        <button id="send-btn" disabled>发送</button>
+      </div>
     </div>
   </section>
 </main>
@@ -305,7 +353,7 @@
   <span class="dot" id="dot"></span>
   <span id="status">未连接</span>
   <span class="spacer"></span>
-  <span id="chip-line">— · —</span>
+  <span id="chip-line">—<span class="sep">·</span>—</span>
   <span id="tx">TX 0 B</span>
   <span id="rx">RX 0 B</span>
   <span id="rows">0 行</span>
@@ -365,8 +413,15 @@
     while (log.children.length > 500) { removed.push(log.firstChild); log.removeChild(log.firstChild); }
     if (removed.length) onRowsRemoved(removed);
   }
-  // 自动滚动互斥:搜索条打开期间流式新行不拉回底部;唯一滚动来源是命中导航
-  function scrollBottom() { if (searchOpen) return; if (autoScroll) log.scrollTop = log.scrollHeight; }
+  // 自动滚动互斥:搜索条打开期间流式新行不拉回底部;唯一滚动来源是命中导航。
+  // follow-suspend(F4,FR-16 语义):勾选态下用户上滚(wheel 负 delta 或
+  // 拖动滚动条离开贴底)→ 暂停跟随,数据不再拉底;滚回贴底(±4px)→ 自动恢复。
+  // 取消勾选 = 完全手动(现状保持)
+  let follow = true;
+  function atBottom() { return log.scrollTop + log.clientHeight >= log.scrollHeight - 4; }
+  function scrollBottom() { if (searchOpen) return; if (autoScroll && follow) log.scrollTop = log.scrollHeight; }
+  log.addEventListener('wheel', e => { if (autoScroll && e.deltaY < 0) follow = false; }, { passive: true });
+  log.addEventListener('scroll', () => { if (autoScroll) follow = atBottom(); });
   let clearSeq = 0;
   function onMsg(ev) {
     const m = JSON.parse(ev.data);
@@ -404,11 +459,14 @@
     $('reset-btn').disabled = !on;
     $('power').disabled = !on;
     $('send-btn').disabled = !on;
+    // 断开后设备信息为上次残留数据(F2):置灰示不可信,连接态恢复
+    $('device-details').classList.toggle('off', !on);
     for (const id of ['jlink', 'chip', 'iface', 'speed', 'channel']) $(id).disabled = on;
   }
   function renderDevice(d) {
     if (!d) return;
-    $('device-details').open = true; // 有设备数据时展开(平时折叠保持面板一屏)
+    // P0-2/V2:不再强制展开——设备信息默认折叠(保面板一屏),点击 summary 可展开;
+    // 断开置灰 .off 语义由 setState 维护,不受折叠影响
     const g = $('device-info');
     g.innerHTML = '';
     const put = (k, v) => {
@@ -420,7 +478,13 @@
     put('目标芯片', d.target);
     put('接口', (d.iface || '—') + ' · ' + (d.speedKhz || '—') + 'kHz');
     put('序列号', d.serial);
-    $('chip-line').textContent = (d.target || '—') + ' · ' + (d.iface || '—');
+    // P2-1/V6:分隔符定宽居中 span,消除「·SWD」光学不对称
+    const cl = $('chip-line');
+    const seg = t => { const s = document.createElement('span'); s.textContent = t; return s; };
+    const sep = document.createElement('span');
+    sep.className = 'sep'; sep.textContent = '·';
+    cl.textContent = '';
+    cl.append(seg(d.target || '—'), sep, seg(d.iface || '—'));
   }
   // 可编辑下拉:输入即筛选,↑↓ 选择,Enter 确认,Esc 关闭,箭头展开全部
   // P0-4:浮层默认隐藏,仅聚焦/输入/点箭头展开;失焦/Esc/选中后关闭
@@ -456,6 +520,7 @@
   function pickChip(v) {
     $('chip').value = v;
     closeChipList();
+    postPref('chip', { chip: v }); // F1:候选选定同样入库(程序化赋值不触发 change)
   }
   (function initChipCombo() {
     const input = $('chip'), list = $('chip-list');
@@ -499,7 +564,7 @@
       channel: +$('channel').value,
     };
     fetch(API + '/api/connect', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
-      .then(r => { if (!r.ok) r.text().then(t => { $('status').textContent = t; }); });
+      .then(r => { if (!r.ok) r.text().then(t => { $('status').textContent = t; showToast(t); }); });
   }
   function disconnect() {
     fetch(API + '/api/disconnect', { method: 'POST' });
@@ -559,7 +624,10 @@
   let histIdx = -1, draft = '';
   sendBox.addEventListener('keydown', e => {
     if (e.isComposing || e.keyCode === 229) return; // IME 组合输入中
-    if (e.key === 'Enter') { e.preventDefault(); send(); return; }
+    if (e.key === 'Enter') {
+      if (e.shiftKey) return; // Shift+Enter 换行:交给浏览器默认插入换行(F6)
+      e.preventDefault(); send(); return;
+    }
     if (e.key === 'ArrowUp') {
       if (!sendHistory.length || histIdx >= sendHistory.length - 1) return;
       if (histIdx === -1) draft = sendBox.value;
@@ -573,14 +641,29 @@
       e.preventDefault();
     }
   });
-  sendBox.addEventListener('input', () => { histIdx = -1; }); // 编辑即回到草稿模式
+  sendBox.addEventListener('input', () => { histIdx = -1; sendBox.classList.remove('send-err'); }); // 编辑即回到草稿模式 + 清错误红边
   $('send-btn').onclick = send;
+  // 轻量 toast(F8b):后端错误信息必须用户可见,不许静默;自动消失,复用主题令牌
+  let toastEl = null, toastT = 0;
+  function showToast(msg) {
+    if (!toastEl) {
+      toastEl = document.createElement('div');
+      toastEl.id = 'toast';
+      toastEl.setAttribute('role', 'alert');
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastT);
+    toastT = setTimeout(() => { if (toastEl) toastEl.classList.remove('show'); }, 3000);
+  }
   function send() {
     if (!sendBox.value.trim()) return;
     fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ text: sendBox.value, hex: $('hex-send').checked }) })
       .then(r => {
         if (r.ok) {
+          sendBox.classList.remove('send-err');
           const v = sendBox.value;
           const i = sendHistory.indexOf(v);
           if (i >= 0) sendHistory.splice(i, 1);
@@ -588,20 +671,61 @@
           if (sendHistory.length > 50) sendHistory.pop();
           histIdx = -1; draft = '';
           sendBox.value = '';
+        } else {
+          // F8b:HEX 解析失败等(400)把后端错误信息展示出来
+          r.text().then(t => {
+            sendBox.classList.add('send-err');
+            showToast(t || '发送失败 (' + r.status + ')');
+          });
         }
+      })
+      .catch(() => {
+        sendBox.classList.add('send-err');
+        showToast('发送失败:服务未响应');
       });
   }
-  $('auto-scroll').onchange = e => { autoScroll = e.target.checked; lsSet('auto-scroll', autoScroll ? '1' : '0'); if (autoScroll) scrollBottom(); };
+  $('auto-scroll').onchange = e => { autoScroll = e.target.checked; lsSet('auto-scroll', autoScroll ? '1' : '0'); if (autoScroll) { follow = true; scrollBottom(); } };
 
-  // 面板偏好 localStorage 写入 + 服务端偏好(发送组/连接组控件,加载时已回填);
-  // 发送行尾/HEX 发送是纯 UI 习惯,经 settings 通道记忆,不改发送内容
-  $('tx-ending').addEventListener('change', e => { lsSet('tx-ending', e.target.value); postSettings({ sendEnding: +e.target.value }); });
-  $('hex-send').addEventListener('change', e => { lsSet('hex-send', e.target.checked ? '1' : '0'); postSettings({ hexSend: e.target.checked }); });
-  $('channel').addEventListener('change', e => lsSet('channel', e.target.value));
-  $('iface').addEventListener('change', e => lsSet('iface', e.target.value));
-  $('speed').addEventListener('change', e => lsSet('speed', String(e.target.selectedIndex)));
-  $('hex-send').addEventListener('change', e => lsSet('hex-send', e.target.checked ? '1' : '0'));
-  $('auto-frame').addEventListener('change', e => lsSet('auto-frame', e.target.checked ? '1' : '0'));
+  // 面板偏好(F1 统一真源):change → 服务端 /api/settings(tick 500ms 快照
+  // 落盘,reload 由 /api/prefs 回填);localStorage 仅作断连兜底。
+  // 文本输入(目标设备)按键防抖 400ms;select/checkbox 一次 change 即一值,
+  // 按键分桶合并,互不吞并
+  const prefTimers = {};
+  function postPref(key, patch, delay) {
+    clearTimeout(prefTimers[key]);
+    prefTimers[key] = setTimeout(() => { delete prefTimers[key]; postSettings(patch).catch(() => {}); }, delay || 0);
+  }
+  // FR-11/F8c:文本 ↔ hex 互转(与 worker HEX 接收输出同格式:两位大写、空格分隔)
+  function textToHex(s) {
+    const out = [];
+    for (const b of new TextEncoder().encode(s)) out.push(b.toString(16).toUpperCase().padStart(2, '0'));
+    return out.join(' ');
+  }
+  function hexToText(s) {
+    const cleaned = s.split(/[\s:\-]+/).map(t => t.replace(/^0[xX]/, '')).join('');
+    if (!cleaned.length || cleaned.length % 2 || !/^[0-9a-fA-F]+$/.test(cleaned)) return null;
+    const bytes = new Uint8Array(cleaned.length / 2);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(cleaned.slice(i * 2, i * 2 + 2), 16);
+    return new TextDecoder().decode(bytes);
+  }
+  // 发送行尾/HEX 发送经 settings 通道记忆(行尾字节由服务端追加,FR-12)
+  $('tx-ending').addEventListener('change', e => { lsSet('tx-ending', e.target.value); postPref('sendEnding', { sendEnding: +e.target.value }); });
+  // ---- 连接设置组五项(F1:此前只写 localStorage,reload 被服务端回填覆盖)----
+  $('channel').addEventListener('change', e => { lsSet('channel', e.target.value); postPref('channel', { channel: +e.target.value }); });
+  $('iface').addEventListener('change', e => { lsSet('iface', e.target.value); postPref('iface', { ifaceIndex: +e.target.value }); });
+  $('speed').addEventListener('change', e => { lsSet('speed', String(e.target.selectedIndex)); postPref('speed', { speedIndex: e.target.selectedIndex }); });
+  $('chip').addEventListener('input', () => postPref('chip', { chip: $('chip').value }, 400));
+  $('chip').addEventListener('change', () => postPref('chip', { chip: $('chip').value }));
+  $('auto-frame').addEventListener('change', e => { lsSet('auto-frame', e.target.checked ? '1' : '0'); postPref('autoFrame', { autoFrame: e.target.checked }); });
+  // HEX 发送:开关记忆 + 双向转换(勾选 文本→hex,取消 hex→文本;不可解析保留
+  // 原文;只改输入框,不触发发送/历史)
+  $('hex-send').addEventListener('change', e => {
+    lsSet('hex-send', e.target.checked ? '1' : '0');
+    postPref('hexSend', { hexSend: e.target.checked });
+    const v = sendBox.value;
+    if (!v.trim()) return;
+    sendBox.value = e.target.checked ? textToHex(v) : (hexToText(v) ?? v);
+  });
 
   // ===== 日志区右键菜单 + 拖选自动复制 =====
   const ctxMenu = $('ctx-menu');
@@ -946,7 +1070,11 @@
   }
   connectWS();
   setInterval(() => fetch(API + '/api/status').then(r => r.json()).then(s => {
-    if (connected !== s.connected) setState(s.connected, null);
+    // F3(UX P1-4):轮询同步连接态**与文案**——sessionStatus 由服务端
+    // State/Progress 统一维护,页面中途打开或 WS 漏掉 state 消息时,
+    // 状态栏 2s 内对齐,不再出现「未连接 + 绿点 + 断开按钮」同屏
+    if (connected !== s.connected) setState(s.connected, s.sessionStatus);
+    else if ($('status').textContent !== s.sessionStatus) $('status').textContent = s.sessionStatus;
   }).catch(() => {}), 2000);
   fetch(API + '/api/devices').then(r => r.json()).then(fillDatalist).catch(() => {});
   fetch(API + '/api/jlinks').then(r => r.json()).then(fillJlinks).catch(() => {});

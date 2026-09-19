@@ -107,6 +107,10 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
     let mut webview = Some(
         match wry::WebViewBuilder::new()
             .with_url(format!("http://{addr}/"))
+            // 壳标记(SerialHub A7 同款):前端据此显示「浏览器打开」按钮
+            // (壳内 window.open 被原生层吞掉,点按钮走 POST /api/open-browser);
+            // 纯浏览器访问无此标记,按钮隐藏
+            .with_initialization_script("window.__MINI_SHELL = true;")
             .build(&window)
         {
             Ok(w) => w,

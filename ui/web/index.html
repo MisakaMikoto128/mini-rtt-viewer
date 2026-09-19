@@ -133,6 +133,16 @@
   /* 命中标记:词级 mark,保留行内 ANSI span 结构(命中子串包 mark,前景色不变) */
   #log mark.s-hit { background: var(--search-hit); color: inherit; border-radius: 2px; }
   #log mark.s-hit.cur { background: var(--search-hit-current); }
+  /* 时间戳前缀(S4):显示层装饰,--muted 暗色不抢正文;搜索匹配与导出内容
+     均不含它(rec.text 只存 runs 原文,前缀是渲染期附加 span) */
+  #log .ts { color: var(--muted); }
+  /* 空态占位(S6):#log-wrap(position:relative)锚定的绝对覆盖层——不占
+     #log 流内空间、不算行(行数计数/搜索/导出均不见它),pointer-events:none
+     不挡选区与右键;--muted 随四主题自然跟随 */
+  .log-empty { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; color: var(--muted); font-size: 13px;
+    pointer-events: none; user-select: none; }
+  .log-empty[hidden] { display: none; }
 
   /* 发送条:日志区下方通栏,上排 32px 紧凑选项行(发送行尾/定时间隔/HEX 发送/
      定时发送,P0-2/V2 自左面板「发送」组迁入;32 同搜索条令牌)+ 下排
@@ -194,6 +204,11 @@
   /* chip-line 分隔符定宽居中(P2-1/V6):· 字形 rightBearing 为负导致
      「芯片 ·SWD」光学不对称;9px 盒内居中使两侧间距恒等 */
   #chip-line .sep { display: inline-block; width: 9px; text-align: center; }
+  /* 底栏新增(S1/S2/S9/S10):速率/时长继承 secondary;版本再暗一档(muted);
+     「浏览器打开」是 footer 紧凑行专用小按钮(22px,不进 40 控件体系),
+     纯浏览器访问时 hidden(壳标记 window.__MINI_SHELL 由 gui.rs 注入) */
+  #version { color: var(--muted); }
+  #open-browser { height: 22px; padding: 0 10px; font-size: 12px; border-radius: 4px; flex: none; }
 
   /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互)
      容器化:边框/圆角/底色收归 .combo,input 与箭头透明无边框(P0-1/P2-9) */
@@ -236,6 +251,8 @@
     opacity: 0; transform: translateY(6px); transition: opacity .15s, transform .15s;
     pointer-events: none; }
   #toast.show { opacity: 1; transform: none; }
+  /* 成功/中性变体(S2 导出、S3 复制反馈):非红,复用 --ok 令牌,四主题跟随 */
+  #toast.ok { color: var(--ok); border-color: var(--ok); }
 </style>
 </head>
 <body>
@@ -307,7 +324,10 @@
             <option value="2">UTF-16 LE</option><option value="3">Latin-1</option><option value="4">ASCII</option>
           </select></div>
       </div>
-      <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收(动态生效)</label>
+      <div class="row2">
+        <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收(动态生效)</label>
+        <label class="check" title="行首显示本机到达时刻 [HH:MM:SS.mmm](仅开关打开后到达的行)"><input type="checkbox" id="timestamps"> 时间戳</label>
+      </div>
       <div class="theme-row">
         <button id="A-minus" title="减小日志字号">A-</button>
         <button id="A-plus" title="增大日志字号">A+</button>
@@ -323,6 +343,7 @@
   <section id="content">
     <div id="log-wrap">
       <div id="log"></div>
+      <div id="log-empty" class="log-empty">等待数据… 连接后 RTT 输出会显示在这里</div>
       <div id="search-bar" hidden>
         <button class="s-btn" id="s-case" title="区分大小写" tabindex="-1">Aa</button>
         <button class="s-btn" id="s-regex" title="使用正则表达式" tabindex="-1">.*</button>
@@ -359,9 +380,12 @@
   <span id="status">未连接</span>
   <span class="spacer"></span>
   <span id="chip-line">—<span class="sep">·</span>—</span>
-  <span id="tx">TX 0 B</span>
-  <span id="rx">RX 0 B</span>
+  <span id="tx">TX 0 B</span><span id="tx-rate">0 B/s</span>
+  <span id="rx">RX 0 B</span><span id="rx-rate">0 B/s</span>
+  <span id="session" title="本次连接时长">0s</span>
   <span id="rows">0 行</span>
+  <span id="version" title="程序版本"></span>
+  <button id="open-browser" hidden title="在系统默认浏览器打开本管理台(壳内窗口无法新开标签)">浏览器打开</button>
 </footer>
 <div id="ctx-menu" popover="auto">
   <div class="ctx-item" id="ctx-copy">复制选中文本</div>
@@ -373,6 +397,13 @@
   const log = $('log');
   const fmt = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
   let connected = false, autoScroll = true;
+  // S1 速率/S2 时长状态:stats 每 500ms 一拍,lastStats 记上次字节快照差值算 B/s
+  let lastStats = null;
+  // S4 时间戳开关(纯前端显示层;localStorage 记忆,与字号/主题同模式)
+  let tsOn = false;
+  // S7 行数上限:以 stats.cap(服务端 MAX_LOG_ROWS)为准,初始值仅是
+  // 首拍到站前的 trim 兜底(与服务端当前常量一致)
+  let rowCap = 500;
 
   // 偏好 localStorage(key 前缀 web-):change 写入,加载回填;
   // /api/prefs(服务端持久化)到达后覆盖其管辖字段,此处为离线/失败兜底
@@ -392,30 +423,28 @@
     if (g('auto-frame')) $('auto-frame').checked = g('auto-frame') === '1';
     if (g('auto-scroll')) { $('auto-scroll').checked = g('auto-scroll') === '1'; autoScroll = $('auto-scroll').checked; }
     if (g('frame-timeout')) $('frame-timeout').value = g('frame-timeout');
+    if (g('timestamps') === '1') { tsOn = true; $('timestamps').checked = true; } // S4
   })();
 
-  function appendRow(row) {
+  function appendRow(row, live) {
     const div = document.createElement('div');
     div.className = 'row';
-    for (const run of row.runs) {
-      const span = document.createElement('span');
-      span.textContent = run.text;
-      if (run.fg) span.style.color = run.fg;
-      div.appendChild(span);
-    }
     // 行记录 = 搜索的文本索引:runs 原文数组 + 行全文;搜索高亮重绘行时按 runs
-    // 重建内联色 → 不破坏行内 ANSI span 结构
+    // 重建内联色 → 不破坏行内 ANSI span 结构。ts=本机到达时刻(S4,显示层;
+    // rec.text/导出/搜索都不含它)。**只有 live rows 事件记 ts**:snapshot 回放的
+    // 老行到达时刻不可考 → 不带前缀(已知口径,与任务书一致)
     const rec = { el: div, runs: row.runs, text: row.runs.map(r => r.text).join(''),
-      ranges: [], renderedRef: null };
+      ts: live === false ? null : Date.now(), ranges: [], renderedRef: null };
     div.__rec = rec;
-    rec.renderedRef = rec.ranges; // 当前 DOM 即无高亮形态
+    renderRow(rec); // 渲染单点:时间戳前缀 + ANSI runs(搜索高亮重绘同一路径)
     log.appendChild(div);
+    $('log-empty').hidden = true; // S7 空态:首行到达即隐藏
     if (searchOpen) { scanRec(rec); updateCount(); } // 新行增量扫描:只更新计数,不滚动
   }
   function trim() {
     const removed = [];
-    // 上限与服务端 MAX_LOG_ROWS=500 对齐:底栏行数口径才与 DOM 一致
-    while (log.children.length > 500) { removed.push(log.firstChild); log.removeChild(log.firstChild); }
+    // 上限与行数显示同源:stats.cap(服务端 MAX_LOG_ROWS),不另行硬编码
+    while (log.children.length > rowCap) { removed.push(log.firstChild); log.removeChild(log.firstChild); }
     if (removed.length) onRowsRemoved(removed);
   }
   // 自动滚动互斥:搜索条打开期间流式新行不拉回底部;唯一滚动来源是命中导航。
@@ -430,7 +459,7 @@
   let clearSeq = 0;
   function onMsg(ev) {
     const m = JSON.parse(ev.data);
-    if (m.type === 'snapshot') { resetRows(); m.rows.forEach(appendRow); scrollBottom(); }
+    if (m.type === 'snapshot') { resetRows(); m.rows.forEach(r => appendRow(r, false)); scrollBottom(); }
     else if (m.type === 'cleared') { clearSeq = m.seq; resetRows(); window.__clearedCount = (window.__clearedCount || 0) + 1; }
     else if (m.type === 'rows') {
       if (m.seq <= clearSeq) return;
@@ -443,20 +472,76 @@
     }
     else if (m.type === 'state') setState(m.connected, m.status);
     else if (m.type === 'device') renderDevice(m.info);
-    else if (m.type === 'progress') $('status').textContent = m.text.replace('● ', '');
+    else if (m.type === 'progress') {
+      const txt = m.text.replace('● ', '');
+      $('status').textContent = txt;
+      applyStatusTip(txt); // S3:进度文案也带大白话解释(连接中/重置中等)
+    }
     else if (m.type === 'names') fillDatalist(m.names);
     else if (m.type === 'jlinks') fillJlinks(m.list);
     else if (m.type === 'stats') {
       $('tx').textContent = 'TX ' + fmt(m.tx);
       $('rx').textContent = 'RX ' + fmt(m.rx);
-      $('rows').textContent = m.rows + ' 行';
+      $('rows').textContent = m.rows + ' / ' + m.cap + ' 行'; // S7:上限语境,数字来自服务端
+      if (m.cap) rowCap = m.cap;
+      $('session').textContent = fmtUptime(m.sessionSec); // S2:会话时长,断开为 0
+      updateRates(m); // S1:RX/TX 速率
     }
+  }
+  // ---- S1/S2 底栏格式化(fmtRate 语义同 SerialHub:<1KB/s 整数 B/s → KB/s → MB/s)----
+  function fmtRate(n) {
+    n = Math.max(0, n || 0); // 断开清零后的负差值夹为 0
+    if (n < 1024) return Math.round(n) + ' B/s';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB/s';
+    return (n / 1048576).toFixed(1) + ' MB/s';
+  }
+  function fmtUptime(s) { // 1h23m / 4m56s / 42s(0 = 未连接)
+    s = Math.max(0, Math.floor(s || 0));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+    return h ? h + 'h' + m + 'm' : m ? m + 'm' + ss + 's' : ss + 's';
+  }
+  function updateRates(m) {
+    // 口径选择:速率恒显示(与 SerialHub fmtRate 一致),无新数据自然归零;
+    // 断开(setState false)显式归零。demo/真机断开时服务端清零字节,差值
+    // 为负由 fmtRate 夹 0,不会出现负速率
+    const now = performance.now();
+    if (lastStats) {
+      const dt = (now - lastStats.t) / 1000;
+      if (dt > 0.05) { // 500ms 拍节,防 0 除与首拍抖动
+        $('rx-rate').textContent = fmtRate((m.rx - lastStats.rx) / dt);
+        $('tx-rate').textContent = fmtRate((m.tx - lastStats.tx) / dt);
+      }
+    }
+    lastStats = { t: now, rx: m.rx, tx: m.tx };
+  }
+  function zeroRates() { $('rx-rate').textContent = '0 B/s'; $('tx-rate').textContent = '0 B/s'; lastStats = null; }
+  // ---- S3 状态栏大白话 tooltip(文案风格参照 SerialHub PHASE_TIP)----
+  const STATE_TIPS = {
+    on: 'RTT 已连上目标芯片,数据实时刷新中',
+    off: '未连接。在左侧选好 J-Link 与目标设备后点「连接」开始',
+    connecting: '正在连接 J-Link 与目标芯片,请稍候;失败会在这里显示原因',
+    reset: '正在复位目标芯片,完成后自动恢复 RTT 接收',
+  };
+  function statusTip(on, text) {
+    if (on) return STATE_TIPS.on;
+    const t = text || $('status').textContent || '';
+    if (t.includes('重置')) return STATE_TIPS.reset;
+    if (t.includes('连接') && !t.includes('未连接')) return STATE_TIPS.connecting;
+    return STATE_TIPS.off;
+  }
+  function applyStatusTip(text) {
+    const tip = statusTip(connected, text);
+    $('dot').title = tip;
+    $('status').title = tip;
   }
   // 单只主按钮:「连接」(accent)⇄「断开」(红色系 danger)切换
   function setState(on, status) {
     connected = on;
     $('dot').classList.toggle('on', on);
     if (status) $('status').textContent = status.replace('● ', '');
+    applyStatusTip(status); // S3:#dot/#status 同步大白话解释
+    // S1/S2:断开清零(速率归零显示、时长归 0、字节快照复位)
+    if (!on) { zeroRates(); $('session').textContent = '0s'; }
     const btn = $('connect-btn');
     btn.textContent = on ? '断开' : '连接';
     btn.classList.toggle('danger', on);
@@ -607,11 +692,25 @@
     if (box.value.trim()) body.text = box.value;  // 可选:显式指定定时内容(默认最近发送)
     return fetch(API + '/api/timer', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
   }
-  // 导出日志:全部行文本附件下载(rtt_<时间戳>.log,服务端 Content-Disposition)
+  // 导出日志:全部行文本附件下载(rtt_<时间戳>.log,服务端 Content-Disposition)。
+  // S2:改为 fetch→blob 下载(与 SerialHub 导出同形态)——拿到真实成功/失败与
+  // 文件名,成功给中性 toast;导出内容是服务端原始行文本,不含时间戳前缀(S4)
   $('export-btn').onclick = () => {
-    const a = document.createElement('a');
-    a.href = API + '/api/export'; a.download = '';
-    document.body.appendChild(a); a.click(); a.remove();
+    fetch(API + '/api/export')
+      .then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const m = (r.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
+        return r.blob().then(b => ({ b, name: m ? m[1] : 'rtt.log' }));
+      })
+      .then(({ b, name }) => {
+        const url = URL.createObjectURL(b);
+        const a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        showToast('已导出 ' + name, 'ok');
+      })
+      .catch(() => showToast('导出失败:服务未响应'));
   };
 
   $('pause-btn').onclick = function () {
@@ -648,9 +747,10 @@
   });
   sendBox.addEventListener('input', () => { histIdx = -1; sendBox.classList.remove('send-err'); }); // 编辑即回到草稿模式 + 清错误红边
   $('send-btn').onclick = send;
-  // 轻量 toast(F8b):后端错误信息必须用户可见,不许静默;自动消失,复用主题令牌
+  // 轻量 toast(F8b):后端错误信息必须用户可见,不许静默;自动消失,复用主题令牌。
+  // kind='ok' 走中性成功变体(S2 导出/S3 复制反馈,--ok 令牌,非红);缺省错误样式不变
   let toastEl = null, toastT = 0;
-  function showToast(msg) {
+  function showToast(msg, kind) {
     if (!toastEl) {
       toastEl = document.createElement('div');
       toastEl.id = 'toast';
@@ -658,6 +758,7 @@
       document.body.appendChild(toastEl);
     }
     toastEl.textContent = msg;
+    toastEl.classList.toggle('ok', kind === 'ok');
     toastEl.classList.add('show');
     clearTimeout(toastT);
     toastT = setTimeout(() => { if (toastEl) toastEl.classList.remove('show'); }, 3000);
@@ -731,28 +832,50 @@
     if (!v.trim()) return;
     sendBox.value = e.target.checked ? textToHex(v) : (hexToText(v) ?? v);
   });
+  // ---- S4 时间戳开关:显示层装饰,localStorage 记忆(与字号/主题同模式,
+  // 不进服务端 prefs)---- 切换按现有行 runs 全量重绘(SerialHub :2661-2665 同法):
+  // 前缀加在行首、ANSI 着色 runs 不受影响;CSS pre-wrap 换行重排时前缀只落在
+  // 首物理行(与 FR-17 硬换行/按列换行的交互:前缀属行首,续行是纯文本回流)。
+  // 搜索匹配不含前缀(rec.text 只是 runs 原文,偏移不受影响);导出内容来自
+  // 服务端原始行文本,天然无前缀;snapshot 回放的老行无 rec.ts → 无前缀(已知口径)
+  function fmtTs(ts) {
+    const d = new Date(ts);
+    const p = (n, w) => String(n).padStart(w || 2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + p(d.getMilliseconds(), 3);
+  }
+  $('timestamps').addEventListener('change', e => {
+    tsOn = e.target.checked;
+    lsSet('timestamps', tsOn ? '1' : '0');
+    for (const el of [...log.children]) if (el.__rec) renderRow(el.__rec);
+  });
 
   // ===== 日志区右键菜单 + 拖选自动复制 =====
   const ctxMenu = $('ctx-menu');
   // 复制:navigator.clipboard(127.0.0.1 是规范定义的可信上下文,API 恒在;
-  // 旧 execCommand 回退是死代码——其能兜的"文档失焦 reject"场景同样失败)
+  // 旧 execCommand 回退是死代码——其能兜的"文档失焦 reject"场景同样失败)。
+  // S3:成功给中性 toast(N=选区字符数);失败(失焦 reject)仍静默不打断
   function copyText(t) {
-    navigator.clipboard.writeText(t).catch(() => {}); // 失焦 reject 静默,不打断
+    navigator.clipboard.writeText(t)
+      .then(() => showToast('已复制 ' + t.length + ' 字符', 'ok'))
+      .catch(() => {});
   }
+  // 打开菜单瞬间快照选区文本:Chromium(含壳内 WebView2)在菜单项 mousedown
+  // 默认行为里塌缩文档选区,click 时 selectionInLog() 恒为空 → 复制永远落空
+  // (S6 实测抓到:MD 时 64 字符 → click 时 0)。快照后 click 路径才真正可达
+  let ctxSelText = '';
   function openCtxMenu(x, y) {
     // popover 自带 Esc 关/点外关(light-dismiss);重复右键时 showPopover 幂等,
     // 加 :popover-open 守卫明确"只在关闭态打开"
     if (!ctxMenu.matches(':popover-open')) ctxMenu.showPopover();
-    const t = selectionInLog();
-    $('ctx-copy').classList.toggle('disabled', !t);
+    ctxSelText = selectionInLog();
+    $('ctx-copy').classList.toggle('disabled', !ctxSelText);
     const w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
     ctxMenu.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
     ctxMenu.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
   }
   log.addEventListener('contextmenu', e => { e.preventDefault(); openCtxMenu(e.clientX, e.clientY); });
   $('ctx-copy').addEventListener('click', () => {
-    const t = selectionInLog();
-    if (t) copyText(t);
+    if (ctxSelText) copyText(ctxSelText);
     ctxMenu.hidePopover();
   });
   $('ctx-selectall').addEventListener('click', () => {
@@ -762,8 +885,10 @@
     sel.removeAllRanges(); sel.addRange(range);
     ctxMenu.hidePopover();
   });
-  // 拖选 mouseup 后自动复制选中文本(需选中非空)
-  log.addEventListener('mouseup', () => {
+  // 拖选 mouseup 后自动复制选中文本(需选中非空;仅主键——右键 mouseup 走
+  // 右键菜单路径,不应重复触发复制)
+  log.addEventListener('mouseup', e => {
+    if (e.button !== 0) return;
     setTimeout(() => {
       const t = selectionInLog();
       if (t) copyText(t);
@@ -891,11 +1016,19 @@
     return (sCur >= 0 && sCur < matches.length && matches[sCur].rec === rec)
       ? matches[sCur].rg : null;
   }
-  // 按 runs 重建行内容:命中子串包 mark.s-hit,其余片段还原 span+内联 fg → 内联色可复现
+  // 按 runs 重建行内容:命中子串包 mark.s-hit,其余片段还原 span+内联 fg → 内联色可复现。
+  // S4:时间戳前缀也在此单点渲染——appendRow(首次)与搜索重绘共用,开关切换
+  // 全量重绘后 prefix 与高亮状态不互相破坏(前缀是独立 span,不占 rec.text 偏移)
   function renderRow(rec) {
     const curRg = curRgOf(rec);
     const el = rec.el;
     el.textContent = '';
+    if (tsOn && rec.ts != null) {
+      const t = document.createElement('span');
+      t.className = 'ts';
+      t.textContent = '[' + fmtTs(rec.ts) + '] ';
+      el.appendChild(t);
+    }
     let off = 0;
     for (const run of rec.runs) {
       const s = off, e = off + run.text.length;
@@ -974,6 +1107,7 @@
     log.innerHTML = '';
     matches = []; sCur = -1; capped = false; sPending.clear();
     updateCount();
+    $('log-empty').hidden = false; // S7:清空/重建瞬间恢复空态(snapshot 随后 append 再隐藏)
   }
   // 行被 DOM 裁剪(>500,与服务端 MAX_LOG_ROWS 对齐):摘除其命中(命中序与行序一致 → 被裁行命中构成前缀);
   // 当前命中所在行被裁 → 推进至下一存活命中(不滚动)
@@ -1071,11 +1205,28 @@
     // State/Progress 统一维护,页面中途打开或 WS 漏掉 state 消息时,
     // 状态栏 2s 内对齐,不再出现「未连接 + 绿点 + 断开按钮」同屏
     if (connected !== s.connected) setState(s.connected, s.sessionStatus);
-    else if ($('status').textContent !== s.sessionStatus) $('status').textContent = s.sessionStatus;
+    else if ($('status').textContent !== s.sessionStatus) {
+      $('status').textContent = s.sessionStatus;
+      applyStatusTip(s.sessionStatus); // S3:轮询改写文案时 tooltip 同步
+    }
   }).catch(() => {}), 2000);
   fetch(API + '/api/devices').then(r => r.json()).then(fillDatalist).catch(() => {});
   fetch(API + '/api/jlinks').then(r => r.json()).then(fillJlinks).catch(() => {});
-  fetch(API + '/api/status').then(r => r.json()).then(s => { if (s.device) renderDevice(s.device); }).catch(() => {});
+  fetch(API + '/api/status').then(r => r.json()).then(s => {
+    if (s.device) renderDevice(s.device);
+    if (s.version) $('version').textContent = 'v' + s.version; // T10:低调版本号
+  }).catch(() => {});
+  // ---- S9「浏览器打开」:壳标记 window.__MINI_SHELL 由 gui.rs 初始化脚本注入,
+  // 壳内 window.open 被原生层吞掉(SerialHub Sprint7 同款实测)→ 点按钮走
+  // POST /api/open-browser 让服务端拉起系统默认浏览器。纯浏览器访问无标记,
+  // 按钮保持 hidden(浏览器自带新标签,显示反而冗余) ----
+  if (window.__MINI_SHELL) {
+    const ob = $('open-browser');
+    ob.hidden = false;
+    ob.onclick = () => fetch(API + '/api/open-browser', { method: 'POST' })
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); showToast('已在系统浏览器打开', 'ok'); })
+      .catch(() => showToast('打开浏览器失败'));
+  }
   // 面板初值恢复:服务端持久化偏好(%APPDATA% prefs.json,500ms 快照)。
   // 主题/字号仍走 localStorage,不经此通道
   fetch(API + '/api/prefs').then(r => r.json()).then(p => {

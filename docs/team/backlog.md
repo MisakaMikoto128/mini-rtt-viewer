@@ -25,6 +25,15 @@
 - ☐ Web 管理台:暂停态拖选 → Ctrl+F 预填为空(QA E2,复现 1 次,未稳定复现)。
   推测机制:暂停打点前后流式行仍在途 → trim/onRowsRemoved 触发 renderRow
   重写行 DOM → selection 被清除;待稳定复现后决定是否在 renderRow 前保护选区
+- ☐ Web 管理台:暂停态 reload 按钮文案不同步(服务端暂停中 reload 显示静态
+  「暂停」,首点无效需二击恢复)——「按钮文本=状态源」反模式;修法:/api/status
+  或 snapshot 带服务端 paused 字段,reload 时按真状态渲染按钮(2026-09-19 QA4 发现)
+- ☐ serialhub M 档差距(feature-gap.md 定案,M5 明确不做):
+  M1 窗口几何记忆(config.rs window_* 字段已在、壳层未接线,简化版 ~50 行)>
+  M2 第二实例唤起(补齐 FR-23 规格债,现二次启动弹错误框,~60 行)>
+  M3 托盘菜单连接/断开(~60 行)> M4 时间戳服务端真时刻版(升级 S4 口径,~60 行)
+- ☐ 发布 v0.4.1:版本号 + CHANGELOG + tag(内容:关闭僵尸修复、轮子替换、
+  字距/行距对齐 VS Code、S1-S9 新功能、右键复制修复)
 
 ## 存档(✔ / ✖)
 

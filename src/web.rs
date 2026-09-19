@@ -6,7 +6,7 @@
 //! API 契约(与前端/测试对齐,改这里必同步 ui/web/index.html 与 tests/web):
 //! - GET  /                管理台单页
 //! - GET  /api/status      → {connected, phase, port, rxBytes, txBytes, rowsTotal,
-//!   uptimeSec, sessionSec, sessionStatus, device};device 8 字段
+//!   uptimeSec, sessionSec, sessionStatus, device, version};device 8 字段
 //!   {firmware,hardware,serial,core,cpu,target,iface,speedKhz}(demo 模式为演示
 //!   数据);sessionSec=连接会话秒(State 连接迁移记起点,断开清零,demo 启动即
 //!   计);sessionStatus=当前状态文案(如「已连接 (demo)」)
@@ -38,6 +38,8 @@
 //! - POST /api/pause       {on}
 //! - POST /api/clear
 //! - GET  /api/export      → text/plain 附件下载(rtt_<时间戳>.log,全部行文本)
+//! - POST /api/open-browser 在系统默认浏览器打开管理台(壳内前端按钮用;
+//!   URL 由服务端监听端口拼出,不接受客户端传入)
 //! - WS   /ws              {type:"rows"/"snapshot"/"cleared"} 与
 //!   {type:"state"/"device"/"progress"/"names"/"jlinks"/"stats"}
 //!
@@ -69,7 +71,7 @@ use crate::ansi;
 use crate::config::{self, StoredPrefs};
 use crate::demo;
 use crate::device_db;
-use crate::log_model::LogPump;
+use crate::log_model::{LogPump, MAX_LOG_ROWS};
 use crate::rtt::{self, WorkerCmd, WorkerConfig, WorkerHandle, WorkerMsg, SPEEDS_KHZ};
 use axum::{
     body::Bytes,
@@ -240,6 +242,8 @@ struct Shared {
     /// 上次成功连接的参数(reset reconnect 的重连来源;/api/connect 成功时
     /// 刷新,启动时从偏好底版恢复)
     last_connect: Mutex<Option<SavedConnect>>,
+    /// 服务监听端口(壳内前端「浏览器打开」按钮经 /api/open-browser 复用)
+    port: u16,
 }
 
 impl Shared {
@@ -611,6 +615,7 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         session_start: Mutex::new(None),
         status_text: Mutex::new("未连接".into()),
         on_state: on_event.clone(),
+        port: opts.port,
     });
 
     if opts.demo {
@@ -681,6 +686,7 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         .route("/api/pause", post(api_pause))
         .route("/api/clear", post(api_clear))
         .route("/api/export", get(api_export))
+        .route("/api/open-browser", post(api_open_browser))
         .route("/ws", get(ws_handler))
         .with_state(shared);
 
@@ -713,11 +719,19 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
 
 /// 用系统默认浏览器打开管理台(Windows;cmd start 的首个引号参数是窗口标题,
 /// 补空串占位)。失败静默:用户可手动访问地址栏。
-/// gui 壳的托盘菜单「在浏览器打开」也走这里。
+/// gui 壳的托盘菜单「在浏览器打开」与页内 /api/open-browser 都走这里。
 pub(crate) fn open_in_browser(url: &str) {
     let _ = std::process::Command::new("cmd")
         .args(["/c", "start", "", url])
         .spawn();
+}
+
+/// 在系统默认浏览器打开管理台(壳内前端按钮用;SerialHub Sprint7 实测壳内
+/// window.open 被原生层吞掉,浏览器访问用不到此端点)。URL 由服务端监听端口
+/// 拼出、不接受客户端传入,无任意 URL 打开面。
+async fn api_open_browser(State(shared): State<Arc<Shared>>) -> StatusCode {
+    open_in_browser(&format!("http://127.0.0.1:{}", shared.port));
+    StatusCode::OK
 }
 
 /// WS 事件统一序列化(替换历史手拼 `format!(r#"{{"type":…}}"#)`,serde derive
@@ -752,8 +766,19 @@ enum WsEvent<'a> {
     /// 转成 "jLinks",与历史契约不符 → 显式 rename
     #[serde(rename = "jlinks")]
     JLinks { list: Vec<JLinkEntry> },
-    /// 统计 {"type":"stats","rx":N,"tx":N,"rows":N}
-    Stats { rx: u64, tx: u64, rows: usize },
+    /// 统计 {"type":"stats","rx":N,"tx":N,"rows":N,"sessionSec":N,"cap":N}——
+    /// sessionSec=当前连接会话秒(断开为 0);cap=服务端行数上限(MAX_LOG_ROWS,
+    /// 底栏「n / 500 行」口径单点:前端不硬编码,以本字段为准)。
+    /// 注意:容器 rename_all="camelCase" 只改写**变体名**,不变体字段——首个
+    /// 多词字段必须显式 rename(线格式测试已锁),别再假设字段名自动转驼峰
+    Stats {
+        rx: u64,
+        tx: u64,
+        rows: usize,
+        #[serde(rename = "sessionSec")]
+        session_sec: u64,
+        cap: usize,
+    },
 }
 
 /// WS jlinks 事件的列表项 {sn, name}(与 /api/jlinks 输出同形)
@@ -934,11 +959,19 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
         drop(pump);
         if last_stats.elapsed() >= Duration::from_millis(500) {
             last_stats = Instant::now();
+            let session_sec = shared
+                .session_start
+                .lock()
+                .unwrap()
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
             let _ = shared.events_tx.send(
                 serde_json::to_string(&WsEvent::Stats {
                     rx: shared.rx_bytes.load(Ordering::Relaxed),
                     tx: shared.tx_bytes.load(Ordering::Relaxed),
                     rows: shared.pump.lock().unwrap().rows_len(),
+                    session_sec,
+                    cap: MAX_LOG_ROWS,
                 })
                 .unwrap(),
             );
@@ -1027,6 +1060,7 @@ async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value
         "sessionSec": session_sec,
         "sessionStatus": shared.status_text.lock().unwrap().clone(),
         "device": device,
+        "version": env!("CARGO_PKG_VERSION"),
     }))
 }
 
@@ -1877,10 +1911,12 @@ mod tests {
             serde_json::to_string(&WsEvent::Stats {
                 rx: 1,
                 tx: 2,
-                rows: 3
+                rows: 3,
+                session_sec: 4,
+                cap: 500
             })
             .unwrap(),
-            r#"{"type":"stats","rx":1,"tx":2,"rows":3}"#
+            r#"{"type":"stats","rx":1,"tx":2,"rows":3,"sessionSec":4,"cap":500}"#
         );
     }
 

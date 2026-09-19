@@ -1,6 +1,6 @@
 [package]
 name = "mini-rtt-viewer"
-version = "0.2.1"
+version = "0.4.1"
 edition = "2021"
 description = "Mini RTT Viewer — J-Link RTT 查看器:Rust 数据层 + 内嵌 Web 管理台(桌面壳 / 纯服务双形态)"
 

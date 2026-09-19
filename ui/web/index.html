@@ -136,13 +136,6 @@
   /* 时间戳前缀(S4):显示层装饰,--muted 暗色不抢正文;搜索匹配与导出内容
      均不含它(rec.text 只存 runs 原文,前缀是渲染期附加 span) */
   #log .ts { color: var(--muted); }
-  /* 空态占位(S6):#log-wrap(position:relative)锚定的绝对覆盖层——不占
-     #log 流内空间、不算行(行数计数/搜索/导出均不见它),pointer-events:none
-     不挡选区与右键;--muted 随四主题自然跟随 */
-  .log-empty { position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; color: var(--muted); font-size: 13px;
-    pointer-events: none; user-select: none; }
-  .log-empty[hidden] { display: none; }
 
   /* 发送条:日志区下方通栏,上排 32px 紧凑选项行(发送行尾/定时间隔/HEX 发送/
      定时发送,P0-2/V2 自左面板「发送」组迁入;32 同搜索条令牌)+ 下排
@@ -343,7 +336,6 @@
   <section id="content">
     <div id="log-wrap">
       <div id="log"></div>
-      <div id="log-empty" class="log-empty">等待数据… 连接后 RTT 输出会显示在这里</div>
       <div id="search-bar" hidden>
         <button class="s-btn" id="s-case" title="区分大小写" tabindex="-1">Aa</button>
         <button class="s-btn" id="s-regex" title="使用正则表达式" tabindex="-1">.*</button>
@@ -438,7 +430,6 @@
     div.__rec = rec;
     renderRow(rec); // 渲染单点:时间戳前缀 + ANSI runs(搜索高亮重绘同一路径)
     log.appendChild(div);
-    $('log-empty').hidden = true; // S7 空态:首行到达即隐藏
     if (searchOpen) { scanRec(rec); updateCount(); } // 新行增量扫描:只更新计数,不滚动
   }
   function trim() {
@@ -475,7 +466,6 @@
     else if (m.type === 'progress') {
       const txt = m.text.replace('● ', '');
       $('status').textContent = txt;
-      applyStatusTip(txt); // S3:进度文案也带大白话解释(连接中/重置中等)
     }
     else if (m.type === 'names') fillDatalist(m.names);
     else if (m.type === 'jlinks') fillJlinks(m.list);
@@ -515,31 +505,11 @@
     lastStats = { t: now, rx: m.rx, tx: m.tx };
   }
   function zeroRates() { $('rx-rate').textContent = '0 B/s'; $('tx-rate').textContent = '0 B/s'; lastStats = null; }
-  // ---- S3 状态栏大白话 tooltip(文案风格参照 SerialHub PHASE_TIP)----
-  const STATE_TIPS = {
-    on: 'RTT 已连上目标芯片,数据实时刷新中',
-    off: '未连接。在左侧选好 J-Link 与目标设备后点「连接」开始',
-    connecting: '正在连接 J-Link 与目标芯片,请稍候;失败会在这里显示原因',
-    reset: '正在复位目标芯片,完成后自动恢复 RTT 接收',
-  };
-  function statusTip(on, text) {
-    if (on) return STATE_TIPS.on;
-    const t = text || $('status').textContent || '';
-    if (t.includes('重置')) return STATE_TIPS.reset;
-    if (t.includes('连接') && !t.includes('未连接')) return STATE_TIPS.connecting;
-    return STATE_TIPS.off;
-  }
-  function applyStatusTip(text) {
-    const tip = statusTip(connected, text);
-    $('dot').title = tip;
-    $('status').title = tip;
-  }
   // 单只主按钮:「连接」(accent)⇄「断开」(红色系 danger)切换
   function setState(on, status) {
     connected = on;
     $('dot').classList.toggle('on', on);
     if (status) $('status').textContent = status.replace('● ', '');
-    applyStatusTip(status); // S3:#dot/#status 同步大白话解释
     // S1/S2:断开清零(速率归零显示、时长归 0、字节快照复位)
     if (!on) { zeroRates(); $('session').textContent = '0s'; }
     const btn = $('connect-btn');
@@ -1107,7 +1077,6 @@
     log.innerHTML = '';
     matches = []; sCur = -1; capped = false; sPending.clear();
     updateCount();
-    $('log-empty').hidden = false; // S7:清空/重建瞬间恢复空态(snapshot 随后 append 再隐藏)
   }
   // 行被 DOM 裁剪(>500,与服务端 MAX_LOG_ROWS 对齐):摘除其命中(命中序与行序一致 → 被裁行命中构成前缀);
   // 当前命中所在行被裁 → 推进至下一存活命中(不滚动)
@@ -1207,7 +1176,6 @@
     if (connected !== s.connected) setState(s.connected, s.sessionStatus);
     else if ($('status').textContent !== s.sessionStatus) {
       $('status').textContent = s.sessionStatus;
-      applyStatusTip(s.sessionStatus); // S3:轮询改写文案时 tooltip 同步
     }
   }).catch(() => {}), 2000);
   fetch(API + '/api/devices').then(r => r.json()).then(fillDatalist).catch(() => {});

@@ -367,7 +367,8 @@ def test_fr18_web_search_p0(page):
 
 def test_ui_layout_p0(page):
     """UI P0 视觉断言(2026-09 UI 重构规格,2026-09-19 getComputedStyle 实测定值):
-    左面板宽 420±10、控件高 40±2(按钮统一 40)、日志行高 32±1、日志字号 15、
+    左面板宽 420±10、控件高 40±2(按钮统一 40)、日志行距复刻 VS Code(默认字号 14,
+    行高 = round(14 × 1.5) = 21,GOLDEN_LINE_HEIGHT_RATIO;A± 联动)、
     无顶部 header、发送条在日志区下方通栏、单连接切换按钮(连接/断开同钮)、
     通道选项 16 项。
     2026-09-19 Dev-UI 结构迁移(P0-2):发送行尾/定时间隔随「发送」组迁入
@@ -412,9 +413,10 @@ def test_ui_layout_p0(page):
     assert 70 <= send_h["t"] <= 74 and 70 <= send_h["b"] <= 74 and send_h["aligned"], \
         f"发送区应 72±2 且按钮贴底:实测 {send_h}"
 
-    # 3) 日志行高 32±1(computed line-height + 未换行短行实际高度)
+    # 3) 日志行高 21±1(computed line-height + 未换行短行实际高度;
+    #    VS Code 行距复刻:round(14 × 1.5) = 21)
     lh = page.evaluate("parseFloat(getComputedStyle(document.getElementById('log')).lineHeight)")
-    assert 31 <= lh <= 33, f"日志行 line-height 应 32±1:实测 {lh}"
+    assert 20 <= lh <= 22, f"日志行 line-height 应 21±1:实测 {lh}"
     # 快照环形缓冲可能只剩长数据行;标记行(「── 已连接 ──」,demo 循环周期产生)
     # 是稳定的短行来源,等待其出现后量实际高度
     page.wait_for_function(
@@ -429,11 +431,11 @@ def test_ui_layout_p0(page):
             return s.getBoundingClientRect().height;
         }"""
     )
-    assert 31 <= row_h <= 33, f"日志短行实际高应 32±1:实测 {row_h}"
+    assert 20 <= row_h <= 22, f"日志短行实际高应 21±1:实测 {row_h}"
 
-    # 4) 日志字号 15
+    # 4) 日志字号 14(VS Code Windows 默认字号)
     fs = page.evaluate("parseFloat(getComputedStyle(document.getElementById('log')).fontSize)")
-    assert fs == 15, f"日志字号应 15px:实测 {fs}"
+    assert fs == 14, f"日志字号应 14px:实测 {fs}"
 
     # 5) 无顶部 header:不存在 header 元素,main 顶到视口顶
     top = page.evaluate(

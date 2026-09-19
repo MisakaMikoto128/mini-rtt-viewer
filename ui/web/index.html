@@ -13,7 +13,7 @@
     --bg:#0E1013; --panel:#0E1013; --card:#16181D; --input:#0F1216; --btn:#232830;
     --text:#E6E8EB; --secondary:#9AA0A8; --muted:#6A7078; --border:#262A31;
     --accent:#2B6E8F; --ok:#4C9E62; --err:#C95F68; --danger:#A84E58;
-    --log-bg:#0E1013; --log-fg:#D8DBE0; --log-fs:15px;
+    --log-bg:#0E1013; --log-fg:#D8DBE0; --log-fs:14px; --log-lh:21px;
     --search-hit:rgba(255,213,79,.28); --search-hit-current:rgba(255,152,0,.55);
   }
   :root[data-theme="light"] {
@@ -119,8 +119,9 @@
      绝对定位不占用流内空间 → 不改变 #log 可用宽高(无 reflow) */
   #log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
   #log { flex: 1; min-width: 0; overflow-y: auto; background: var(--log-bg); color: var(--log-fg);
-    font-family: Consolas, monospace; font-size: var(--log-fs, 15px); line-height: 32px; padding: 8px 12px; }
-  #log .row { white-space: pre-wrap; word-break: break-all; min-height: 32px; }
+    font-family: Consolas, monospace; font-size: var(--log-fs, 14px); line-height: var(--log-lh, 21px); padding: 8px 12px; }
+  /* 行距复刻 VS Code:行高 = round(字号 × 1.5)(GOLDEN_LINE_HEIGHT_RATIO),A± 改字号时 JS 联动重算 */
+  #log .row { white-space: pre-wrap; word-break: break-all; }
   /* 日志滚动条与 aside 同款(P2-3/V8):6px 细拇指,随主题 --muted 着色 */
   #log::-webkit-scrollbar { width: 6px; }
   #log::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 3px; }
@@ -775,10 +776,12 @@
     }, 0);
   });
 
-  // 字号 A±(纯前端,localStorage 记忆;--log-fs 默认 15,范围 9-30)
-  let logFs = +(lsGet('log-fs') || localStorage.getItem('web-log-fs') || 15);
+  // 字号 A±(纯前端,localStorage 记忆;默认 14 = VS Code Windows 默认字号,范围 9-30)
+  // 行高随字号重算并同步 CSS 变量,复刻 VS Code 行高算法 round(字号 × 1.5)
+  let logFs = +(lsGet('log-fs') || localStorage.getItem('web-log-fs') || 14);
   function applyFs() {
     document.documentElement.style.setProperty('--log-fs', logFs + 'px');
+    document.documentElement.style.setProperty('--log-lh', Math.round(logFs * 1.5) + 'px');
     lsSet('log-fs', String(logFs));
   }
   $('A-minus').onclick = () => { logFs = Math.max(9, logFs - 1); applyFs(); };

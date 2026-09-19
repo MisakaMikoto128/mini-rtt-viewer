@@ -4,14 +4,25 @@
 //! 增量式、颜色状态跨行跨块保持。本模块只做 SGR(颜色)→ RGB 的映射与
 //! 按颜色切段,不做任何渲染。不支持的颜色属性(如背景色/斜体)忽略。
 
+use serde::Serialize;
 use vte::{Params, Parser, Perform};
 
 /// 一段同色文本
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Run {
     pub text: String,
-    /// None = 默认前景色
+    /// None = 默认前景色(WS 契约:Some → "#rrggbb" 小写,None → null)
+    #[serde(serialize_with = "serialize_fg")]
     pub fg: Option<(u8, u8, u8)>,
+}
+
+/// fg → WS 契约的 `"#rrggbb"`(小写 hex)/ null。与替换前的手拼
+/// `format!("#{:02x}{:02x}{:02x}")` 逐字节同形(web.rs WsEvent rows/snapshot 事件)。
+fn serialize_fg<S: serde::Serializer>(fg: &Option<(u8, u8, u8)>, s: S) -> Result<S::Ok, S::Error> {
+    match fg {
+        Some((r, g, b)) => s.serialize_some(&format!("#{r:02x}{g:02x}{b:02x}")),
+        None => s.serialize_none(),
+    }
 }
 
 /// xterm 标准 16 色(VSCode Dark+ 同款色值)

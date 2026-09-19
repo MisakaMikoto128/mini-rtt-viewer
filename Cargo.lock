@@ -1421,6 +1421,7 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
+ "dirs 6.0.0",
  "encoding_rs",
  "libloading 0.8.9",
  "png 0.17.16",

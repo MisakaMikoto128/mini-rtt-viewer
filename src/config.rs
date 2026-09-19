@@ -97,8 +97,10 @@ impl Default for StoredPrefs {
     }
 }
 
-/// 配置文件路径:`%APPDATA%/MiniRttViewer/prefs.json`;无 APPDATA 环境变量时
-/// 返回 None(保存静默跳过,功能照常)。
+/// 配置文件路径:`%APPDATA%/MiniRttViewer/prefs.json`(%APPDATA% 经
+/// `dirs::config_dir()` 解析 = SHGetKnownFolderPath RoamingAppData,与历史
+/// `env::var("APPDATA")` 同路径,单测 `dirs_config_dir_matches_legacy_appdata`
+/// 锁定等价性;known folder API 在环境变量缺失的非常规环境也能解析)。
 /// 环境变量 `RTT_PREFS_FILE` 显式指定完整文件路径时优先(测试/便携场景的
 /// prefs 隔离纪律:指向临时文件,绝不读写真实 %APPDATA%)。
 fn prefs_path() -> Option<PathBuf> {
@@ -107,9 +109,7 @@ fn prefs_path() -> Option<PathBuf> {
             return Some(PathBuf::from(p));
         }
     }
-    std::env::var("APPDATA")
-        .ok()
-        .map(|d| PathBuf::from(d).join("MiniRttViewer").join("prefs.json"))
+    dirs::config_dir().map(|d| d.join("MiniRttViewer").join("prefs.json"))
 }
 
 /// 读取偏好:文件缺失/损坏/字段缺失一律回落默认
@@ -239,5 +239,21 @@ mod tests {
         // .tmp 不残留
         assert!(!p.with_extension("json.tmp").exists());
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn dirs_config_dir_matches_legacy_appdata() {
+        // APPDATA → dirs::config_dir() 替换的等价性证明:Windows 标准环境下
+        // SHGetKnownFolderPath(FOLDERID_RoamingAppData) 与 %APPDATA% 环境变量
+        // 解析到同一路径(逐分量比较,含大小写);RTT_PREFS_FILE 覆盖分支
+        // 在此未设置时走默认解析,分支结构与替换前一致。
+        let Ok(env_appdata) = std::env::var("APPDATA") else {
+            return; // 环境变量被裁剪的非常规环境无从对比,跳过(不影响功能)
+        };
+        assert_eq!(
+            dirs::config_dir(),
+            Some(PathBuf::from(env_appdata)),
+            "dirs::config_dir() 应与 %APPDATA% 环境变量同路径"
+        );
     }
 }

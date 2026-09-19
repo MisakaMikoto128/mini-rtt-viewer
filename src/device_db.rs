@@ -22,14 +22,10 @@ pub fn busy() -> bool {
     DEVICE_DB_BUSY.load(Ordering::Relaxed)
 }
 
-/// 缓存文件:%APPDATA%\MiniRttViewer\device_names.txt(每行一个设备名)
+/// 缓存文件:%APPDATA%\MiniRttViewer\device_names.txt(每行一个设备名;
+/// %APPDATA% 经 dirs::config_dir() 解析,与历史 env::var("APPDATA") 同路径)
 fn cache_path() -> Option<PathBuf> {
-    let base = std::env::var("APPDATA").ok()?;
-    Some(
-        PathBuf::from(base)
-            .join("MiniRttViewer")
-            .join("device_names.txt"),
-    )
+    dirs::config_dir().map(|d| d.join("MiniRttViewer").join("device_names.txt"))
 }
 
 fn load_cache() -> Option<Vec<String>> {

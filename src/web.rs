@@ -82,7 +82,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     net::SocketAddr,
     path::PathBuf,
@@ -720,6 +720,61 @@ pub(crate) fn open_in_browser(url: &str) {
         .spawn();
 }
 
+/// WS 事件统一序列化(替换历史手拼 `format!(r#"{{"type":…}}"#)`,serde derive
+/// 消掉拼串笔误面):`tag = "type"` + 变体名 camelCase(单词名即小写)产出
+/// `{"type":"rows|snapshot|cleared|state|device|progress|names|jlinks|stats",…}`。
+/// 字段名/顺序/类型与历史契约逐项对齐(前端 index.html 与 tests/web 黑盒只认
+/// 这套);线格式由单测 `ws_event_wire_format_matches_legacy_contract` 逐字节
+/// 锁死——camelCase 契约坑(见 SettingsReq 注释)自此有编译期 + 测试双保险。
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum WsEvent<'a> {
+    /// 增量行 {"type":"rows","seq":N,"dropped":N,"rows":[{runs:[{text,fg}]}]}
+    Rows {
+        seq: u64,
+        dropped: usize,
+        rows: &'a [RunsRow<'a>],
+    },
+    /// 重同步全量快照 {"type":"snapshot","rows":[…]}
+    Snapshot { rows: &'a [RunsRow<'a>] },
+    /// 清空水位 {"type":"cleared","seq":N}(水位之后的 rows 才有效)
+    Cleared { seq: u64 },
+    /// 连接状态 {"type":"state","connected":B,"status":"…"}
+    State { connected: bool, status: String },
+    /// 设备信息 {"type":"device","info":{8 字段}}——info 与 /api/status 的 device
+    /// 同形,继续由 serde_json::json! 构造(与 demo_device_json 单点同源)
+    Device { info: serde_json::Value },
+    /// 进度文案 {"type":"progress","text":"…"}
+    Progress { text: String },
+    /// 芯片型号名单 {"type":"names","names":[…]}
+    Names { names: Vec<String> },
+    /// J-Link 列表 {"type":"jlinks","list":[{sn,name}]}——camelCase 会把变体名
+    /// 转成 "jLinks",与历史契约不符 → 显式 rename
+    #[serde(rename = "jlinks")]
+    JLinks { list: Vec<JLinkEntry> },
+    /// 统计 {"type":"stats","rx":N,"tx":N,"rows":N}
+    Stats { rx: u64, tx: u64, rows: usize },
+}
+
+/// WS jlinks 事件的列表项 {sn, name}(与 /api/jlinks 输出同形)
+#[derive(Serialize)]
+struct JLinkEntry {
+    sn: u32,
+    name: String,
+}
+
+/// 单行 runs 包装:历史契约每行是 `{"runs":[{text,fg},…]}` **对象**而非裸数组
+/// (Vec<Run> 直接序列化会丢掉 runs 键,这是替换时唯一需要显式建模的层级)
+#[derive(Serialize)]
+struct RunsRow<'a> {
+    runs: &'a [ansi::Run],
+}
+
+/// 行数组 → runs 包装视图(借用,零文本拷贝;rows/snapshot 事件共用)
+fn rows_view(rows: &[Vec<ansi::Run>]) -> Vec<RunsRow<'_>> {
+    rows.iter().map(|r| RunsRow { runs: r }).collect()
+}
+
 /// 数据泵:消息消化 → cap → 增量上屏 → 事件广播;状态/设备信息同步进 Shared;
 /// 偏好快照比对落盘;定时发送触发
 fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
@@ -767,10 +822,9 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                     // 进度文案同步进 status_text(F3):2s 轮询的 sessionStatus
                     // 与 WS progress 同源,轮询回填不会倒退/打架
                     *shared.status_text.lock().unwrap() = clean_status_text(&text);
-                    let _ = shared.events_tx.send(format!(
-                        r#"{{"type":"progress","text":{}}}"#,
-                        serde_json::to_string(&text).unwrap()
-                    ));
+                    let _ = shared
+                        .events_tx
+                        .send(serde_json::to_string(&WsEvent::Progress { text }).unwrap());
                 }
                 Ok(WorkerMsg::State(connected, status)) => {
                     // 翻变才回调(gui 壳驱动托盘图标;数据泵线程非阻塞,只 send_event)
@@ -800,11 +854,9 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                     }
                     // 状态文案每条 State 都刷新(连接失败的错误详情也随 false 态带出)
                     *shared.status_text.lock().unwrap() = clean_status_text(&status);
-                    let _ = shared.events_tx.send(format!(
-                        r#"{{"type":"state","connected":{},"status":{}}}"#,
-                        connected,
-                        serde_json::to_string(&status).unwrap()
-                    ));
+                    let _ = shared.events_tx.send(
+                        serde_json::to_string(&WsEvent::State { connected, status }).unwrap(),
+                    );
                 }
                 Ok(WorkerMsg::DeviceInfo(info)) => {
                     let json = serde_json::json!({
@@ -816,25 +868,23 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                     *shared.device_info.lock().unwrap() = Some(info);
                     let _ = shared
                         .events_tx
-                        .send(format!(r#"{{"type":"device","info":{json}}}"#));
+                        .send(serde_json::to_string(&WsEvent::Device { info: json }).unwrap());
                 }
                 Ok(WorkerMsg::DeviceNames(names)) => {
                     *shared.device_names.lock().unwrap() = names.clone();
-                    let _ = shared.events_tx.send(format!(
-                        r#"{{"type":"names","names":{}}}"#,
-                        serde_json::to_string(&names).unwrap()
-                    ));
+                    let _ = shared
+                        .events_tx
+                        .send(serde_json::to_string(&WsEvent::Names { names }).unwrap());
                 }
                 Ok(WorkerMsg::JLinks(list)) => {
                     *shared.jlinks.lock().unwrap() = list.clone();
-                    let arr: Vec<serde_json::Value> = list
-                        .iter()
-                        .map(|(sn, name)| serde_json::json!({"sn": sn, "name": name}))
+                    let entries = list
+                        .into_iter()
+                        .map(|(sn, name)| JLinkEntry { sn, name })
                         .collect();
-                    let _ = shared.events_tx.send(format!(
-                        r#"{{"type":"jlinks","list":{}}}"#,
-                        serde_json::Value::Array(arr)
-                    ));
+                    let _ = shared
+                        .events_tx
+                        .send(serde_json::to_string(&WsEvent::JLinks { list: entries }).unwrap());
                 }
                 Ok(WorkerMsg::Exited) => {
                     // 只清"确实已停"的登记句柄:reset reconnect 场景下旧 worker
@@ -872,17 +922,26 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
         let dropped = pump.take_dropped();
         if let Some(rows) = pump.take_new_rows() {
             let seq = shared.seq.fetch_add(1, Ordering::Relaxed) + 1;
-            let _ = shared.events_tx.send(rows_payload(seq, &rows, dropped));
+            let _ = shared.events_tx.send(
+                serde_json::to_string(&WsEvent::Rows {
+                    seq,
+                    dropped,
+                    rows: &rows_view(&rows),
+                })
+                .unwrap(),
+            );
         }
         drop(pump);
         if last_stats.elapsed() >= Duration::from_millis(500) {
             last_stats = Instant::now();
-            let _ = shared.events_tx.send(format!(
-                r#"{{"type":"stats","rx":{},"tx":{},"rows":{}}}"#,
-                shared.rx_bytes.load(Ordering::Relaxed),
-                shared.tx_bytes.load(Ordering::Relaxed),
-                shared.pump.lock().unwrap().rows_len()
-            ));
+            let _ = shared.events_tx.send(
+                serde_json::to_string(&WsEvent::Stats {
+                    rx: shared.rx_bytes.load(Ordering::Relaxed),
+                    tx: shared.tx_bytes.load(Ordering::Relaxed),
+                    rows: shared.pump.lock().unwrap().rows_len(),
+                })
+                .unwrap(),
+            );
             // 偏好自动保存:与上次落盘快照不同才原子写(单文件几 KB,未连接态也保存)
             let snap = snapshot_prefs(&shared);
             if last_prefs.as_ref() != Some(&snap) {
@@ -907,41 +966,6 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
             }
         }
     }
-}
-
-/// 行数组 → JSON(runs: [{text, fg}] 逐行;fg 为 null 表示主题默认色)
-fn rows_json_array(rows: &[Vec<ansi::Run>]) -> String {
-    let mut out = String::from("[");
-    for (ri, row) in rows.iter().enumerate() {
-        if ri > 0 {
-            out.push(',');
-        }
-        out.push_str(r#"{"runs":["#);
-        for (si, run) in row.iter().enumerate() {
-            if si > 0 {
-                out.push(',');
-            }
-            out.push_str(&format!(
-                r#"{{"text":{},"fg":{}}}"#,
-                serde_json::to_string(&run.text).unwrap(),
-                match run.fg {
-                    Some((r, g, b)) => format!("\"#{:02x}{:02x}{:02x}\"", r, g, b),
-                    None => "null".to_string(),
-                }
-            ));
-        }
-        out.push_str("]}");
-    }
-    out.push(']');
-    out
-}
-
-/// 增量行消息(dropped>0 时前端同步丢弃头部同量行)
-fn rows_payload(seq: u64, rows: &[Vec<ansi::Run>], dropped: usize) -> String {
-    format!(
-        r#"{{"type":"rows","seq":{seq},"dropped":{dropped},"rows":{}}}"#,
-        rows_json_array(rows)
-    )
 }
 
 async fn index() -> Html<&'static str> {
@@ -1491,7 +1515,7 @@ async fn api_clear(State(shared): State<Arc<Shared>>) -> StatusCode {
     shared.clear_seq.store(seq, Ordering::Relaxed);
     let _ = shared
         .events_tx
-        .send(format!(r#"{{"type":"cleared","seq":{seq}}}"#));
+        .send(serde_json::to_string(&WsEvent::Cleared { seq }).unwrap());
     StatusCode::OK
 }
 
@@ -1533,10 +1557,10 @@ async fn ws_loop(mut socket: WebSocket, shared: Arc<Shared>) {
     let mut rx = shared.events_tx.subscribe();
     {
         let snapshot = shared.pump.lock().unwrap().snapshot_rows();
-        let msg = format!(
-            r#"{{"type":"snapshot","rows":{}}}"#,
-            rows_json_array(&snapshot)
-        );
+        let msg = serde_json::to_string(&WsEvent::Snapshot {
+            rows: &rows_view(&snapshot),
+        })
+        .unwrap();
         if socket.send(Message::Text(msg.into())).await.is_err() {
             return;
         }
@@ -1553,10 +1577,10 @@ async fn ws_loop(mut socket: WebSocket, shared: Arc<Shared>) {
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // 订阅滞后:丢弃的行不可恢复,重发全量快照让前端重同步
                         let snapshot = shared.pump.lock().unwrap().snapshot_rows();
-                        let msg = format!(
-                            r#"{{"type":"snapshot","rows":{}}}"#,
-                            rows_json_array(&snapshot)
-                        );
+                        let msg = serde_json::to_string(&WsEvent::Snapshot {
+                            rows: &rows_view(&snapshot),
+                        })
+                        .unwrap();
                         if socket.send(Message::Text(msg.into())).await.is_err() {
                             break;
                         }
@@ -1765,6 +1789,99 @@ mod tests {
         ] {
             assert!(!valid_theme_file_name(bad), "\"{bad}\" 应被拒绝");
         }
+    }
+
+    #[test]
+    fn ws_event_wire_format_matches_legacy_contract() {
+        // 手拼 format! → serde derive 替换的逐字节线格式锁:字段名/顺序/类型与
+        // 历史契约一致(改前抓帧基线 target/audit/ws_frames_before.json 同形)。
+        // text 含引号/反斜杠/换行/中文,证明转义与 serde_json::to_string 时代一致;
+        // rows 用 r## 定界,因期望串里含 `"#` 序列。
+        let rows = vec![vec![
+            ansi::Run {
+                text: "a\"b\\c\n中文".into(),
+                fg: Some((0x28, 0xaf, 0xe9)),
+            },
+            ansi::Run {
+                text: "默认色".into(),
+                fg: None,
+            },
+        ]];
+        let rows_json =
+            r##"[{"runs":[{"text":"a\"b\\c\n中文","fg":"#28afe9"},{"text":"默认色","fg":null}]}]"##;
+        assert_eq!(
+            serde_json::to_string(&WsEvent::Rows {
+                seq: 17,
+                dropped: 2,
+                rows: &rows_view(&rows),
+            })
+            .unwrap(),
+            format!(r##"{{"type":"rows","seq":17,"dropped":2,"rows":{rows_json}}}"##)
+        );
+        assert_eq!(
+            serde_json::to_string(&WsEvent::Snapshot {
+                rows: &rows_view(&rows),
+            })
+            .unwrap(),
+            format!(r##"{{"type":"snapshot","rows":{rows_json}}}"##)
+        );
+        assert_eq!(
+            serde_json::to_string(&WsEvent::Cleared { seq: 9 }).unwrap(),
+            r#"{"type":"cleared","seq":9}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&WsEvent::State {
+                connected: false,
+                status: "● 未连接 (demo)".into(),
+            })
+            .unwrap(),
+            r#"{"type":"state","connected":false,"status":"● 未连接 (demo)"}"#
+        );
+        // device:info 载荷仍由原 json! 构造(与 /api/status 单点同源,未动),
+        // 断言只锁外层包装与历史 format! 逐字节同形
+        let info = serde_json::json!({
+            "firmware": "J-Link V11 demo", "target": "STM32F103C8", "speedKhz": 4000,
+        });
+        assert_eq!(
+            serde_json::to_string(&WsEvent::Device { info: info.clone() }).unwrap(),
+            format!(
+                r#"{{"type":"device","info":{}}}"#,
+                serde_json::to_string(&info).unwrap()
+            )
+        );
+        assert_eq!(
+            serde_json::to_string(&WsEvent::Progress {
+                text: "连接中 \"50%\"\r".into(),
+            })
+            .unwrap(),
+            r#"{"type":"progress","text":"连接中 \"50%\"\r"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&WsEvent::Names {
+                names: vec!["STM32F103C8".into(), "GD32".into()],
+            })
+            .unwrap(),
+            r#"{"type":"names","names":["STM32F103C8","GD32"]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&WsEvent::JLinks {
+                list: vec![JLinkEntry {
+                    sn: 600788888,
+                    name: "J-Link #0".into(),
+                }],
+            })
+            .unwrap(),
+            r#"{"type":"jlinks","list":[{"sn":600788888,"name":"J-Link #0"}]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&WsEvent::Stats {
+                rx: 1,
+                tx: 2,
+                rows: 3
+            })
+            .unwrap(),
+            r#"{"type":"stats","rx":1,"tx":2,"rows":3}"#
+        );
     }
 
     #[test]

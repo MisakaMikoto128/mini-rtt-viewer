@@ -119,8 +119,11 @@
      绝对定位不占用流内空间 → 不改变 #log 可用宽高(无 reflow) */
   #log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
   #log { flex: 1; min-width: 0; overflow-y: auto; background: var(--log-bg); color: var(--log-fg);
-    font-family: Consolas, monospace; font-size: var(--log-fs, 14px); line-height: var(--log-lh, 21px); padding: 8px 12px; }
-  /* 行距复刻 VS Code:行高 = round(字号 × 1.5)(GOLDEN_LINE_HEIGHT_RATIO),A± 改字号时 JS 联动重算 */
+    font-family: Consolas, monospace; font-size: var(--log-fs, 14px); line-height: var(--log-lh, 21px);
+    letter-spacing: -0.4px; padding: 8px 12px; }
+  /* 行距/字距复刻并微调 VS Code:行高 = round(字号 × 1.5)(GOLDEN_LINE_HEIGHT_RATIO),
+     A± 改字号时 JS 联动重算;字距四档 A/B(0/-0.25/-0.4/-0.6)实测取 -0.4px:
+     比 Consolas 默认步进(7.7px)收紧 ~5%,无字形碰撞;-0.6 起冒号/括号处发闷 */
   #log .row { white-space: pre-wrap; word-break: break-all; }
   /* 日志滚动条与 aside 同款(P2-3/V8):6px 细拇指,随主题 --muted 着色 */
   #log::-webkit-scrollbar { width: 6px; }
@@ -171,11 +174,12 @@
     white-space: nowrap; } /* muted→secondary(P2-2/V7) */
   #s-count.err { color: var(--err); }
 
-  /* 日志区右键菜单(复制选中文本 / 全选) */
+  /* 日志区右键菜单(复制选中文本 / 全选):原生 popover="auto"(Baseline 2024,
+     WebView2 evergreen 与 2024+ 浏览器支持)——top layer + 自带 Esc 关/点外关
+     (light-dismiss),JS 不再手动管理 hidden 与 window mousedown/blur 全局监听 */
   #ctx-menu { position: fixed; z-index: 60; min-width: 150px; background: var(--card);
     border: 1px solid var(--border); border-radius: 8px; padding: 4px;
     box-shadow: 0 8px 24px rgba(0,0,0,.4); }
-  #ctx-menu[hidden] { display: none; }
   .ctx-item { padding: 7px 12px; font-size: 13px; border-radius: 4px; cursor: pointer; color: var(--text); } /* 5→4(P2-5/V10 圆角三档) */
   .ctx-item:hover { background: var(--accent); color: #fff; }
   .ctx-item.disabled { opacity: .4; pointer-events: none; }
@@ -359,7 +363,7 @@
   <span id="rx">RX 0 B</span>
   <span id="rows">0 行</span>
 </footer>
-<div id="ctx-menu" hidden>
+<div id="ctx-menu" popover="auto">
   <div class="ctx-item" id="ctx-copy">复制选中文本</div>
   <div class="ctx-item" id="ctx-selectall">全选</div>
 </div>
@@ -730,23 +734,15 @@
 
   // ===== 日志区右键菜单 + 拖选自动复制 =====
   const ctxMenu = $('ctx-menu');
-  // 复制:优先 navigator.clipboard(安全上下文);失败(无焦点/无 API)退回 execCommand
+  // 复制:navigator.clipboard(127.0.0.1 是规范定义的可信上下文,API 恒在;
+  // 旧 execCommand 回退是死代码——其能兜的"文档失焦 reject"场景同样失败)
   function copyText(t) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(t).catch(fallbackCopy.bind(null, t));
-    } else { fallbackCopy(t); }
-  }
-  function fallbackCopy(t) {
-    const ta = document.createElement('textarea');
-    ta.value = t;
-    ta.style.position = 'fixed'; ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); } catch (e) { /* 无剪贴板权限时静默 */ }
-    ta.remove();
+    navigator.clipboard.writeText(t).catch(() => {}); // 失焦 reject 静默,不打断
   }
   function openCtxMenu(x, y) {
-    ctxMenu.hidden = false;
+    // popover 自带 Esc 关/点外关(light-dismiss);重复右键时 showPopover 幂等,
+    // 加 :popover-open 守卫明确"只在关闭态打开"
+    if (!ctxMenu.matches(':popover-open')) ctxMenu.showPopover();
     const t = selectionInLog();
     $('ctx-copy').classList.toggle('disabled', !t);
     const w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
@@ -754,19 +750,17 @@
     ctxMenu.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
   }
   log.addEventListener('contextmenu', e => { e.preventDefault(); openCtxMenu(e.clientX, e.clientY); });
-  window.addEventListener('mousedown', e => { if (!ctxMenu.contains(e.target)) ctxMenu.hidden = true; });
-  window.addEventListener('blur', () => { ctxMenu.hidden = true; });
   $('ctx-copy').addEventListener('click', () => {
     const t = selectionInLog();
     if (t) copyText(t);
-    ctxMenu.hidden = true;
+    ctxMenu.hidePopover();
   });
   $('ctx-selectall').addEventListener('click', () => {
     const range = document.createRange();
     range.selectNodeContents(log);
     const sel = window.getSelection();
     sel.removeAllRanges(); sel.addRange(range);
-    ctxMenu.hidden = true;
+    ctxMenu.hidePopover();
   });
   // 拖选 mouseup 后自动复制选中文本(需选中非空)
   log.addEventListener('mouseup', () => {

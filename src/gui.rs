@@ -10,8 +10,19 @@
 //!   打回主循环驱动托盘图标(事件循环未启动前发送的事件会排队);
 //! - 事件循环闭包里绝不能 await / block_on —— 会冻结 Win32 消息泵,窗口假死;
 //! - 简化决策(架构师指定):**关窗 = 退出进程**(SerialHub 的"关窗到托盘 +
-//!   首次气泡"未移植);退出不经服务优雅停机(本项目数据层无 COM 释放),
-//!   托盘退出/关窗都直接 `ControlFlow::Exit`,服务线程随进程终止;
+//!   首次气泡"未移植);退出不经服务优雅停机(本项目数据层无 COM 释放);
+//! - **退出序列(关窗/托盘退出共用 `exit_process`,不用 ControlFlow::Exit)**:
+//!   置 APP_SHUTDOWN → 显式移除托盘 → 显式 drop WebView(controller.Close,
+//!   WebView2 官方要求退出前在创建线程关掉,否则进程终止的 DLL detach 阶段
+//!   会与 msedgewebview2 子进程做同步 ALPC 清理往返 → 1 线程僵尸、端口残留、
+//!   TerminateProcess 杀不死,2026-09-19 现场)→ `TerminateProcess(self)`
+//!   终局。不用 `ControlFlow::Exit` 的原因见 `exit_process` 文档:tao 对退出
+//!   标志的观察依赖后续消息驱动 runner 状态机回 Idle(静态窗口下可能长期不
+//!   被观察),且 tao 自身的退出终局正是出问题的 ExitProcess;
+//! - 跳过的清理与副作用:axum 无 drain(进程随即终止,HTTP 无观察者;浏览器
+//!   端表现与进程死亡一致)、worker 不 join(rtt worker 自检 APP_SHUTDOWN,
+//!   进程死亡即消失——"宁可粗暴不留僵尸")、prefs 最后 ≤500ms 的改动不落盘
+//!   (tick 500ms 快照节流,与旧 process::exit 行为一致);
 //! - 第二实例唤醒未移植:端口即互斥(bind 失败弹窗报错)已满足单实例语义;
 //! - 托盘图标只有一份资产(app-32.png):未连接态用亮度灰化变体区分
 //!   (SerialHub 三态图标依赖三份交付资产,本项目不引入)。
@@ -38,7 +49,7 @@ pub enum UserEvent {
     ConnectedChanged(bool),
     ShowWindow,
     OpenBrowser,
-    /// 托盘菜单「退出」:简化停机,直接结束事件循环(见模块头)。
+    /// 托盘菜单「退出」:走 `exit_process` 退出序列(见模块头)。
     Quit,
 }
 
@@ -91,17 +102,21 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
         .build(&event_loop)
         .map_err(|e| format!("创建窗口失败: {e}"))?;
 
-    let webview = match wry::WebViewBuilder::new()
-        .with_url(format!("http://{addr}/"))
-        .build(&window)
-    {
-        Ok(w) => w,
-        Err(e) => {
-            let msg = format!("创建 WebView 失败 (缺 WebView2 运行时?): {e}");
-            fatal_msgbox(&msg);
-            return Err(msg);
-        }
-    };
+    // webview 持 Option:退出汇点 take 出来显式 drop(controller.Close);
+    // 事件循环闭包 FnMut 内允许 take,其余场合按 &Some(webview) 只读使用
+    let mut webview = Some(
+        match wry::WebViewBuilder::new()
+            .with_url(format!("http://{addr}/"))
+            .build(&window)
+        {
+            Ok(w) => w,
+            Err(e) => {
+                let msg = format!("创建 WebView 失败 (缺 WebView2 运行时?): {e}");
+                fatal_msgbox(&msg);
+                return Err(msg);
+            }
+        },
+    );
 
     // —— 托盘(--no-tray 可关)——
     let tray = if no_tray {
@@ -133,33 +148,98 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
                     web::open_in_browser(&format!("http://{addr}/"));
                 }
                 UserEvent::Quit => {
-                    // 简化停机:数据层无 COM 释放,服务线程随进程终止(模块头)
-                    if let Some(tray) = &tray {
-                        let _ = tray.set_visible(false);
-                    }
-                    *control_flow = ControlFlow::Exit;
+                    // 关窗/托盘退出共用同一退出序列(见模块头与 exit_process 文档)
+                    exit_process(tray.as_ref(), webview.take());
                 }
             },
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                // 关窗 = 退出进程(简化决策,模块头);托盘随进程销毁,先显式隐掉
-                if let Some(tray) = &tray {
-                    let _ = tray.set_visible(false);
-                }
-                *control_flow = ControlFlow::Exit;
+                // 关窗 = 退出进程(简化决策,模块头)
+                exit_process(tray.as_ref(), webview.take());
             }
             Event::WindowEvent {
                 event: WindowEvent::Resized(_) | WindowEvent::Moved(_),
                 ..
             } => {
                 // wry 0.57 build(&window) 已随窗口自适应,此处仅保底触发一次重排
-                let _ = webview.bounds();
+                if let Some(w) = &webview {
+                    let _ = w.bounds();
+                }
             }
             _ => {}
         }
     });
+}
+
+/// 退出汇点(关窗 CloseRequested / 托盘退出共用)——序列与理由(模块头有摘要):
+///
+/// 为什么不用 `*control_flow = ControlFlow::Exit` 让 tao 自己退(修复前的写法):
+/// 1. **tao 对退出标志的观察是概率性的**。主循环每条消息 Dispatch 完才检查
+///    `Exit && !handling_events()`,而 runner 状态只有 WM_PAINT/WM_ACTIVATE
+///    等消息驱动才回到 Idle——窗口静态无输入时,Exit 置位后可长期不被观察
+///    (实测:WM_CLOSE 处理完、Exit 已置,进程照常存活,后续关闭请求全部无效)。
+/// 2. **tao 观察到退出后的终局是 `std::process::exit` = ExitProcess**,其
+///    DLL_PROCESS_DETACH 阶段 WebView2 内嵌组件会与 msedgewebview2 子进程做
+///    同步清理往返——此时宿主除主线程外已全被杀,往返永不完成,进程呈
+///    「1 线程僵尸 / 端口残留 / HTTP 不响应 / TerminateProcess 杀不死」态
+///    (2026-09-19 用户现场;杀掉 msedgewebview2 子进程宿主才延迟退出)。
+///
+/// 因此这里做完**有意义的清理**后直接 `TerminateProcess(self)` 终局(内核立即
+/// 收掉全部线程与句柄,不走 DLL detach,无任何等待点)。清理步骤:
+/// 1. 3s 看门狗先武装:以下任何一步卡死(如 controller.Close 的 COM 死等)
+///    最多 3s 后强退,退出优先于清理完整性;看门狗同样用 TerminateProcess
+///    (ExitProcess 自身可能卡在 detach,不能当兜底)。
+/// 2. 置 `rtt::APP_SHUTDOWN`:rtt worker 读循环与 reset-reconnect 重连线程
+///    自检此标志,退出窗口期内不再拉起/继续收数。
+/// 3. 显式移除托盘图标:强退路径 Explorer 不会立即回收图标,先 NIM_DELETE
+///    保证不留鬼图标。
+/// 4. 显式 drop WebView(wry Drop = `controller.Close()`):WebView2 官方要求
+///    退出前在**创建线程**(此即 UI 线程)关掉 controller,浏览器子进程据此
+///    干净收摊,不留孤儿 msedgewebview2。
+///
+/// 跳过的清理及副作用(有意):axum 不做 graceful drain——进程随后毫秒级终止,
+/// 在途请求无人观察,浏览器端表现与进程死亡一致;worker 不 join——数据层无
+/// COM 释放,prefs 由 tick 500ms 快照节流兜底(最后 ≤500ms 的面板改动不落盘,
+/// 与修复前 process::exit 行为一致)。
+fn exit_process(tray: Option<&tray_icon::TrayIcon>, webview: Option<wry::WebView>) -> ! {
+    use std::sync::atomic::Ordering;
+    // 1. 看门狗:唯一目的 = 清理步骤卡死时保证进程终止
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        eprintln!("[mini-rtt-viewer] 退出清理超时 3s,强制终止进程");
+        terminate_self(0);
+    });
+    // 2. 退出窗口期内禁止 worker 重拉/续收
+    crate::rtt::APP_SHUTDOWN.store(true, Ordering::Relaxed);
+    // 3. 托盘先撤(纯 Win32 Shell_NotifyIconW 调用,不涉 IPC,不会卡)
+    if let Some(tray) = tray {
+        let _ = tray.set_visible(false);
+    }
+    // 4. WebView2 controller 显式 Close(创建线程 = UI 线程,此刻消息泵仍活着)
+    drop(webview);
+    // 5. 终局:不走 ExitProcess(见函数头第 2 点),内核直接终止进程
+    terminate_self(0);
+}
+
+/// `TerminateProcess(GetCurrentProcess(), code)`:自我终局的唯一出口。
+/// 不用 `std::process::exit`(= ExitProcess):它会跑 DLL_PROCESS_DETACH,
+/// WebView2/JLinkARM 等 DLL 在 detach 里与外部进程同步往返,是现场僵尸态的
+/// 直接成因;TerminateProcess 无 detach 阶段,内核无条件收尸。
+#[cfg(windows)]
+fn terminate_self(code: u32) -> ! {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+    unsafe {
+        TerminateProcess(GetCurrentProcess(), code);
+    }
+    // TerminateProcess 对自身必然成功且不返回;此处仅编译器可达性兜底
+    unreachable!("TerminateProcess(self) 不应返回");
+}
+
+#[cfg(not(windows))]
+fn terminate_self(_code: u32) -> ! {
+    std::process::exit(_code)
 }
 
 /// 构建托盘:图标(app-32 资产,缺失回退程序画圆点)+ 菜单

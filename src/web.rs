@@ -1,6 +1,7 @@
-//! 浏览器管理台服务(ADR-11:UI 全面转 Web 形态):**一个 exe,双击启动本机
-//! 服务并自动打开浏览器管理台**(SerialHub 同构——Rust 数据层 + 内嵌 Web UI),
-//! 浏览器访问 `http://127.0.0.1:8686`。与桌面版同一套数据层与 worker
+//! 浏览器管理台服务(ADR-11:UI 全面转 Web 形态):**一个 exe,双击启动桌面壳
+//! (内嵌同一管理台的 WebView)并在本机起服务**;也可 `--no-window` 纯服务后用
+//! 浏览器访问 `http://127.0.0.1:8686`(SerialHub 同构——Rust 数据层 + 内嵌
+//! Web UI)。两种形态共用同一套数据层与 worker
 //! (rtt::spawn / LogPump / demo / device_db)。
 //!
 //! API 契约(与前端/测试对齐,改这里必同步 ui/web/index.html 与 tests/web):
@@ -120,8 +121,9 @@ pub struct WebOptions {
     pub demo: bool,
     /// HTTP 监听端口(仅绑定 127.0.0.1)
     pub port: u16,
-    /// bind 成功后用系统默认浏览器打开管理台(--no-open 可关;
-    /// 环境变量 RTT_WEB_NO_BROWSER=1 强制跳过,无头/测试场景)
+    /// bind 成功后用系统默认浏览器打开管理台(当前 main 两种形态均传 false:
+    /// 窗口模式由 WebView 承载界面、托盘菜单按需开浏览器;纯服务面向自动化;
+    /// 环境变量 RTT_WEB_NO_BROWSER=1 可强制跳过,无头/测试场景)
     pub open_browser: bool,
 }
 
@@ -223,7 +225,7 @@ struct Shared {
     channel: Mutex<u32>,
     /// 发送历史(最新在前,去重,上限 50;/api/history 读,快照落盘)
     send_history: Mutex<Vec<String>>,
-    /// 发送行尾 0=CRLF 1=LF 2=CR 3=无(纯 UI 习惯记忆,不改发送内容)
+    /// 发送行尾 0=CRLF 1=LF 2=CR 3=无(发送时按选择追加行尾字节,文本/HEX 同规则)
     send_ending: Mutex<i32>,
     /// HEX 发送模式(前端发送框按十六进制字节解析)
     hex_send: AtomicBool,
@@ -345,7 +347,7 @@ fn scan_custom_themes(dir: &std::path::Path) -> Vec<CustomTheme> {
     out
 }
 
-/// 从 Shared 当前状态构建偏好快照(与桌面版 snapshot_prefs 同构)
+/// 从 Shared 当前状态构建偏好快照(快照比对落盘的单一来源)
 fn snapshot_prefs(s: &Shared) -> StoredPrefs {
     let mut p = s.prefs_base.clone();
     p.chip_name = s.chip_name.lock().unwrap().clone();
@@ -370,7 +372,7 @@ fn snapshot_prefs(s: &Shared) -> StoredPrefs {
 #[serde(rename_all = "camelCase")]
 struct SendReq {
     text: String,
-    /// HEX 发送模式:输入按十六进制字节解析(与桌面版 parse_hex_bytes 同规则)
+    /// HEX 发送模式:输入按十六进制字节解析(规则见下方 `parse_hex_bytes`)
     #[serde(default)]
     hex: bool,
 }
@@ -1156,8 +1158,9 @@ async fn api_jlinks(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value
         .collect::<Vec<_>>()))
 }
 
-/// spawn 真 worker 并登记句柄/命令通道(api_connect 与 reset reconnect 共用;
-/// selected_sn 取 J-Link 列表首台,与原逻辑一致)
+/// spawn 真 worker 并登记句柄/命令通道(api_connect 与 reset reconnect 共用)。
+/// 注意:selected_sn 取 J-Link 列表**首台**——前端 #jlink 下拉的选中值尚未接入
+/// /api/connect(多台接入时下拉选择暂不生效,待接线;偏好 jlink_serial 同此)
 fn spawn_worker(shared: &Shared, params: &SavedConnect) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCmd>();
     let handle = rtt::spawn(
@@ -1553,8 +1556,8 @@ async fn api_clear(State(shared): State<Arc<Shared>>) -> StatusCode {
     StatusCode::OK
 }
 
-/// 导出当前显示的全部日志(.log 纯文本附件;与桌面版 save_log 同内容形态:
-/// 行文本 + \r\n 行尾,时间戳取本地时间)
+/// 导出当前显示的全部日志(.log 纯文本附件:行文本 + \r\n 行尾,时间戳取
+/// 本地时间)
 async fn api_export(State(shared): State<Arc<Shared>>) -> Response {
     let body = {
         let pump = shared.pump.lock().unwrap();

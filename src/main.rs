@@ -47,6 +47,12 @@ fn main() {
                     eprintln!("mini-rtt-viewer: --port 需要一个 1-65535 的数字参数");
                     std::process::exit(2);
                 };
+                if v == 0 {
+                    // 0 会被 OS 分配随机端口:端口互斥(第二实例唤起防重)与
+                    // 管理台固定地址的承诺都会失效,与 --help 口径一并拦下
+                    eprintln!("mini-rtt-viewer: --port 需要 1-65535(0 会绑定随机端口)");
+                    std::process::exit(2);
+                }
                 port = v;
                 i += 1;
             }

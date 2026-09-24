@@ -13,21 +13,23 @@
 
 ## 为什么做这个
 
-官方 J-Link RTT Viewer 对 UTF-8 的支持是坏的:中文乱码、emoji 直接丢失。这个项目用 Rust + Slint 重写了核心的"连接 + 看日志 + 发数据"体验:
+官方 J-Link RTT Viewer 对 UTF-8 的支持是坏的:中文乱码、emoji 直接丢失。这个项目用 Rust 重写了核心的"连接 + 看日志 + 发数据"体验(数据层纯 Rust,界面为内嵌 Web 管理台):
 
-- **单文件 exe,约 4 MB**,无需安装,拷给同事就能用
-- **启动 < 100ms**,没有 Python 运行时、没有 WebView
+- **单文件 exe,UPX 后约 0.85 MB**,无需安装,拷给同事就能用
+- **启动不到 1 秒**,没有 Python 运行时(WebView2 用 Windows 自带)
 - **UTF-8 完整支持**,中文 / emoji 原样显示,跨读取块的多字节序列自动拼接
-- **实时流畅**:10ms 界面刷新粒度,均匀发送的消息逐条均匀上屏;日志文本上限 6 万字符(超出丢最旧),长时间流式输出不卡 UI
+- **实时流畅**:10ms 界面刷新粒度,均匀发送的消息逐条均匀上屏;日志行数上限 500 行(超出丢最旧),长时间流式输出不卡 UI
 - 无换行符的裸流(如裸 printf 数值)可开启**自动断帧**:相邻数据到达间隔超过设定值(1~200ms)自动换行。等待跟着判定点走,判定精确落在设定值上——设 1ms 就是 1ms,不会被轮询间隔量化上取整
-- **滚轮逐行对齐**:滚动位置量化到整数行高,连续上翻时行位置稳定;滚离底部失随、滚回底部恢复跟随
+- **自动滚动不拉扯**:滚离底部即暂停自动跟随,滚回贴底自动恢复;双击启动即桌面窗口,也可经托盘/浏览器访问同一管理台
 
 ## 功能
 
-- 连接设置:目标芯片型号 / SWD / JTAG / 速率 (100–12000 kHz) / RTT 通道 0–15
-- 接收:ANSI 转义序列剥离、暂停接收、自动断帧 + 超时可调、断行方式可选(关闭 / 按数据块 / 时间窗)、接收行尾独立设置
-- 发送:向所选下行通道发送数据,Enter 快捷发送,行尾可选(CRLF / LF / CR / 无)
-- 暗色主题,日志可鼠标拖选 + Ctrl+C 复制
+- 连接设置:目标芯片型号(设备库自动补全)/ SWD / JTAG / 速率 (100–12000 kHz) / RTT 通道 0–15 / 多台 J-Link 列表
+- 接收:ANSI 转义序列着色、暂停接收、自动断帧 + 超时可调、接收行尾可选(自动 / CRLF / LF / CR / 无)、HEX 接收、字符集 5 种(连接中切换动态生效)
+- 发送:向所选下行通道发送数据,Enter 快捷发送,行尾可选(CRLF / LF / CR / 无),HEX 发送、定时发送、发送历史 ↑↓
+- 日志:四套主题 + 自定义主题(themes/*.css 拖入即用)、VS Code 式正则搜索(Ctrl+F)、拖选/右键复制、导出 .log、长行自动换行
+- 会话:连接/断开自动标记、手动标记、TX/RX 字节与速率、会话时长、日志时间戳开关
+- 双形态:桌面壳(窗口 + 托盘)与纯服务(`--no-window`)共用同一管理台;单实例互斥(端口)
 - 无设备演示:`mini-rtt-viewer.exe --demo-log` 启动内置演示数据流(中英混排 + emoji),用于体验滚动/断行/渲染
 
 ## 使用前提
@@ -63,9 +65,9 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 
 | 组件 | 选择 | 理由 |
 |---|---|---|
-| UI | Slint 1.x | 编译期声明式 UI,启动秒开,exe 小 |
+| UI | 内嵌 Web 管理台(单页 HTML/JS,编译期内嵌)+ tao/wry 桌面壳 | CSS 布局成熟、DevTools 可调试;WebView2 随 Windows 10/11 自带;`--no-window` 纯服务共用同一界面 |
 | J-Link 访问 | FFI 直调 `JLink_x64.dll` | 与官方工具/驱动共存,不抢 USB(纯 USB 协议实现需要 Zadig 换驱动,会破坏 SEGGER 工具链) |
-| 并发模型 | std::thread + mpsc + 10ms 消息泵 | worker 读线程不碰 UI,泵只做断行与文本合并;线程等待一律可唤醒(`Condvar` / `recv_timeout`),全项目零 `thread::sleep`,停止与退出信号到达即醒 |
+| 并发模型 | std::thread + mpsc + 10ms 消息泵 | worker 读线程不碰 UI,泵做断行与事件广播;停止/退出经原子标志轮询,阻塞等待均有界 |
 
 连接时序沿用了经过验证的 J-Link DLL 状态机要求(RTT START 在 connect 之前建立)。
 
@@ -73,21 +75,18 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 
 | 文件 | 职责 |
 |---|---|
-| `src/lib.rs` | 模块树唯一入口;Slint 生成代码(AppWindow 等)在此导出,bin/examples 一律 `use` 本 crate |
-| `src/main.rs` | 纯装配层:`Ctx` 收拢全部 UI 共享状态并承载业务方法,main() 只创建窗口、接回调、起 timer |
-| `src/log_model.rs` | 消息泵纯逻辑(断行/缓冲/ANSI 带色行/行数上限),有单元测试 |
+| `src/lib.rs` | 模块树唯一入口,bin/examples 一律 `use` 本 crate |
+| `src/main.rs` | CLI 入口(`--demo-log` / `--port` / `--no-window` / `--no-tray`):分派桌面壳 / 纯服务两种形态 |
+| `src/gui.rs` | 桌面壳:tao 事件循环 + wry WebView(内嵌管理台)+ 托盘图标与退出序列 |
+| `src/web.rs` | 管理台服务:axum 路由 + WS 推流 + 10ms 数据泵 tick(断行/统计/偏好快照落盘),API 契约见模块头注释 |
+| `src/config.rs` | 偏好持久化(`%APPDATA%/MiniRttViewer/prefs.json`,serde 容错 + 原子写) |
+| `src/log_model.rs` | 日志泵纯逻辑(断行/缓冲/ANSI 带色行/行数上限),有单元测试 |
 | `src/ansi.rs` | ANSI 转义 → 带色文本段(vte 状态机,颜色状态跨行跨块保持),有单元测试 |
-| `src/rtt.rs` | worker 线程:`connect_target` 连接序列 + `rtt_read_loop` 读循环(断帧判定/命令消化/UTF-8 增量解码) |
-| `src/jlink_dll.rs` | JLinkARM.dll 最小 FFI 绑定(符号 load 时一次性解析;连接/RTT/设备信息/调试器枚举与选定) |
+| `src/rtt.rs` | worker 线程:`connect_target` 连接序列 + `rtt_read_loop` 读循环(断帧判定/命令消化/字符集增量解码) |
+| `src/jlink_dll.rs` | JLink_x64.dll 最小 FFI 绑定(连接/RTT/设备信息/调试器与设备库枚举选定) |
 | `src/device_db.rs` | 设备库后台枚举 + 磁盘缓存 + 多台调试器列表 |
-| `src/signal.rs` | 可唤醒等待原语(Condvar):全项目替代 `thread::sleep`,停止/退出信号到达即醒 |
-| `src/util.rs` | 纯逻辑助手(HEX 收发格式/统计格式化/发送历史游标/行尾),有单元测试 |
-| `src/width.rs` | 字符显示列宽唯一真源(换行/复制/Tab 展开共用) |
-| `src/win32.rs` | Win32 FFI 收拢(剪贴板/本地时间/屏幕常亮/屏幕几何与 DPI) |
-| `src/single_instance.rs` | 单实例互斥 |
-| `src/demo.rs` | `--demo-log` 演示数据源(中英混排 + emoji + ANSI 颜色样例) |
-| `src/ui/log_view.slint` | 日志滚动区(行容器平移滚动、滚轮行高对齐、贴底跟随、列级选中) |
-| `src/ui/editable_combo.slint` | 目标设备单控件(输入即筛选 + 原生下拉候选) |
+| `src/demo.rs` | `--demo-log` 演示数据源(中英混排 + emoji + ANSI 颜色样例,模拟连接/断开/重置循环) |
+| `ui/web/index.html` | 管理台单页(四主题/日志流/搜索/发送,编译期内嵌进 exe) |
 | `examples/emu_check.rs` | 无界面验证:枚举调试器 + 选定/实际打开一致性 |
 | `examples/rtt_check.rs` | 无界面 RTT 直读(连接序列排障用) |
 | `AGENTS.md` | 实际踩坑经验笔记(改代码前先读) |

@@ -46,7 +46,7 @@
   /* 控件基线(UX 规格):统一高 40px / 字号 14px / 圆角 6px,按钮同 40(V3,
      42/40 双高度体系已废);textarea 一并纳入主题(P0-1/V1,原 UA 白底直角)
      特例:#send-text/#send-btn 72;#send-opts 行内控件 32(紧凑行,同搜索条令牌);
-     搜索条 32、其内 .s-btn/#s-input 24、.combo>.arrow 由更specific选择器覆盖 */
+     搜索条 32、其内 .s-btn/#s-input 24、.combo>.arrow 由更具体(优先级更高)的选择器覆盖 */
   select, input:not([type="checkbox"]), textarea, button {
     background: var(--input); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 0 12px; font-family: inherit; font-size: 14px; height: 40px; }
@@ -122,7 +122,7 @@
     font-family: Consolas, monospace; font-size: var(--log-fs, 14px); line-height: var(--log-lh, 21px);
     letter-spacing: -0.4px; padding: 8px 12px; }
   /* 行距/字距复刻并微调 VS Code:行高 = round(字号 × 1.5)(GOLDEN_LINE_HEIGHT_RATIO),
-     A± 改字号时 JS 联动重算;字距四档 A/B(0/-0.25/-0.4/-0.6)实测取 -0.4px:
+     A± 改字号时 JS 联动重算;字距候选四档(0/-0.25/-0.4/-0.6)实测取 -0.4px:
      比 Consolas 默认步进(7.7px)收紧 ~5%,无字形碰撞;-0.6 起冒号/括号处发闷 */
   #log .row { white-space: pre-wrap; word-break: break-all; }
   /* 日志滚动条与 aside 同款(P2-3/V8):6px 细拇指,随主题 --muted 着色 */
@@ -237,7 +237,7 @@
   #device-details.off .info-grid { opacity: .45; }
   /* 发送错误(F8b):后端 400 错误信息必须可见——输入框红边 + toast */
   #send-text.send-err { border-color: var(--err); }
-  #toast { position: fixed; right: 16px; bottom: 96px; z-index: 70; max-width: 60vw;
+  #toast { position: fixed; right: 16px; bottom: 172px; z-index: 70; max-width: 60vw;
     background: var(--card); color: var(--err); border: 1px solid var(--err);
     border-radius: 8px; padding: 8px 14px; font-size: 13px;
     box-shadow: 0 8px 24px rgba(0,0,0,.4);
@@ -361,7 +361,7 @@
         <span class="s-label">秒</span>
       </div>
       <div class="send-main">
-        <textarea id="send-text" rows="3" placeholder="发送到通道 0… (Enter 发送,Shift+Enter 换行)" autocomplete="off"></textarea>
+        <textarea id="send-text" rows="3" placeholder="发送到所选通道… (Enter 发送,Shift+Enter 换行)" autocomplete="off"></textarea>
         <button id="send-btn" disabled>发送</button>
       </div>
     </div>
@@ -497,7 +497,7 @@
     const now = performance.now();
     if (lastStats) {
       const dt = (now - lastStats.t) / 1000;
-      if (dt > 0.05) { // 500ms 拍节,防 0 除与首拍抖动
+      if (dt > 0.05) { // 500ms 一拍,防 0 除与首拍抖动
         $('rx-rate').textContent = fmtRate((m.rx - lastStats.rx) / dt);
         $('tx-rate').textContent = fmtRate((m.tx - lastStats.tx) / dt);
       }
@@ -1183,6 +1183,9 @@
   fetch(API + '/api/status').then(r => r.json()).then(s => {
     if (s.device) renderDevice(s.device);
     if (s.version) $('version').textContent = 'v' + s.version; // T10:低调版本号
+    // 首屏同步连接态:WS snapshot 不带 state 消息,不调 setState 的话
+    // 刷新后 ~2.2s 内红点/「未连接」/禁用按钮与真实连接态矛盾(2s 轮询兜底才纠正)
+    if (connected !== s.connected) setState(s.connected, s.sessionStatus);
   }).catch(() => {});
   // ---- S9「浏览器打开」:壳标记 window.__MINI_SHELL 由 gui.rs 初始化脚本注入,
   // 壳内 window.open 被原生层吞掉(SerialHub Sprint7 同款实测)→ 点按钮走

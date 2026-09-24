@@ -54,9 +54,12 @@ QA/UX/CI 冒烟全部基于它。真机验证仅在发版前由人工执行。
 仓库结构、spec 编号、团队回路、CI 门禁纪律、发布产物契约照 SerialHub
 (WorkPlace/serialhub)裁剪;差异点:本项目 Windows-only(CI 单平台)、无内嵌
 Web 管理台(桌面 GUI)。
+**2026-09 更新:差异点中的「无内嵌 Web 管理台」已被 ADR-11 推翻**,管理台已内嵌。
 
-## ADR-11 UI 技术栈迁移(预留)
+## ADR-11 UI 技术栈迁移(2026-09 定案,补记)
 
-backlog「UI 技术栈评估」出结论后回填:候选 Tauri+Web / egui / iced,评估维度:
-开发效率(布局/调试/热重载)、体积与启动、打包复杂度、既有功能迁移成本
-(25 条 FR)。
+ui-stack-eval.md 评估后定案:**UI 全面转 Web 形态**——Rust 数据层与 worker 不动,
+管理台为内嵌单页(`ui/web/index.html`,axum 服务,编译期内嵌);桌面形态采用
+tao + wry WebView 内嵌同一管理台(SerialHub 同构),不引入 Tauri/egui/iced;
+`--no-window` 纯服务为第二形态。0.3.0 起 Slint 退役(ADR-4 的迁移悬案就此关闭)。
+落地证据:`src/web.rs` / `src/gui.rs`、CHANGELOG 0.3.0。

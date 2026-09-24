@@ -4,7 +4,9 @@
 //!   默认值,绝不阻塞启动
 //! - 原子写:先写 `.tmp` 再替换,崩溃不留半截文件(Windows 的 rename 不覆盖,
 //!   先移除旧文件再改名)
-//! - 保存时机由 main 的 tick 节流(快照不变不落盘),退出时强制补一次
+//! - 保存时机由 web.rs 数据泵线程 tick_loop 节流(500ms 快照比对,不变不落盘);
+//!   进程退出(关窗强退 / Ctrl-C)不做退出补写,最后 ≤500ms 的改动可能不落盘
+//!   (gui.rs 模块头「跳过的清理与副作用」有说明)
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -39,7 +41,8 @@ pub struct StoredPrefs {
     pub hex_rx: bool,
     /// 字符集下拉索引(0=UTF-8 1=GBK 2=UTF-16 LE 3=Latin-1 4=ASCII)
     pub encoding_index: i32,
-    /// 日志字号(px;9-30 之外视为坏值不恢复)
+    /// 日志字号(px;桌面版遗留字段,现由前端 localStorage 管理、不经服务端,
+    /// 仅随偏好底版原样写回;9-30 之外视为坏值不恢复为旧桌面版口径)
     pub log_font_px: i32,
     /// 设备信息折叠展开态
     pub info_expanded: bool,

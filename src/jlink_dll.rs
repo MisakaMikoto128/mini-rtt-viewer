@@ -1,6 +1,7 @@
-//! JLinkARM.dll 的最小 FFI 绑定。
+//! SEGGER J-Link 驱动 DLL(JLink_x64.dll)的最小 FFI 绑定。
 //!
-//! 只绑定本应用需要的 10 个导出函数,签名与 pylink-square 的用法一一对应:
+//! 只绑定本应用需要的导出函数(连接序列 / RTT 收发 / 设备信息 / 设备库与
+//! 调试器枚举选定),签名与 pylink-square 的用法一一对应:
 //!   - 连接: Open → RTT START → TIF_Select → SetSpeed → ExecCommand("Device = …") → Connect
 //!     (rtt_start 在 connect 之前是 J-Link DLL 状态机的硬性要求,与原项目经验一致)
 //!   - RTT: RTTERMINAL_Control(0=START,1=STOP) / Read / Write

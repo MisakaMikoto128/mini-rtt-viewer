@@ -1,7 +1,7 @@
 //! `--demo-log` 演示/测试数据源:无设备时验证滚动、断行、UTF-8/ANSI 颜色渲染。
 //!
 //! - 跳过单实例互斥由 main 负责:demo 模式允许与真实实例并存(它不加载
-//!   JLinkARM.dll,不会抢 J-Link)
+//!   JLink_x64.dll,不会抢 J-Link)
 //! - 发送打微秒时间戳(stderr),用于测量显示节奏是否与发送节奏一致;
 //!   非 demo 模式 `T0` 为空,零开销
 //!
@@ -166,7 +166,7 @@ pub fn spawn(
                     format!("\x1b[32m{i}\x1b[0m")
                 };
                 let level = if i % 10 == 9 {
-                    // 前景红(31)而非背景红(41):ansi.rs 暂不解析背景 SGR(记 backlog),
+                    // 前景红(31)而非背景红(41):ansi.rs 暂不解析背景 SGR,
                     // 背景码会被吞掉导致 ERR 无色
                     " \x1b[31mERR\x1b[0m"
                 } else {

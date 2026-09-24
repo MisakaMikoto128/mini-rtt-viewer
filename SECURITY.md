@@ -8,8 +8,9 @@
 
 ## 当前状态(如实说明)
 
-- 本地工具,不监听任何网络端口,无遥测,无自动更新
-- 通过 `libloading` 加载 SEGGER 官方 `JLinkARM.dll`——DLL 本身的安全性由 SEGGER
+- 本地工具,管理台服务仅绑定 127.0.0.1 回环(默认端口 8686),无遥测,无自动更新
+- 通过 `libloading` 加载 SEGGER 官方驱动 DLL(`JLink_x64.dll`,SEGGER 安装包自带)
+  ——DLL 本身的安全性由 SEGGER
   分发渠道保证,本项目不修改、不捆绑该 DLL
 - 用户偏好与设备库缓存写入 `%APPDATA%/MiniRttViewer/`,不含敏感凭据
 - 发布产物未做代码签名(SmartScreen 会提示未知发布者),校验方式以 GitHub

@@ -22,7 +22,7 @@ pub enum WorkerMsg {
     DeviceInfo(DeviceInfo),
     /// J-Link 设备库候选名(启动时后台枚举/磁盘缓存,用于目标设备下拉)
     DeviceNames(Vec<String>),
-    /// 本机已接入的 J-Link 调试器列表 (序列号, 显示名),后台线程 + 每次连接时刷新
+    /// 本机已接入的 J-Link 调试器列表(序列号, 显示名),后台线程 + 每次连接时刷新
     JLinks(Vec<(u32, String)>),
     /// worker 线程已完全退出(含 DLL close),UI 收到后才允许再次连接,
     /// 防止上一个 worker 还阻塞在 connect() 时 spawn 新 worker 并发抢 RTT。
@@ -63,7 +63,8 @@ pub enum WorkerCmd {
 /// 检测到后尽快退出,否则非 daemon 线程会让进程在窗口关闭后残留。
 pub static APP_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-/// 速度下拉表(kHz):桌面版与浏览器管理台共用的单一真源,下标即 UI 索引
+/// 速度下拉表(kHz):连接设置的单一真源,下标即前端下拉索引(桌面壳与
+/// 纯服务两种形态共用)
 pub const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
 
 /// worker 生命周期句柄:stop 请求退出,alive 反映线程是否还在。
@@ -90,7 +91,8 @@ pub struct WorkerConfig {
     pub hex_rx: Arc<AtomicBool>,
 }
 
-/// 字符集下拉表:**与 app.slint 的「字符集」ComboBox 顺序严格一致**。
+/// 字符集下拉表:**与前端 ui/web/index.html 的「字符集」下拉 option 顺序严格一致**
+/// (option 的 value 即本表下标)。
 /// (显示名, encoding_rs 标签)
 pub const ENCODINGS: [(&str, &str); 5] = [
     ("UTF-8", "utf-8"),
@@ -186,7 +188,7 @@ fn connect_target(
         selected_sn,
         ..
     } = config;
-    let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLinkARM.dll…".into()));
+    let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLink_x64.dll…".into()));
     let jlink = JLinkDll::load()?;
     // 抑制 DLL 模态弹窗必须最先做(调试器选择窗/固件升级提示都发生在 Open 内部),
     // 否则 worker 会卡在无人应答的隐藏对话框上
@@ -252,7 +254,7 @@ fn connect_target(
     if rc < 0 {
         jlink.close();
         anyhow::bail!(
-            "J-Link 连接目标失败 (错误码 {rc});请检查芯片型号/接线/供电,或尝试降低速率(高速率在 Cortex-M0 上可能不稳定)"
+            "J-Link 连接目标失败(错误码 {rc}):请检查芯片型号/接线/供电,或尝试降低速率(高速率在 Cortex-M0 上可能不稳定)"
         );
     }
 

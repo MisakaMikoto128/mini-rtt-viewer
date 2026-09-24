@@ -104,7 +104,7 @@ impl Perform for Collector {
         }
         // SGR 可能改变颜色:先切断已累积的文本段,让旧颜色归属旧段
         self.flush_run();
-        // params.iter():每个分号段一组 &[]u16,冒号子参数在同一组内。
+        // params.iter():每个分号段一组 `&[u16]`,冒号子参数在同一组内。
         // "38;5;196" → [38],[5],[196];"38:5:196" → [38,5,196];RGB 同理。
         let mut iter = params.iter();
         while let Some(p) = iter.next() {

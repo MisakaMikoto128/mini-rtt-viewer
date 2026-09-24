@@ -31,10 +31,10 @@
 | FR-20 | 四套主题:深色/浅色/OLED 纯黑/护眼暖色,下拉即时切换,存量行文字跟随;旧 dark_theme 偏好自动迁移;字号 A± 调节;应用图标(窗口/任务栏/exe 资源) | ✔ |
 | FR-21 | 偏好持久化:%APPDATA%/MiniRttViewer/prefs.json,快照比对节流写盘,退出强制补写 | ✔ |
 | FR-22 | 日志模拟模式(--demo-log):无设备仿真数据流(含颜色/emoji/断连重连循环),冒烟与 UI 验证用 | ✔ |
-| FR-23 | 单实例互斥:二次启动聚焦已有窗口(demo 模式豁免) | ✔ |
+| FR-23 | 单实例互斥:端口即互斥,二次启动报错退出(聚焦已有窗口未做;demo 同受端口约束,与真实实例并存需 --port 错开) | ◐ |
 | FR-24 | 屏幕常亮:采集挂机时阻止系统休眠 | ✔ |
 | FR-25 | 统计栏:TX/RX 字节 + 会话时长,500ms 节流 | ✔ |
-| FR-26 | 浏览器管理台(rtt-web 二进制):本机 HTTP 服务 + WS 推流,四主题/日志流/发送/暂停/清空全可操作;Playwright 黑盒测试覆盖(spec 条目命名) | ✔ |
+| FR-26 | 浏览器管理台(内嵌服务,桌面壳 / 纯服务共用):本机 HTTP 服务 + WS 推流,四主题/日志流/发送/暂停/清空全可操作;Playwright 黑盒测试覆盖(spec 条目命名) | ✔ |
 
 ## UI/UI-x
 
@@ -51,8 +51,8 @@
 
 ## 平台 PLAT-x
 
-- PLAT-1 **Windows 10/11 x64,仅此平台**:RTT 依赖 SEGGER JLinkARM.dll(FFI 直连,
-  不捆绑、不分发该 DLL,需用户已装 SEGGER J-Link 驱动)
+- PLAT-1 **Windows 10/11 x64,仅此平台**:RTT 依赖 SEGGER J-Link 驱动 DLL
+  (JLink_x64.dll;FFI 直连,不捆绑、不分发该 DLL,需用户已装 SEGGER J-Link 驱动)
 - PLAT-2 兼容 J-Link V11+ 固件;pylink-square 已验证不适用(ADR-2)
 
 ## 明确不做 ✖

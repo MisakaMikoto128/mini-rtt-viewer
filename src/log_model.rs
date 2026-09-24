@@ -1,10 +1,11 @@
 //! 日志消息泵:worker 消息 → 按接收行尾模式断行 → ANSI 解析 → 带色行。
 //!
-//! 与 Slint UI 完全解耦(纯逻辑,可单测);main 的 UI timer 每个周期:
+//! 与 UI 完全解耦(纯逻辑,可单测);web.rs 的数据泵线程 `tick_loop` 每个
+//! 10ms 周期:
 //! 1. 逐条取 worker 消息,调用 [`LogPump::absorb_text`] / [`LogPump::absorb_frame_end`]
 //! 2. 调 [`LogPump::enforce_line_cap`] 兜底超长行
-//! 3. 调 [`LogPump::take_new_rows`] 拿**增量**新行,逐行 push 进 UI 的行模型
-//!    (ListView 虚拟化,只渲染可见行,长日志不再全量重排)
+//! 3. 调 [`LogPump::take_new_rows`] 拿**增量**新行,经 WS rows 事件推给前端
+//!    (前端 #log 逐行 append,超 [`MAX_LOG_ROWS`] 由前端从头部裁剪 DOM 行)
 
 use crate::ansi::{AnsiLines, Run};
 use unicode_width::UnicodeWidthChar;
@@ -74,7 +75,8 @@ pub const FLUSH_MS: u64 = 10;
 pub const DEFAULT_FRAME_TIMEOUT_MS: u32 = 20;
 /// 单行硬上限兜底(超长帧/关闭断行时的无换行流)
 pub const MAX_LINE_CHARS: usize = 512;
-/// 日志行数上限(整体平移渲染,无虚拟化;超限丢最旧行,量级与旧版 6 万字符相当)
+/// 日志行数上限(超限丢最旧行;经 stats.cap 事件下发给前端,前端裁剪 DOM 行
+/// 与服务端同一真源)
 pub const MAX_LOG_ROWS: usize = 500;
 
 /// 按接收行尾模式切行:0=自动(\n 断行、吞 \r) 1=CRLF 2=LF 3=CR 4=无(不断行)。
@@ -93,8 +95,8 @@ pub fn split_lines(p: &mut String, rx_ending: i32, out: &mut Vec<String>) {
     }
 }
 
-/// 滚动几何(纯逻辑,与 `log_view.slint` 的 `scroll-by-px` **逐条对应**;
-/// Slint 表达式抽不成 Rust,只能双份——改任一侧必须同步另一侧,单测锁语义)。
+/// 滚动几何(纯逻辑;Slint 版 `log_view.slint` 时代的双份守护结构,UI 迁移
+/// Web 后**暂无消费方**,仅单测锁定语义——去留见 backlog/审计提案)。
 ///
 /// 语义要点:手动滚到底与自动跟随必须停在**同一个** offset(max-offset,像素
 /// 精确,底部 padding 完整)。行格量化只用于上翻的行位稳定——若撞底也停在
@@ -554,7 +556,7 @@ mod tests {
         );
     }
 
-    // ---- 滚动几何(与 log_view.slint scroll-by-px 同步,语义锁定)----
+    // ---- 滚动几何(Slint 版遗留,单测锁定语义)----
 
     /// 复刻"手动滚回底部被裁一小截"的几何:max_offset 不落在行格上,
     /// 余量 r = 2316-2304 = 12,超过底部 padding——旧实现停在 2304 就裁字。

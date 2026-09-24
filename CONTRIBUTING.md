@@ -13,7 +13,8 @@
 
 ## 已知约束
 
-- 项目定位 **Windows-only**:RTT 依赖 SEGGER JLinkARM.dll,无跨平台替代方案
+- 项目定位 **Windows-only**:RTT 依赖 SEGGER J-Link 驱动 DLL(JLink_x64.dll),
+  无跨平台替代方案
 - `pylink-square` 1.6+ 已验证不可用于此场景,直连 DLL 是既定决策(见
   `docs/team/decisions.md` ADR-2),PR 请不要提议换回
 - 体积敏感:新增依赖需要说明理由,纯重依赖(框架级)基本不会被接受

@@ -384,13 +384,13 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       <div class="feat-grid">
         <article class="feat-card">
           <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>
-          <h3>FFI 直连 JLinkARM.dll</h3>
+          <h3>FFI 直连官方 J-Link DLL</h3>
           <p>直接调 SEGGER 官方 DLL,不经 pylink 之类封装;与官方驱动共存不抢 USB,多台调试器接入时下拉指定连哪一台,连接后固件版本、核心型号、序列号一目了然。</p>
         </article>
         <article class="feat-card">
           <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5h16"/><path d="M4 9h10"/><path d="M4 13h16"/><path d="M4 17h7"/></svg>
           <h3>彩色日志,中文 emoji 不越界</h3>
-          <p>ANSI 16/256/RGB 真彩色全解析,颜色状态跨行跨块保持;窄窗口按显示列硬换行——CJK 占 2 列、emoji 占 3 列,不会把半截字切出去。</p>
+          <p>ANSI 16/256/RGB 真彩色全解析,颜色状态跨行跨块保持;窄窗口长行自动换行,不出现横向滚动条。</p>
         </article>
         <article class="feat-card">
           <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -410,7 +410,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         <article class="feat-card">
           <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>
           <h3>单文件免安装零依赖</h3>
-          <p>解压即用:没有 Python、没有 WebView、没有运行时;主程序约 3 MB,启动不到 1 秒,拷给同事就能跑。</p>
+          <p>解压即用:没有 Python、无需安装运行时(WebView2 随 Windows 10/11 自带);主程序约 0.85 MB,启动不到 1 秒,拷给同事就能跑。</p>
         </article>
       </div>
     </div>
@@ -433,7 +433,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         <a class="shot" href="./images/web-console.png" target="_blank" rel="noopener">
           <img src="./images/web-console.png" alt="rtt-web 浏览器管理台" width="1440" height="900" loading="lazy">
         </a>
-        <figcaption>浏览器管理台 rtt-web:本机起服务,浏览器打开即用——实时日志流、四主题、发送 / 暂停 / 清空,与桌面版同一套真机连接协议。</figcaption>
+          <figcaption>浏览器管理台:本机起服务,浏览器打开即用——实时日志流、四主题、发送 / 暂停 / 清空,与桌面窗口同一套真机连接协议。</figcaption>
       </figure>
     </div>
   </section>
@@ -444,19 +444,19 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       <div class="sec-head">
         <p class="eyebrow">DOWNLOAD</p>
         <h2>下载 Mini RTT Viewer <span class="ver-pill" data-rel="version">v0.4.1</span></h2>
-        <p class="dl-date"><span data-rel="date">2026-09-15</span> 发布</p>
+        <p class="dl-date"><span data-rel="date">2026-09-24</span> 发布</p>
       </div>
 
       <div class="dl-grid">
         <article class="dl-card" id="dl-windows">
           <h3>Windows</h3>
           <p class="dl-spec" data-rel="spec-windows">Windows x86_64 · zip · 约 0.85 MB · 桌面版单程序(内嵌浏览器管理台)</p>
-          <p class="dl-file" data-rel="file-windows">mini-rtt-viewer-0.4.0-windows-x86_64.zip</p>
+          <p class="dl-file" data-rel="file-windows">mini-rtt-viewer-0.4.1-windows-x86_64.zip</p>
           <p class="dl-desc">包内单程序——mini-rtt-viewer.exe 桌面版(浏览器管理台已内嵌),解压即用。</p>
           <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.4.1/mini-rtt-viewer-0.4.1-windows-x86_64.zip">下载 Windows 版</a>
           <p class="sha-label">SHA256</p>
           <div class="sha-bar">
-            <code data-rel="sha-windows">cb345279b784d46929a6353c31c896b6c3b5211b343317fe33e092d049c6e9cd</code>
+            <code data-rel="sha-windows">85e347296053dd17cfe93cd96d4ffc604dd067ffb54117e61a354144992907d5</code>
             <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
           </div>
         </article>
@@ -467,7 +467,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
 
       <div class="dl-notes">
         <p class="note">安装包未做代码签名:首次运行若被 Windows SmartScreen 拦下,点「更多信息」→「仍要运行」;介意的话,先核对上方 SHA256 再运行。</p>
-        <p class="sysreq">系统要求:Windows 10/11 x64;需已安装 <a href="https://www.segger.com/downloads/jlink/" target="_blank" rel="noopener">SEGGER J-Link 软件包</a>(程序运行时加载其中的 JLinkARM.dll,本工具不捆绑、不分发该 DLL);目标板固件需已初始化 SEGGER RTT。</p>
+        <p class="sysreq">系统要求:Windows 10/11 x64;需已安装 <a href="https://www.segger.com/downloads/jlink/" target="_blank" rel="noopener">SEGGER J-Link 软件包</a>(程序运行时加载其中的 JLink_x64.dll,本工具不捆绑、不分发该 DLL);目标板固件需已初始化 SEGGER RTT。</p>
         <p class="sha-note">下载后核对这串校验值与本地文件一致,即可确认安装包完整、未被篡改。<br>
         校验命令:Windows:<code class="inline-code">certutil -hashfile &lt;文件名&gt; SHA256</code></p>
         <div class="dl-tail">
@@ -488,7 +488,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       <div class="qs-steps">
         <div class="qs-step">
           <div class="qs-head"><span class="qs-num" aria-hidden="true">1</span><h3>装 SEGGER J-Link 软件包</h3></div>
-          <p class="qs-desc">去 <a href="https://www.segger.com/downloads/jlink/" target="_blank" rel="noopener">SEGGER 官网</a>装好 J-Link 软件包,驱动自带本工具要加载的 JLinkARM.dll——没有它,连不上芯片。</p>
+          <p class="qs-desc">去 <a href="https://www.segger.com/downloads/jlink/" target="_blank" rel="noopener">SEGGER 官网</a>装好 J-Link 软件包,驱动自带本工具要加载的 JLink_x64.dll——没有它,连不上芯片。</p>
         </div>
         <div class="qs-step">
           <div class="qs-head"><span class="qs-num" aria-hidden="true">2</span><h3>解压并运行</h3></div>

@@ -19,17 +19,17 @@
      ═══════════════════════════════════════════════════════════════════ -->
 <script>
 const RELEASE = {
-  version: "v0.4.1",
-  date: "2026-09-24",
+  version: "v0.4.2",
+  date: "2026-09-25",
   repo: "https://github.com/MisakaMikoto128/mini-rtt-viewer",
   releases: "https://github.com/MisakaMikoto128/mini-rtt-viewer/releases",
   changelog: "https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md",
   platforms: {
     windows: {
-      file: "mini-rtt-viewer-0.4.1-windows-x86_64.zip",
-      spec: "Windows x86_64 · zip · 约 0.85 MB · 桌面版单程序(内嵌浏览器管理台)",
-      sha256: "85e347296053dd17cfe93cd96d4ffc604dd067ffb54117e61a354144992907d5",
-      url: "https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.4.1/mini-rtt-viewer-0.4.1-windows-x86_64.zip"
+      file: "mini-rtt-viewer-0.4.2-windows-x86_64.zip",
+      spec: "Windows x86_64 · zip · 约 0.86 MB · 桌面版单程序(内嵌浏览器管理台)",
+      sha256: "9d5c55e3040e69b5dea7c20fdbbd3e4819685a0ff8f8ba929e2172834eac41eb",
+      url: "https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.4.2/mini-rtt-viewer-0.4.2-windows-x86_64.zip"
     }
   }
 };
@@ -369,7 +369,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       <a class="pill" href="#quickstart">无板演示 --demo-log</a>
       <a class="pill" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/LICENSE" target="_blank" rel="noopener">MIT 开源</a>
     </p>
-    <p class="hero-ver">当前版本 <span data-rel="version">v0.4.1</span> · 单 exe 双击即用,浏览器管理台已内嵌</p>
+    <p class="hero-ver">当前版本 <span data-rel="version">v0.4.2</span> · 单 exe 双击即用,浏览器管理台已内嵌</p>
   </div>
 </header>
 
@@ -443,7 +443,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
     <div class="container">
       <div class="sec-head">
         <p class="eyebrow">DOWNLOAD</p>
-        <h2>下载 Mini RTT Viewer <span class="ver-pill" data-rel="version">v0.4.1</span></h2>
+        <h2>下载 Mini RTT Viewer <span class="ver-pill" data-rel="version">v0.4.2</span></h2>
         <p class="dl-date"><span data-rel="date">2026-09-24</span> 发布</p>
       </div>
 
@@ -453,7 +453,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
           <p class="dl-spec" data-rel="spec-windows">Windows x86_64 · zip · 约 0.85 MB · 桌面版单程序(内嵌浏览器管理台)</p>
           <p class="dl-file" data-rel="file-windows">mini-rtt-viewer-0.4.1-windows-x86_64.zip</p>
           <p class="dl-desc">包内单程序——mini-rtt-viewer.exe 桌面版(浏览器管理台已内嵌),解压即用。</p>
-          <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.4.1/mini-rtt-viewer-0.4.1-windows-x86_64.zip">下载 Windows 版</a>
+          <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/download/v0.4.2/mini-rtt-viewer-0.4.2-windows-x86_64.zip">下载 Windows 版</a>
           <p class="sha-label">SHA256</p>
           <div class="sha-bar">
             <code data-rel="sha-windows">85e347296053dd17cfe93cd96d4ffc604dd067ffb54117e61a354144992907d5</code>
@@ -515,7 +515,11 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       </div>
       <ol class="log-list">
         <li class="log-item">
-          <div class="log-head"><span class="ver-chip latest" data-rel="version">v0.4.1</span><span class="log-date" data-rel="date">2026-09-24</span></div>
+          <div class="log-head"><span class="ver-chip latest" data-rel="version">v0.4.2</span><span class="log-date" data-rel="date">2026-09-25</span></div>
+          <p class="log-sum">新增关于框(底栏版本号点开)与远程访问:底栏「远程」弹本机/局域网地址,整行点击复制,--listen 0.0.0.0 可开放局域网/互联网(同一网页即同一套界面);侧栏滚动条居中;38 处注释与文档漂移校准。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v0.4.1</span><span class="log-date">2026-09-24</span></div>
           <p class="log-sum">修复关闭进程僵尸假死(退出必干净),日志排版对齐 VS Code(14px/行高×1.5/字距收紧),WS 消息等自造轮子换 serde/原生 popover 现成方案;新增 RX/TX 速率、会话时长、日志时间戳开关、复制与导出反馈,顺带修掉右键复制在 Chromium 下失效的老 bug。</p>
         </li>
         <li class="log-item">

@@ -68,11 +68,18 @@
      P0-2 一屏化:内容(含接收组)必须 ≤765 无滚动。水平 padding 16→20 与
      组 padding 16→12 相抵,卡片内容宽与 label/复选框 x=33 对齐保持不变 */
   aside { width: 420px; min-width: 420px; background: var(--panel); border-right: 1px solid var(--border);
-    overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; }
-  aside::-webkit-scrollbar { width: 6px; }
-  aside::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 3px; }
-  aside::-webkit-scrollbar-thumb:hover { background: var(--muted); }
-  aside::-webkit-scrollbar-track { background: transparent; }
+    overflow: hidden; padding: 16px 20px; display: flex; flex-direction: column; }
+  /* 滚动条居中(FR-28 后用户要求):aside 只裁剪不滚动,内层 .aside-scroll 滚动。
+     负 margin 把滚动容器伸进 aside 的 20px 右留白,自身 padding-right 7 隔开卡片,
+     滚动条落在留白带正中(两侧各 7px);scrollbar-gutter: stable 保证溢出出现/
+     消失时卡片零位移。卡片右缘 399 / 滚动条 [406,412] / 面板内缘 419 */
+  .aside-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable;
+    margin-right: -13px; padding-right: 7px;
+    display: flex; flex-direction: column; gap: 8px; }
+  .aside-scroll::-webkit-scrollbar { width: 6px; }
+  .aside-scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 3px; }
+  .aside-scroll::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  .aside-scroll::-webkit-scrollbar-track { background: transparent; }
   /* 分组卡:bg var(--card) / border 1px var(--border) / radius 8px / padding 12px
      (P0-2 密度:16→12;水平由 aside 20px 补偿,label x=33 不变) */
   .group { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
@@ -290,6 +297,7 @@
 <body>
 <main>
   <aside>
+    <div class="aside-scroll">
     <div class="group">
       <div class="title">连接设置</div>
       <div class="field"><span class="label">J-Link</span>
@@ -370,6 +378,7 @@
           <option value="sepia">护眼暖色</option>
         </select>
       </div>
+    </div>
     </div>
   </aside>
   <section id="content">

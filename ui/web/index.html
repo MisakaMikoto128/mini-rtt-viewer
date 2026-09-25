@@ -203,6 +203,22 @@
   #version { color: var(--muted); }
   #open-browser { height: 22px; padding: 0 10px; font-size: 12px; border-radius: 4px; flex: none; }
 
+  /* 关于框(原生 <dialog>:Esc 原生关、点背板关;四主题走令牌)。底栏版本号
+     即按钮(footer 紧凑行 22px,同 #open-browser 体系),hover 提示可点 */
+  #version { height: 22px; padding: 0 6px; font-size: 12px; border-radius: 4px; flex: none;
+    background: none; border: none; cursor: pointer; }
+  #version:hover { color: var(--text); }
+  #about { margin: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+    color: var(--text); padding: 20px; min-width: 320px; max-width: 86vw; }
+  #about::backdrop { background: rgba(0, 0, 0, .45); }
+  .about-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .about-name { font-size: 15px; font-weight: 600; }
+  .about-ver { font-size: 13px; color: var(--secondary); margin-top: 2px; }
+  .about-line { font-size: 13px; color: var(--secondary); margin: 4px 0; }
+  .about-links { display: flex; gap: 8px; margin-top: 14px; }
+  .about-links button, .about-actions button { height: 32px; padding: 0 14px; font-size: 13px; }
+  .about-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+
   /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互)
      容器化:边框/圆角/底色收归 .combo,input 与箭头透明无边框(P0-1/P2-9) */
   .combo { position: relative; flex: 1; min-width: 0; display: flex; height: 40px;
@@ -376,13 +392,29 @@
   <span id="rx">RX 0 B</span><span id="rx-rate">0 B/s</span>
   <span id="session" title="本次连接时长">0s</span>
   <span id="rows">0 行</span>
-  <span id="version" title="程序版本"></span>
+  <button id="version" title="关于 Mini RTT Viewer"></button>
   <button id="open-browser" hidden title="在系统默认浏览器打开本管理台(壳内窗口无法新开标签)">浏览器打开</button>
 </footer>
 <div id="ctx-menu" popover="auto">
   <div class="ctx-item" id="ctx-copy">复制选中文本</div>
   <div class="ctx-item" id="ctx-selectall">全选</div>
 </div>
+<dialog id="about">
+  <div class="about-head">
+    <img src="favicon.png" width="40" height="40" alt="">
+    <div>
+      <div class="about-name">Mini RTT Viewer</div>
+      <div class="about-ver" id="about-ver"></div>
+    </div>
+  </div>
+  <p class="about-line">SEGGER RTT 日志查看器 · UTF-8 / emoji 原样显示 · ANSI 彩色</p>
+  <p class="about-line">MIT License</p>
+  <div class="about-links">
+    <button data-url="https://github.com/MisakaMikoto128/mini-rtt-viewer">GitHub 仓库</button>
+    <button data-url="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md">更新日志</button>
+  </div>
+  <div class="about-actions"><button id="about-close">关闭</button></div>
+</dialog>
 <script>
   const $ = id => document.getElementById(id);
   const API = location.origin;
@@ -1197,6 +1229,28 @@
     ob.onclick = () => fetch(API + '/api/open-browser', { method: 'POST' })
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); showToast('已在系统浏览器打开', 'ok'); })
       .catch(() => showToast('打开浏览器失败'));
+  }
+  // ---- 关于框:底栏版本号即按钮,原生 <dialog>(Esc 原生关、点背板关)。
+  // 外链在壳内走 /api/open-browser(服务端仅放行本仓库前缀的 URL),
+  // 纯浏览器直接新标签 ----
+  {
+    const about = $('about');
+    $('version').onclick = () => {
+      $('about-ver').textContent = $('version').textContent;
+      about.showModal();
+    };
+    $('about-close').onclick = () => about.close();
+    about.addEventListener('click', e => { if (e.target === about) about.close(); });
+    about.querySelectorAll('.about-links button').forEach(b => b.onclick = () => {
+      const url = b.dataset.url;
+      if (window.__MINI_SHELL) {
+        fetch(API + '/api/open-browser', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) })
+          .catch(() => {});
+      } else {
+        window.open(url, '_blank', 'noopener');
+      }
+    });
   }
   // 面板初值恢复:服务端持久化偏好(%APPDATA% prefs.json,500ms 快照)。
   // 主题/字号仍走 localStorage,不经此通道

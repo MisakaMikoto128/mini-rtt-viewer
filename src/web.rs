@@ -729,10 +729,17 @@ pub(crate) fn open_in_browser(url: &str) {
 }
 
 /// 在系统默认浏览器打开管理台(壳内前端按钮用;SerialHub Sprint7 实测壳内
-/// window.open 被原生层吞掉,浏览器访问用不到此端点)。URL 由服务端监听端口
-/// 拼出、不接受客户端传入,无任意 URL 打开面。
-async fn api_open_browser(State(shared): State<Arc<Shared>>) -> StatusCode {
-    open_in_browser(&format!("http://127.0.0.1:{}", shared.port));
+/// window.open 被原生层吞掉,浏览器访问用不到此端点)。可选 JSON body
+/// `{"url": …}` 供关于框打开 GitHub 外链,仅放行本仓库前缀、其余一律回落
+/// 管理台本页——保持「不接受任意 URL」的打开面约束。
+async fn api_open_browser(State(shared): State<Arc<Shared>>, body: String) -> StatusCode {
+    const REPO_PREFIX: &str = "https://github.com/MisakaMikoto128/";
+    let url = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(str::to_owned))
+        .filter(|u| u.starts_with(REPO_PREFIX))
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}", shared.port));
+    open_in_browser(&url);
     StatusCode::OK
 }
 

@@ -119,8 +119,11 @@ const BUILTIN_THEME_IDS: [&str; 4] = ["dark", "light", "oled", "sepia"];
 pub struct WebOptions {
     /// --demo-log:内置演示数据源,无设备即可体验/测试
     pub demo: bool,
-    /// HTTP 监听端口(仅绑定 127.0.0.1)
+    /// HTTP 监听端口(端口即单实例互斥)
     pub port: u16,
+    /// HTTP 监听地址:默认 127.0.0.1 仅本机;0.0.0.0 显式开放局域网/互联网
+    /// (管理台无鉴权,SECURITY.md 如实说明)。指定具体网卡 IP 时按该 IP 绑定
+    pub listen: std::net::IpAddr,
     /// bind 成功后用系统默认浏览器打开管理台(当前 main 两种形态均传 false:
     /// 窗口模式由 WebView 承载界面、托盘菜单按需开浏览器;纯服务面向自动化;
     /// 环境变量 RTT_WEB_NO_BROWSER=1 可强制跳过,无头/测试场景)
@@ -246,6 +249,8 @@ struct Shared {
     last_connect: Mutex<Option<SavedConnect>>,
     /// 服务监听端口(壳内前端「浏览器打开」按钮经 /api/open-browser 复用)
     port: u16,
+    /// 服务监听地址(FR-28 /api/addr 据此判断局域网地址是否对外可达)
+    listen: std::net::IpAddr,
 }
 
 impl Shared {
@@ -618,6 +623,7 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         status_text: Mutex::new("未连接".into()),
         on_state: on_event.clone(),
         port: opts.port,
+        listen: opts.listen,
     });
 
     if opts.demo {
@@ -689,13 +695,25 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         .route("/api/clear", post(api_clear))
         .route("/api/export", get(api_export))
         .route("/api/open-browser", post(api_open_browser))
+        .route("/api/addr", get(api_addr))
         .route("/ws", get(ws_handler))
         .with_state(shared);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], opts.port));
+    let bind_addr = SocketAddr::new(opts.listen, opts.port);
+    // 展示/WebView 加载地址:绑 0.0.0.0 时回环同样可达(全接口含 127.0.0.1),
+    // 但 "http://0.0.0.0" 不是可访问 URL,归一成 127.0.0.1;绑具体网卡 IP 时
+    // 回环未监听,只能用该 IP 访问
+    let addr = SocketAddr::new(
+        if opts.listen.is_unspecified() {
+            std::net::IpAddr::from([127, 0, 0, 1])
+        } else {
+            opts.listen
+        },
+        opts.port,
+    );
     // 单实例:端口即互斥。bind 失败(AddrInUse)= 已有实例在跑,提示后交给
     // 调用方以非零码退出,不再用 CreateMutexW 方案
-    let listener = match tokio::net::TcpListener::bind(addr).await {
+    let listener = match tokio::net::TcpListener::bind(bind_addr).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             anyhow::bail!("已有实例运行于 http://{addr}(端口即单实例互斥;如需重启请先关闭旧实例,或用 --port 换端口)")
@@ -726,6 +744,33 @@ pub(crate) fn open_in_browser(url: &str) {
     let _ = std::process::Command::new("cmd")
         .args(["/c", "start", "", url])
         .spawn();
+}
+
+/// 本机出网网卡 IPv4:UDP connect 探测默认路由源地址(UDP 假连接不实际发包,
+/// 只让 OS 选路)。无网络/特殊多网卡环境可能拿不到,如实返回 None。
+fn lan_ipv4() -> Option<std::net::IpAddr> {
+    let s = std::net::UdpSocket::bind(std::net::SocketAddr::from(([0, 0, 0, 0], 0))).ok()?;
+    s.connect("8.8.8.8:80").ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    (ip.is_ipv4() && !ip.is_loopback()).then_some(ip)
+}
+
+/// /api/addr(FR-28 远程访问框数据):本机/局域网地址是否开放 + 局域网 IP。
+/// open = 监听地址非回环(0.0.0.0 或具体网卡)时其他设备才可达;
+/// 回环监听时 lanIp 仍返回(端口开放后即用),前端只决定展示与否。
+#[derive(serde::Serialize)]
+struct AddrInfo {
+    port: u16,
+    open: bool,
+    #[serde(rename = "lanIp")]
+    lan_ip: Option<String>,
+}
+async fn api_addr(State(shared): State<Arc<Shared>>) -> Json<AddrInfo> {
+    Json(AddrInfo {
+        port: shared.port,
+        open: !shared.listen.is_loopback(),
+        lan_ip: lan_ipv4().map(|i| i.to_string()),
+    })
 }
 
 /// 在系统默认浏览器打开管理台(壳内前端按钮用;SerialHub Sprint7 实测壳内

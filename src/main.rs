@@ -10,6 +10,7 @@
 
 use mini_rtt_viewer::gui;
 use mini_rtt_viewer::web::{self, WebOptions};
+use std::net::IpAddr;
 
 const USAGE: &str = "\
 mini-rtt-viewer — J-Link RTT 查看器(Rust 数据层 + 内嵌 Web 管理台)
@@ -18,7 +19,9 @@ mini-rtt-viewer — J-Link RTT 查看器(Rust 数据层 + 内嵌 Web 管理台)
 
 选项:
   --demo-log    使用内置演示数据源,无需 J-Link 设备即可体验/测试
-  --port <n>    HTTP 监听端口(默认 8686,仅绑定 127.0.0.1;端口即单实例互斥)
+  --port <n>    HTTP 监听端口(默认 8686;端口即单实例互斥)
+  --listen <ip> HTTP 监听地址(默认 127.0.0.1 仅本机;0.0.0.0 开放局域网/互联网,
+                管理台无鉴权,仅建议可信网络使用)
   --no-window   纯服务模式:不开窗口与托盘,只跑本机服务(自动化/脚本场景)
   --no-tray     不创建系统托盘图标(窗口模式)
   -h, --help    显示本帮助并退出
@@ -34,6 +37,7 @@ fn main() {
     }
     let mut demo = false;
     let mut port: u16 = 8686;
+    let mut listen: IpAddr = IpAddr::from([127, 0, 0, 1]);
     let mut no_window = false;
     let mut no_tray = false;
     let mut i = 0;
@@ -56,6 +60,14 @@ fn main() {
                 port = v;
                 i += 1;
             }
+            "--listen" => {
+                let Some(v) = args.get(i + 1).and_then(|s| s.parse::<IpAddr>().ok()) else {
+                    eprintln!("mini-rtt-viewer: --listen 需要一个 IP 地址参数(如 0.0.0.0)");
+                    std::process::exit(2);
+                };
+                listen = v;
+                i += 1;
+            }
             other => {
                 eprintln!("mini-rtt-viewer: 未知参数 '{other}'(--help 查看用法)");
                 std::process::exit(2);
@@ -66,6 +78,7 @@ fn main() {
     let opts = WebOptions {
         demo,
         port,
+        listen,
         // 窗口模式由 WebView 承载界面、托盘菜单按需开浏览器;纯服务面向自动化,
         // 都不自动弹浏览器(RTT_WEB_NO_BROWSER 环境变量语义保留给 open_browser=true 的调用方)
         open_browser: false,

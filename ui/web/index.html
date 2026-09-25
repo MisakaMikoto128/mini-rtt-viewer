@@ -201,7 +201,18 @@
      「浏览器打开」是 footer 紧凑行专用小按钮(22px,不进 40 控件体系),
      纯浏览器访问时 hidden(壳标记 window.__MINI_SHELL 由 gui.rs 注入) */
   #version { color: var(--muted); }
-  #open-browser { height: 22px; padding: 0 10px; font-size: 12px; border-radius: 4px; flex: none; }
+  #open-browser, #remote-btn { height: 22px; padding: 0 10px; font-size: 12px; border-radius: 4px; flex: none; }
+
+  /* 远程访问框(FR-28):行 = 标签 + 等宽地址 + 复制;令牌复用 about 系。
+     地址本就是网页 URL——其他设备打开即同一套界面;局域网可达需
+     --listen 0.0.0.0(服务端默认仅回环,SECURITY.md 说明) */
+  .remote-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .remote-label { font-size: 13px; color: var(--secondary); flex: none; }
+  .remote-url { font-family: Consolas, monospace; font-size: 13px; color: var(--text);
+    background: var(--input); border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 8px; flex: 1; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .remote-copy { height: 28px; padding: 0 10px; font-size: 12px; flex: none; }
 
   /* 关于框(原生 <dialog>:Esc 原生关、点背板关;四主题走令牌)。底栏版本号
      即按钮(footer 紧凑行 22px,同 #open-browser 体系),hover 提示可点 */
@@ -392,6 +403,7 @@
   <span id="rx">RX 0 B</span><span id="rx-rate">0 B/s</span>
   <span id="session" title="本次连接时长">0s</span>
   <span id="rows">0 行</span>
+  <button id="remote-btn" title="远程访问地址">远程</button>
   <button id="version" title="关于 Mini RTT Viewer"></button>
   <button id="open-browser" hidden title="在系统默认浏览器打开本管理台(壳内窗口无法新开标签)">浏览器打开</button>
 </footer>
@@ -414,6 +426,26 @@
     <button data-url="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md">更新日志</button>
   </div>
   <div class="about-actions"><button id="about-close">关闭</button></div>
+</dialog>
+<dialog id="remote">
+  <div class="about-head">
+    <div>
+      <div class="about-name">远程访问</div>
+      <div class="about-ver">管理台即网页,同一地址打开即同一套界面</div>
+    </div>
+  </div>
+  <div class="remote-row">
+    <span class="remote-label">本机</span>
+    <code class="remote-url" id="remote-url-local"></code>
+    <button class="remote-copy" data-url="">复制</button>
+  </div>
+  <div class="remote-row" id="remote-lan-row" hidden>
+    <span class="remote-label">局域网</span>
+    <code class="remote-url" id="remote-url-lan"></code>
+    <button class="remote-copy" data-url="">复制</button>
+  </div>
+  <p class="about-line" id="remote-hint" hidden>局域网未开放:以 --listen 0.0.0.0 启动后,其他设备打开局域网地址即可远程操作</p>
+  <div class="about-actions"><button id="remote-close">关闭</button></div>
 </dialog>
 <script>
   const $ = id => document.getElementById(id);
@@ -1250,6 +1282,34 @@
       } else {
         window.open(url, '_blank', 'noopener');
       }
+    });
+  }
+  // ---- 远程访问框(FR-28):管理台即网页——展示本机/局域网地址 + 一键复制。
+  // 局域网可达需 --listen 0.0.0.0(或具体网卡)启动,默认仅回环、如实提示 ----
+  {
+    const dlg = $('remote');
+    const copies = () => [...dlg.querySelectorAll('.remote-copy')];
+    $('remote-btn').onclick = () => {
+      fetch(API + '/api/addr').then(r => r.json()).then(a => {
+        const local = 'http://127.0.0.1:' + a.port;
+        $('remote-url-local').textContent = local;
+        copies()[0].dataset.url = local;
+        const lan = a.open && a.lanIp ? 'http://' + a.lanIp + ':' + a.port : '';
+        $('remote-lan-row').hidden = !lan;
+        $('remote-hint').hidden = a.open;
+        if (lan) {
+          $('remote-url-lan').textContent = lan;
+          copies()[1].dataset.url = lan;
+        }
+        dlg.showModal();
+      }).catch(() => {});
+    };
+    $('remote-close').onclick = () => dlg.close();
+    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+    copies().forEach(b => b.onclick = () => {
+      navigator.clipboard.writeText(b.dataset.url).then(
+        () => showToast('已复制地址', 'ok'),
+        () => showToast('复制失败'));
     });
   }
   // 面板初值恢复:服务端持久化偏好(%APPDATA% prefs.json,500ms 快照)。

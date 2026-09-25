@@ -203,16 +203,28 @@
   #version { color: var(--muted); }
   #open-browser, #remote-btn { height: 22px; padding: 0 10px; font-size: 12px; border-radius: 4px; flex: none; }
 
-  /* 远程访问框(FR-28):行 = 标签 + 等宽地址 + 复制;令牌复用 about 系。
+  /* 远程访问框(FR-28):地址 = 整行可点的复制卡片(悬停 accent 描边,
+     复制成功右上短暂「✓ 已复制」);令牌复用 about 系,四主题跟随。
      地址本就是网页 URL——其他设备打开即同一套界面;局域网可达需
      --listen 0.0.0.0(服务端默认仅回环,SECURITY.md 说明) */
-  .remote-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
-  .remote-label { font-size: 13px; color: var(--secondary); flex: none; }
-  .remote-url { font-family: Consolas, monospace; font-size: 13px; color: var(--text);
-    background: var(--input); border: 1px solid var(--border); border-radius: 4px;
-    padding: 4px 8px; flex: 1; min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
-  .remote-copy { height: 28px; padding: 0 10px; font-size: 12px; flex: none; }
+  #remote { margin: auto; min-width: 380px; }
+  .remote-card { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    width: 100%; text-align: left; background: var(--input); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 12px; margin: 8px 0 0; cursor: pointer;
+    transition: border-color .15s; font-family: inherit; }
+  .remote-card:hover { border-color: var(--accent); }
+  .remote-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .remote-label { font-size: 12px; color: var(--secondary); }
+  .remote-url { font-family: Consolas, monospace; font-size: 14px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .remote-copy-state { flex: none; display: inline-flex; align-items: center;
+    font-size: 12px; color: var(--secondary); transition: color .15s; }
+  .remote-card:hover .remote-copy-state { color: var(--accent); }
+  .remote-copy-state svg { display: block; }
+  .remote-copy-state .st-done, .remote-copy-state.done .st-idle { display: none; }
+  .remote-copy-state .st-idle, .remote-copy-state.done .st-done { display: inline-flex;
+    align-items: center; gap: 5px; }
+  .remote-copy-state.done .st-done { color: var(--ok); }
 
   /* 关于框(原生 <dialog>:Esc 原生关、点背板关;四主题走令牌)。底栏版本号
      即按钮(footer 紧凑行 22px,同 #open-browser 体系),hover 提示可点 */
@@ -434,16 +446,26 @@
       <div class="about-ver">管理台即网页,同一地址打开即同一套界面</div>
     </div>
   </div>
-  <div class="remote-row">
-    <span class="remote-label">本机</span>
-    <code class="remote-url" id="remote-url-local"></code>
-    <button class="remote-copy" data-url="">复制</button>
-  </div>
-  <div class="remote-row" id="remote-lan-row" hidden>
-    <span class="remote-label">局域网</span>
-    <code class="remote-url" id="remote-url-lan"></code>
-    <button class="remote-copy" data-url="">复制</button>
-  </div>
+  <button class="remote-card" id="remote-card-local" title="点击复制地址">
+    <span class="remote-meta">
+      <span class="remote-label">本机</span>
+      <code class="remote-url" id="remote-url-local"></code>
+    </span>
+    <span class="remote-copy-state">
+      <span class="st-idle"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></svg>复制</span>
+      <span class="st-done"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8.5 6 12l7.5-8"/></svg>已复制</span>
+    </span>
+  </button>
+  <button class="remote-card" id="remote-lan-row" hidden title="点击复制地址">
+    <span class="remote-meta">
+      <span class="remote-label">局域网</span>
+      <code class="remote-url" id="remote-url-lan"></code>
+    </span>
+    <span class="remote-copy-state">
+      <span class="st-idle"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/><path d="M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></svg>复制</span>
+      <span class="st-done"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 8.5 6 12l7.5-8"/></svg>已复制</span>
+    </span>
+  </button>
   <p class="about-line" id="remote-hint" hidden>局域网未开放:以 --listen 0.0.0.0 启动后,其他设备打开局域网地址即可远程操作</p>
   <div class="about-actions"><button id="remote-close">关闭</button></div>
 </dialog>
@@ -1284,33 +1306,37 @@
       }
     });
   }
-  // ---- 远程访问框(FR-28):管理台即网页——展示本机/局域网地址 + 一键复制。
-  // 局域网可达需 --listen 0.0.0.0(或具体网卡)启动,默认仅回环、如实提示 ----
+  // ---- 远程访问框(FR-28):管理台即网页——本机/局域网地址卡片,整行点击
+  // 即复制(成功短暂「✓ 已复制」);局域网可达需 --listen 0.0.0.0 或具体网卡,
+  // 默认仅回环、如实提示 ----
   {
     const dlg = $('remote');
-    const copies = () => [...dlg.querySelectorAll('.remote-copy')];
+    const cards = () => [...dlg.querySelectorAll('.remote-card')];
+    const flashCopied = card => {
+      const st = card.querySelector('.remote-copy-state');
+      st.classList.add('done');
+      clearTimeout(card._copyT);
+      card._copyT = setTimeout(() => st.classList.remove('done'), 1400);
+    };
     $('remote-btn').onclick = () => {
       fetch(API + '/api/addr').then(r => r.json()).then(a => {
         const local = 'http://127.0.0.1:' + a.port;
         $('remote-url-local').textContent = local;
-        copies()[0].dataset.url = local;
+        $('remote-card-local').dataset.url = local;
         const lan = a.open && a.lanIp ? 'http://' + a.lanIp + ':' + a.port : '';
         $('remote-lan-row').hidden = !lan;
         $('remote-hint').hidden = a.open;
         if (lan) {
           $('remote-url-lan').textContent = lan;
-          copies()[1].dataset.url = lan;
+          $('remote-lan-row').dataset.url = lan;
         }
         dlg.showModal();
       }).catch(() => {});
     };
     $('remote-close').onclick = () => dlg.close();
     dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
-    copies().forEach(b => b.onclick = () => {
-      navigator.clipboard.writeText(b.dataset.url).then(
-        () => showToast('已复制地址', 'ok'),
-        () => showToast('复制失败'));
-    });
+    cards().forEach(c => c.onclick = () =>
+      navigator.clipboard.writeText(c.dataset.url).then(() => flashCopied(c)));
   }
   // 面板初值恢复:服务端持久化偏好(%APPDATA% prefs.json,500ms 快照)。
   // 主题/字号仍走 localStorage,不经此通道

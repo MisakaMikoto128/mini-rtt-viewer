@@ -37,16 +37,23 @@ P3 择要修;死代码全删)。3 条经核验为误报/不需修:open-browser"�
 (关于框 index.html:1310 实际在用)、WinSystemTime 字段序(报告自查否定)、
 R3 热切换丢半字节(报告自判"登记不修")。
 
-**分支**:`feat/probe-rs-backend` 实验分支在 worktree
+**分支**:`feat/probe-rs-backend` 旧实验分支在 worktree
 `mini-rtt-viewer-probe-rs`(probe-rs 0.32 后端,卡 Windows Zadig 驱动,
-双后端路线待用户决策,**保留勿动**);`audit/nova-20260925` 为审计引擎
-分支(本地存在,未检出)。
+**保留勿动**);`feat/probe-rs-backend-v2` 是 probe-rs 后端新实验(已实现
+probers 后端 + 免 Zadig 驱动附录,2026-09-28 按用户指示从 main 撤回至此,
+main 只保留抽象接口);`audit/nova-20260925` 为审计引擎分支(本地存在,
+未检出)。
 
 ## 后端抽象(2026-09-28,RttBackend 缝的纪律)
 
 - **加新后端 = 新文件实现 `RttBackend` + `backend_by_id` 注册**,web 层零改动;
   若发现 web 层需要为某后端写 if,说明缝漏了——回改 backend.rs,别在 web.rs
   加分支(设计契约 §8)
+- **probe-rs 实验结论(勿重走弯路)**:J-Link 探针 × probe-rs 在 Windows 上
+  **驱动互斥**(probe-rs 走 nusb 纯 USB 要求 WinUSB,与 SEGGER 驱动不共存;
+  pyOCD 的 J-Link 插件底层也是 pylink→DLL)。产品决策:J-Link 永远走 jlink
+  后端(默认,零操作);probers 实验整体在 v2 分支,含 tools/winusb 免 Zadig
+  附录,**不要再提议给用户换驱动**
 - demo 后端的会话句柄**恒活**(单例线程,断开只是状态翻转):一切"是否已连接"
   门禁判据用 `Shared.connected`,**严禁用 session 槽判空**(demo 永不空);
   demo 的连接/断开走其私有 `DemoCmd` 通道,不进共享 `WorkerCmd`

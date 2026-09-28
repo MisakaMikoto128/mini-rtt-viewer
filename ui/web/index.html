@@ -302,6 +302,8 @@
       <div class="title">连接设置</div>
       <div class="field"><span class="label">J-Link</span>
         <select id="jlink"></select></div>
+      <div class="field"><span class="label">数据源</span>
+        <select id="backend"></select></div>
       <div class="field"><span class="label">目标设备</span>
         <div class="combo" id="chip-combo">
           <input id="chip" autocomplete="off" placeholder="STM32F103C8">
@@ -484,6 +486,9 @@
   const log = $('log');
   const fmt = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
   let connected = false, autoScroll = true;
+  // 数据源后端(阶段二):当前选定是否纯软件(demo)——真机探针列表
+  // (J-Link 下拉)随之禁用;由 fillBackends/syncBackendUi 维护
+  let backendVirtual = false;
   // S1 速率/S2 时长状态:stats 每 500ms 一拍,lastStats 记上次字节快照差值算 B/s
   let lastStats = null;
   // S4 时间戳开关(纯前端显示层;localStorage 记忆,与字号/主题同模式)
@@ -511,6 +516,7 @@
     if (g('auto-scroll')) { $('auto-scroll').checked = g('auto-scroll') === '1'; autoScroll = $('auto-scroll').checked; }
     if (g('frame-timeout')) $('frame-timeout').value = g('frame-timeout');
     if (g('timestamps') === '1') { tsOn = true; $('timestamps').checked = true; } // S4
+    if (g('backend')) $('backend').value = g('backend'); // 选项由 /api/backends 异步填充,此处仅断连兜底记忆
   })();
 
   function appendRow(row, live) {
@@ -616,7 +622,8 @@
     $('send-btn').disabled = !on;
     // 断开后设备信息为上次残留数据(F2):置灰示不可信,连接态恢复
     $('device-details').classList.toggle('off', !on);
-    for (const id of ['jlink', 'chip', 'iface', 'speed', 'channel']) $(id).disabled = on;
+    for (const id of ['backend', 'chip', 'iface', 'speed', 'channel']) $(id).disabled = on;
+    $('jlink').disabled = on || backendVirtual; // demo 等纯软件后端无探针列表,一并禁用
   }
   function renderDevice(d) {
     if (!d) return;
@@ -735,6 +742,33 @@
       sel.value = want;
       pendingJlinkSn = null;
     }
+  }
+
+  // ---- 数据源后端(阶段二):/api/backends 填充 items,selected 置值 ----
+  // name/description 来自服务端字符串,option 一律 DOM API 构建 + textContent
+  // 承载(注入面纪律,禁止 innerHTML 拼接);isVirtual 记入 dataset 供
+  // change 即时联动 J-Link 下拉禁用
+  function fillBackends(data) {
+    const sel = $('backend');
+    const prev = sel.value;
+    sel.textContent = '';
+    for (const b of (data.items || [])) {
+      const o = document.createElement('option');
+      o.value = b.id;
+      o.textContent = b.name;
+      o.title = b.description || '';
+      o.dataset.virtual = b.isVirtual ? '1' : '0';
+      sel.appendChild(o);
+    }
+    // 服务端 selected 是唯一真源(启动按 CLI/偏好归一化);缺省沿用刷新前的值
+    const want = data.selected || prev;
+    if (want && [...sel.options].some(o => o.value === want)) sel.value = want;
+    syncBackendUi();
+  }
+  function syncBackendUi() {
+    const opt = [...$('backend').options].find(o => o.value === $('backend').value);
+    backendVirtual = !!opt && opt.dataset.virtual === '1';
+    $('jlink').disabled = connected || backendVirtual;
   }
 
   function connect() {
@@ -915,6 +949,13 @@
   $('speed').addEventListener('change', e => { lsSet('speed', String(e.target.selectedIndex)); postPref('speed', { speedIndex: e.target.selectedIndex }); });
   $('chip').addEventListener('input', () => postPref('chip', { chip: $('chip').value }, 400));
   $('chip').addEventListener('change', () => postPref('chip', { chip: $('chip').value }));
+  // 数据源后端(阶段二):切换仅断开态可选(setState 已禁用,服务端 409 兜底);
+  // 切到纯软件后端立即禁用 J-Link 下拉,不等 /api/backends 重拉
+  $('backend').addEventListener('change', e => {
+    lsSet('backend', e.target.value);
+    syncBackendUi();
+    postPref('backend', { backend: e.target.value });
+  });
   $('auto-frame').addEventListener('change', e => { lsSet('auto-frame', e.target.checked ? '1' : '0'); postPref('autoFrame', { autoFrame: e.target.checked }); });
   // HEX 发送:开关记忆 + 双向转换(勾选 文本→hex,取消 hex→文本;不可解析保留
   // 原文;只改输入框,不触发发送/历史)
@@ -1303,6 +1344,7 @@
   }).catch(() => {}), 2000);
   fetch(API + '/api/devices').then(r => r.json()).then(fillDatalist).catch(() => {});
   fetch(API + '/api/jlinks').then(r => r.json()).then(fillJlinks).catch(() => {});
+  fetch(API + '/api/backends').then(r => r.json()).then(fillBackends).catch(() => {});
   fetch(API + '/api/status').then(r => r.json()).then(s => {
     if (s.device) renderDevice(s.device);
     if (s.version) $('version').textContent = 'v' + s.version; // T10:低调版本号
@@ -1406,6 +1448,12 @@
     }
     // J-Link 下拉选定恢复(列表由 /api/jlinks 异步填充,这里先记下待套用)
     if (p.jlinkSerial != null) pendingJlinkSn = p.jlinkSerial;
+    // 数据源后端恢复(阶段二):选项由 /api/backends 异步填充,未到齐时跳过
+    // ——服务端 /api/backends 的 selected 与偏好同源,状态不丢
+    if (p.backend && [...$('backend').options].some(o => o.value === p.backend)) {
+      $('backend').value = p.backend;
+      lsSet('backend', p.backend);
+    }
   }).catch(() => {});
   // 发送历史:服务端持久化(prefs.send_history,去重置顶上限 50)——启动拉一次,
   // 最新在前;本次会话新发送在 send() 里即时并入本地(同规则),↑↓ 浏览共用一份

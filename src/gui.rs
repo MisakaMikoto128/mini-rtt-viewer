@@ -195,8 +195,8 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
 /// 1. 3s 看门狗先武装:以下任何一步卡死(如 controller.Close 的 COM 死等)
 ///    最多 3s 后强退,退出优先于清理完整性;看门狗同样用 TerminateProcess
 ///    (ExitProcess 自身可能卡在 detach,不能当兜底)。
-/// 2. 置 `rtt::APP_SHUTDOWN`:rtt worker 读循环与 reset-reconnect 重连线程
-///    自检此标志,退出窗口期内不再拉起/继续收数。
+/// 2. 置 `backend::APP_SHUTDOWN`:各后端 worker 读循环与 reset-reconnect
+///    重连线程自检此标志,退出窗口期内不再拉起/继续收数。
 /// 3. 显式移除托盘图标:强退路径 Explorer 不会立即回收图标,先 NIM_DELETE
 ///    保证不留鬼图标。
 /// 4. 显式 drop WebView(wry Drop = `controller.Close()`):WebView2 官方要求
@@ -216,7 +216,7 @@ fn exit_process(tray: Option<&tray_icon::TrayIcon>, webview: Option<wry::WebView
         terminate_self(0);
     });
     // 2. 退出窗口期内禁止 worker 重拉/续收
-    crate::rtt::APP_SHUTDOWN.store(true, Ordering::Relaxed);
+    crate::backend::APP_SHUTDOWN.store(true, Ordering::Relaxed);
     // 3. 托盘先撤(纯 Win32 Shell_NotifyIconW 调用,不涉 IPC,不会卡)
     if let Some(tray) = tray {
         let _ = tray.set_visible(false);

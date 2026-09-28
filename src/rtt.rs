@@ -1,77 +1,17 @@
+use crate::backend::{DeviceInfo, WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN};
 use crate::jlink_dll::{JLinkDll, RTT_CMD_START, RTT_CMD_STOP, TIF_JTAG, TIF_SWD};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub enum WorkerMsg {
-    /// 独立提示行(横幅等,自带换行)
-    Log(String),
-    /// 一次 RTT read 的解码输出(帧边界由 worker 按间隔判定后以 FrameEnd 发出)
-    Block(String),
-    /// 帧结束标记:相邻数据到达间隔超过断帧超时,worker 判定一帧结束。
-    /// 断帧判定在 worker(5ms 轮询的真实时间戳)进行,UI 刷新粒度不影响精度。
-    FrameEnd,
-    /// 连接/断开的**最终结果**:true=已连接,false=已断开或失败。
-    /// 中间进度用 Progress(只刷状态栏文字,绝不改变连接标志,
-    /// 否则按钮会在 连接/断开 之间来回跳)。
-    State(bool, String),
-    /// 连接过程的中间进度(只更新状态栏文字)
-    Progress(String),
-    /// 连接成功后采集的设备信息(DLL 查询,字段对齐原项目)
-    DeviceInfo(DeviceInfo),
-    /// J-Link 设备库候选名(启动时后台枚举/磁盘缓存,用于目标设备下拉)
-    DeviceNames(Vec<String>),
-    /// 本机已接入的 J-Link 调试器列表(序列号, 显示名),后台线程 + 每次连接时刷新
-    JLinks(Vec<(u32, String)>),
-    /// worker 线程已完全退出(含 DLL close),UI 收到后才允许再次连接,
-    /// 防止上一个 worker 还阻塞在 connect() 时 spawn 新 worker 并发抢 RTT。
-    Exited,
-}
-
-/// 连接成功后从 J-Link / 目标采集到的信息(UI 设备信息区展示)
-pub struct DeviceInfo {
-    pub firmware: String,
-    pub hardware: String,
-    pub serial: String,
-    pub core_name: String,
-    pub core_id: String,
-    pub core_cpu: String,
-    pub target: String,
-    pub iface: String,
-    pub speed_khz: u32,
-}
-
-/// UI → worker 命令。原来只有发数据一种,引入电源输出后升级为枚举协议,
-/// 避免在字符串上做前缀解析(易错且没有类型保障)。
-pub enum WorkerCmd {
-    /// 向 RTT 通道写原始字节(行尾已含;文本模式为 UTF-8 编码,HEX 模式为解析后的字节)
-    Send(Vec<u8>),
-    /// 电源输出开关(J-Link 19 脚):true=开 false=关
-    Power(bool),
-    /// 复位目标并恢复运行(复位后重挂 RTT:固件重新初始化后控制块可能移动)
-    Reset,
-    /// (demo 数据源专用)模拟「连接」按钮:demo 线程消费并立即转 State(true);
-    /// 真机 worker 永远收不到(真机的连接 = spawn worker 本身),收到即忽略
-    DemoConnect,
-    /// (demo 数据源专用)模拟「断开」按钮:demo 线程消费并转 State(false),
-    /// 且此后不再自动重连(忠实模拟手动断开);真机 worker 收到即忽略
-    DemoDisconnect,
-}
-
-/// 应用退出信号:主窗口关闭后置位,worker 循环(包括阻塞中的轮询间隔)
-/// 检测到后尽快退出,否则非 daemon 线程会让进程在窗口关闭后残留。
-pub static APP_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+// worker 协议类型(WorkerMsg/WorkerCmd/WorkerHandle/DeviceInfo/APP_SHUTDOWN)
+// 已统一迁到 backend.rs(后端抽象缝的公共契约,阶段一起 web 层与各后端实现
+// 共用);本模块保留 worker 内部实现:连接序列、读循环、字符集/HEX 解码。
 
 /// 速度下拉表(kHz):连接设置的单一真源,下标即前端下拉索引(桌面壳与
 /// 纯服务两种形态共用)
 pub const SPEEDS_KHZ: [u32; 8] = [100, 200, 500, 1000, 2000, 4000, 8000, 12000];
-
-/// worker 生命周期句柄:stop 请求退出,alive 反映线程是否还在。
-pub struct WorkerHandle {
-    pub stop: AtomicBool,
-    pub alive: AtomicBool,
-}
 
 /// 一次连接的全部参数(UI 收集 → worker 使用)
 pub struct WorkerConfig {
@@ -445,9 +385,6 @@ fn rtt_read_loop(
                         if on { "开" } else { "关" }
                     )));
                 }
-                // demo 数据源专用命令:真机 worker 永远收不到(web.rs 仅在 demo
-                // 分支发送),防御性忽略即可
-                WorkerCmd::DemoConnect | WorkerCmd::DemoDisconnect => {}
             }
         }
         // 5ms 轮询:自动断帧按"相邻数据间隔"判定,轮询间隔决定间隔测量的精度上限

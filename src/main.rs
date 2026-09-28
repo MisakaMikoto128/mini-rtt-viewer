@@ -19,6 +19,9 @@ mini-rtt-viewer — J-Link RTT 查看器(Rust 数据层 + 内嵌 Web 管理台)
 
 选项:
   --demo-log    使用内置演示数据源,无需 J-Link 设备即可体验/测试
+                (强制 demo 后端:后端列表仅 demo + 启动自动连接)
+  --backend <id> 启动时选定数据采集后端(jlink | demo;缺省读偏好文件,
+                不在可用列表的值忽略回落)
   --port <n>    HTTP 监听端口(默认 8686;端口即单实例互斥)
   --listen <ip> HTTP 监听地址(默认 127.0.0.1 仅本机;0.0.0.0 开放局域网/互联网,
                 管理台无鉴权,仅建议可信网络使用)
@@ -36,6 +39,7 @@ fn main() {
         return;
     }
     let mut demo = false;
+    let mut backend: Option<String> = None;
     let mut port: u16 = 8686;
     let mut listen: IpAddr = IpAddr::from([127, 0, 0, 1]);
     let mut no_window = false;
@@ -44,6 +48,15 @@ fn main() {
     while i < args.len() {
         match args[i].as_str() {
             "--demo-log" => demo = true,
+            "--backend" => {
+                let Some(v) = args.get(i + 1).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+                    eprintln!("mini-rtt-viewer: --backend 需要一个后端 id 参数(如 jlink/demo)");
+                    std::process::exit(2);
+                };
+                // 合法性(是否在可用列表)由 serve 校验:非法值忽略回落偏好/缺省
+                backend = Some(v);
+                i += 1;
+            }
             "--no-window" => no_window = true,
             "--no-tray" => no_tray = true,
             "--port" => {
@@ -77,6 +90,7 @@ fn main() {
     }
     let opts = WebOptions {
         demo,
+        backend,
         port,
         listen,
         // 窗口模式由 WebView 承载界面、托盘菜单按需开浏览器;纯服务面向自动化,

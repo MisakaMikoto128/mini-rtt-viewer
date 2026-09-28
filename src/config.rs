@@ -66,6 +66,9 @@ pub struct StoredPrefs {
     pub timer_interval: String,
     /// 搜索正则开关(false = 字面量匹配)
     pub search_regex: bool,
+    /// 数据采集后端 id("jlink" | "demo";缺省 "jlink")。归一化(可用列表
+    /// 校验/回落)在 web.rs serve() 拿到 WebOptions 后做——config 不感知可用面
+    pub backend: String,
 }
 
 impl Default for StoredPrefs {
@@ -97,6 +100,7 @@ impl Default for StoredPrefs {
             timer_send: false,
             timer_interval: "1".into(),
             search_regex: false,
+            backend: crate::backend::BACKEND_JLINK.into(),
         }
     }
 }
@@ -210,6 +214,7 @@ mod tests {
             timer_send: true,
             timer_interval: "0.5".into(),
             search_regex: true,
+            backend: "demo".into(),
         };
         save_to(&p, &prefs).unwrap();
         let back = load_from(&p);
@@ -236,6 +241,20 @@ mod tests {
         assert_eq!(prefs.chip_name, "STM32F030C8");
         assert_eq!(prefs.speed_index, StoredPrefs::default().speed_index);
         assert!(prefs.auto_frame);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn backend_field_defaults_to_jlink_and_round_trips() {
+        // 阶段二(后端可选面):旧配置缺 backend 字段 → serde(default) 回落
+        // "jlink";显式值随快照原样落盘/读回(归一化在 serve,config 不感知可用面)
+        let p = tmp_path("backend");
+        std::fs::write(&p, r#"{"chip_name":"STM32F103C8"}"#).unwrap();
+        assert_eq!(load_from(&p).backend, "jlink"); // 缺字段回落默认
+        let mut prefs = StoredPrefs::default();
+        prefs.backend = "demo".into();
+        save_to(&p, &prefs).unwrap();
+        assert_eq!(load_from(&p).backend, "demo"); // 往返保留
         let _ = std::fs::remove_file(&p);
     }
 

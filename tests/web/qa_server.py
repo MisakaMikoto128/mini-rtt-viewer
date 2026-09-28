@@ -15,7 +15,12 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXE = ROOT / "target" / "release" / "mini-rtt-viewer.exe"
+# 与 test_spec 同口径:RTT_TEST_EXE 可指定待测二进制(如 dev 构建产物);
+# 缺省(环境变量未设)行为不变 = release 产物
+EXE = Path(
+    os.environ.get("RTT_TEST_EXE")
+    or ROOT / "target" / "release" / "mini-rtt-viewer.exe"
+)
 PORT = 18099  # QA 纪律:固定 18099
 BASE = f"http://127.0.0.1:{PORT}"
 # 主题插件目录 = exe 旁 themes/(验收矩阵 1 的落点)
@@ -30,7 +35,7 @@ class QAServer:
         self.prefs_file = tmpdir / "prefs.json"
         self.proc: subprocess.Popen | None = None
 
-    def start(self) -> None:
+    def start(self, demo_log: bool = True) -> None:
         # 前置:端口必须空闲,否则会连到僵尸进程,污染黑盒断言
         s = socket.socket()
         s.settimeout(0.5)
@@ -50,9 +55,13 @@ class QAServer:
             "RTT_PREFS_FILE": str(self.prefs_file),
             "RTT_WEB_NO_BROWSER": "1",
         }
+        # demo_log=False = 普通形态(jlink+demo 双后端可用,test_backends 用);
+        # 默认 True(--demo-log 强制形态),既有调用方行为不变
+        args = [str(EXE), "--no-window", "--port", str(PORT)]
+        if demo_log:
+            args.insert(1, "--demo-log")
         self.proc = subprocess.Popen(
-            [str(EXE), "--demo-log", "--no-window", "--port", str(PORT)],
-            cwd=str(ROOT), env=env,
+            args, cwd=str(ROOT), env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         deadline = time.time() + 20

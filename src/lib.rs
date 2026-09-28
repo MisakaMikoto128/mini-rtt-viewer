@@ -8,6 +8,8 @@
 //!   线程两种装配,见 web.rs 模块头)。
 
 pub mod ansi;
+pub mod backend;
+pub mod backend_jlink;
 pub mod config;
 pub mod demo;
 pub mod device_db;

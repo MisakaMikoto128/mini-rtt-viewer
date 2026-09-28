@@ -7,10 +7,14 @@
 //! API 契约(与前端/测试对齐,改这里必同步 ui/web/index.html 与 tests/web):
 //! - GET  /                管理台单页
 //! - GET  /api/status      → {connected, rxBytes, txBytes, rowsTotal,
-//!   uptimeSec, sessionSec, sessionStatus, device, version};device 8 字段
+//!   uptimeSec, sessionSec, sessionStatus, device, version, backend};device 8 字段
 //!   {firmware,hardware,serial,core,cpu,target,iface,speedKhz}(demo 模式为演示
 //!   数据);sessionSec=连接会话秒(State 连接迁移记起点,断开清零,demo 启动即
-//!   计);sessionStatus=当前状态文案(如「已连接 (demo)」)
+//!   计);sessionStatus=当前状态文案(如「已连接 (demo)」);backend=当前数据
+//!   采集后端 id("jlink"/"demo",阶段二新增)
+//! - GET  /api/backends    → {selected, items:[{id,name,description,isVirtual}]}
+//!   (阶段二后端可选面:selected=当前选定;items=本进程可用后端列表——普通
+//!   形态 jlink+demo,--demo-log 强制形态仅 demo)
 //! - GET  /api/prefs       → 持久化偏好快照(面板初值恢复)
 //! - GET  /api/themes      → [{id, name, custom}];内置 4 套(custom:false)+
 //!   自定义项(exe 旁 themes/*.css,id=文件名去扩展,name=文件名,custom:true)
@@ -31,7 +35,9 @@
 //!   in-place(旧前端兼容)
 //! - POST /api/settings    逐字段可选(camelCase):rxEnding / frameTimeout /
 //!   encodingIndex / hexRx / autoFrame / searchRegex / sendEnding / hexSend /
-//!   chip / ifaceIndex / speedIndex / channel(连接设置组持久化,F1)
+//!   chip / ifaceIndex / speedIndex / channel(连接设置组持久化,F1)/
+//!   backend(阶段二切数据源:不在可用列表的 id → 400;连接态判据
+//!   shared.connected → 409「断开后才能切换后端」;成功写偏好并切换)
 //! - POST /api/send        {text, hex?} → 回显一行,计数 TX,内容记为定时发送源;
 //!   成功后记入发送历史(prefs.send_history,去重置顶上限 50,与桌面版同规则)
 //! - POST /api/timer       {on, intervalSec?, text?, hex?};定时重发 0.001-999 秒,
@@ -47,7 +53,7 @@
 //!
 //! /api/prefs 返回:{chip, ifaceIndex, speedIndex, channel, rxEnding, frameTimeout,
 //! encodingIndex, hexRx, autoFrame, searchRegex, timerOn, timerIntervalSec,
-//! sendEnding, hexSend}
+//! sendEnding, hexSend, backend}
 //!
 //! 偏好持久化(与桌面版同模式):`%APPDATA%/MiniRttViewer/prefs.json`(环境变量
 //! `RTT_PREFS_FILE` 显式指定路径时优先,测试/便携场景的 prefs 隔离),数据泵
@@ -70,11 +76,12 @@
 //!   经 ready 通道握手,连接状态变化经 `OnEvent` 回调打回主线程驱动托盘图标。
 
 use crate::ansi;
+use crate::backend::{
+    self, ConnectParams, DeviceInfo, Host, RttBackend, SessionHandle, WorkerCmd, WorkerMsg,
+};
 use crate::config::{self, StoredPrefs};
-use crate::demo;
-use crate::device_db;
 use crate::log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS, MAX_LOG_ROWS};
-use crate::rtt::{self, WorkerCmd, WorkerConfig, WorkerHandle, WorkerMsg, SPEEDS_KHZ};
+use crate::rtt::SPEEDS_KHZ;
 use axum::{
     body::Bytes,
     extract::{
@@ -118,8 +125,12 @@ const BUILTIN_THEME_IDS: [&str; 4] = ["dark", "light", "oled", "sepia"];
 
 /// 服务启动选项(main 解析命令行后传入)
 pub struct WebOptions {
-    /// --demo-log:内置演示数据源,无设备即可体验/测试
+    /// --demo-log:内置演示数据源,无设备即可体验/测试。阶段二语义升级为
+    /// 「强制 demo 后端」:后端列表仅 demo + 启动自动连接(向后兼容)
     pub demo: bool,
+    /// --backend <id>(阶段二):启动时选定数据采集后端;必须命中可用列表
+    /// 才生效,非法值忽略(回落偏好/缺省)。缺省 None = 按偏好 backend
+    pub backend: Option<String>,
     /// HTTP 监听端口(端口即单实例互斥)
     pub port: u16,
     /// HTTP 监听地址:默认 127.0.0.1 仅本机;0.0.0.0 显式开放局域网/互联网
@@ -129,6 +140,13 @@ pub struct WebOptions {
     /// 窗口模式由 WebView 承载界面、托盘菜单按需开浏览器;纯服务面向自动化;
     /// 环境变量 RTT_WEB_NO_BROWSER=1 可强制跳过,无头/测试场景)
     pub open_browser: bool,
+}
+
+impl WebOptions {
+    /// --demo-log 强制形态(demo 后端独占 + 启动自动连接)
+    pub fn is_demo_forced(&self) -> bool {
+        self.demo
+    }
 }
 
 /// 服务 → GUI 的事件(经 `OnEvent` 回调打回主线程,SerialHub service.rs 同构)。
@@ -210,12 +228,12 @@ struct Shared {
     connected: AtomicBool,
     seq: AtomicU64,
     clear_seq: AtomicU64,
-    // ---- 真机连接(与桌面版同一 worker 协议)----
-    worker: Mutex<Option<Arc<WorkerHandle>>>,
-    cmd_tx: Mutex<Option<mpsc::Sender<WorkerCmd>>>,
+    // ---- 会话槽(后端抽象阶段一:worker/cmd_tx 双槽合并;内容由当前后端
+    // 维护——jlink = 真 worker 句柄+命令通道,demo = 恒活单例句柄)----
+    session: Mutex<Option<SessionHandle>>,
     msg_tx: mpsc::Sender<WorkerMsg>,
-    /// reset reconnect 的 1 秒等待窗口门闩(审计 P1):take_worker_down 已把
-    /// worker 清空,此期间 api_connect 的存活检查会放行——用独立标志堵住
+    /// reset reconnect 的 1 秒等待窗口门闩(审计 P1):重连线程已把 session
+    /// 清空,此期间 api_connect 的存活检查会放行——用独立标志堵住
     /// 「复位重连等待期内手动点连接 → 双 worker 并发抢 J-Link」的窗口
     reconnecting: AtomicBool,
     frame_timeout_ms: Arc<AtomicU32>,
@@ -226,8 +244,12 @@ struct Shared {
     /// 「J-Link」下拉选中的调试器序列号(连接时校验后在列表内才生效;
     /// None = 自动选首台。经快照落盘,prefs.jlink_serial 恢复)
     jlink_serial: Mutex<Option<u32>>,
-    device_info: Mutex<Option<rtt::DeviceInfo>>,
-    demo_mode: bool,
+    device_info: Mutex<Option<DeviceInfo>>,
+    /// 当前数据采集后端(阶段二起可经 /api/settings 切换)
+    backend: Mutex<&'static dyn RttBackend>,
+    /// 本进程可用后端列表(/api/backends items 与 settings 校验的单一来源;
+    /// 装配期定死:强制形态仅 demo,普通形态 jlink+demo)
+    backends_available: Vec<&'static dyn RttBackend>,
     /// 连接状态变化回调(gui 壳注入,驱动托盘图标;纯服务模式 None)
     on_state: Option<OnEvent>,
     // ---- 偏好快照源(tick 内 500ms 比对落盘;未连接态也保存)----
@@ -259,7 +281,7 @@ struct Shared {
     status_text: Mutex<String>,
     /// 上次成功连接的参数(reset reconnect 的重连来源;/api/connect 成功时
     /// 刷新,启动时从偏好底版恢复)
-    last_connect: Mutex<Option<SavedConnect>>,
+    last_connect: Mutex<Option<ConnectParams>>,
     /// 服务监听端口(壳内前端「浏览器打开」按钮经 /api/open-browser 复用)
     port: u16,
     /// 服务监听地址(FR-28 /api/addr 据此判断局域网地址是否对外可达)
@@ -267,9 +289,14 @@ struct Shared {
 }
 
 impl Shared {
+    /// 当前数据采集后端(装配期写入;阶段二起可经 /api/settings 切换)
+    fn backend(&self) -> &'static dyn RttBackend {
+        *self.backend.lock().unwrap()
+    }
+
     /// 发送管线(手动 /api/send 与定时发送共用):HEX/文本 → worker;回显 +
-    /// TX 计数 + 记录为定时内容。demo(无 worker)只回显与计数(前端连接态
-    /// 才允许发送,语义为虚拟发送)
+    /// TX 计数 + 记录为定时内容。demo 后端线程忽略 Send,只回显与计数
+    /// (前端连接态才允许发送,语义为虚拟发送)
     fn send_payload(&self, text: &str, hex: bool) -> Result<(), String> {
         if text.is_empty() {
             return Err("空输入".into());
@@ -283,7 +310,7 @@ impl Shared {
         let payload = append_send_ending(payload, *self.send_ending.lock().unwrap());
         // TX 计数按实际发送字节数(HEX 模式 = 解析后字节 + 行尾,非原文长度)
         let n = payload.len();
-        if let Some(tx) = self.cmd_tx.lock().unwrap().clone() {
+        if let Some(tx) = self.session.lock().unwrap().as_ref().map(|s| s.cmd_tx.clone()) {
             let _ = tx.send(WorkerCmd::Send(payload));
         }
         self.tx_bytes.fetch_add(n as u64, Ordering::Relaxed);
@@ -295,6 +322,55 @@ impl Shared {
         self.timer_hex.store(hex, Ordering::Relaxed);
         history_push(&mut self.send_history.lock().unwrap(), text);
         Ok(())
+    }
+}
+
+/// 后端实现访问 Shared 的边界(Host trait):方法体只做短借其它 Mutex 字段、
+/// 原子读写与通道克隆,**禁止碰 pump 锁**(tick_loop 持泵锁横跨消息内循环,
+/// 见 AGENTS「并发/锁纪律」)。
+impl Host for Shared {
+    fn send_msg(&self, msg: WorkerMsg) {
+        let _ = self.msg_tx.send(msg);
+    }
+
+    fn msg_tx(&self) -> mpsc::Sender<WorkerMsg> {
+        self.msg_tx.clone()
+    }
+
+    fn session(&self) -> Option<SessionHandle> {
+        self.session.lock().unwrap().clone()
+    }
+
+    fn set_session(&self, s: Option<SessionHandle>) {
+        *self.session.lock().unwrap() = s;
+    }
+
+    fn connected(&self) -> bool {
+        self.connected.load(Ordering::Relaxed)
+    }
+
+    fn jlinks(&self) -> Vec<(u32, String)> {
+        self.jlinks.lock().unwrap().clone()
+    }
+
+    fn set_device_names(&self, names: Vec<String>) {
+        *self.device_names.lock().unwrap() = names;
+    }
+
+    fn worker_shared(&self) -> backend::WorkerShared {
+        backend::WorkerShared {
+            frame_timeout_ms: self.frame_timeout_ms.clone(),
+            encoding_index: self.encoding_index.clone(),
+            hex_rx: self.hex_rx.clone(),
+        }
+    }
+
+    fn reconnecting(&self) -> bool {
+        self.reconnecting.load(Ordering::Relaxed)
+    }
+
+    fn set_reconnecting(&self, v: bool) {
+        self.reconnecting.store(v, Ordering::Relaxed);
     }
 }
 
@@ -384,6 +460,8 @@ fn snapshot_prefs(s: &Shared) -> StoredPrefs {
     p.jlink_serial = *s.jlink_serial.lock().unwrap();
     p.send_ending = *s.send_ending.lock().unwrap();
     p.hex_send = s.hex_send.load(Ordering::Relaxed);
+    // 后端 id(阶段二):随快照落盘,重启恢复上次选定(serve 内已归一化)
+    p.backend = s.backend().id().to_string();
     p
 }
 
@@ -440,17 +518,6 @@ fn append_send_ending(mut payload: Vec<u8>, ending: i32) -> Vec<u8> {
     payload
 }
 
-/// 文本 → 十六进制大写文本(UTF-8 字节,每字节两位、空格分隔,与真机 worker
-/// 的 HEX 接收输出同格式,如 "[ de" → "5B 20 64 65 ")
-fn text_to_hex_upper(s: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(s.len() * 3);
-    for b in s.as_bytes() {
-        let _ = write!(out, "{b:02X} ");
-    }
-    out
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PauseReq {
@@ -471,34 +538,6 @@ struct ConnectReq {
     /// 一律回落列表首台,与旧行为兼容)
     #[serde(default)]
     jlink_sn: Option<u32>,
-}
-
-/// 上次成功连接的参数(reset reconnect 模式 1 秒后用它重连;字段均已夹取)
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SavedConnect {
-    chip: String,
-    iface_index: usize,
-    speed_index: usize,
-    channel: u32,
-    jlink_sn: Option<u32>,
-}
-
-impl SavedConnect {
-    /// 偏好底版 → 上次连接参数(启动恢复;chip 为空 = 从未连接过 → None,
-    /// reset reconnect 对此返回 409)
-    fn from_prefs(p: &StoredPrefs) -> Option<Self> {
-        let chip = p.chip_name.trim().to_string();
-        if chip.is_empty() {
-            return None;
-        }
-        Some(Self {
-            iface_index: p.iface_index.clamp(0, 1) as usize,
-            speed_index: p.speed_index.clamp(0, SPEEDS_KHZ.len() as i32 - 1) as usize,
-            channel: p.channel.clamp(0, 15) as u32,
-            jlink_sn: p.jlink_serial,
-            chip,
-        })
-    }
 }
 
 /// 复位模式:in-place = 现有 Reset 命令(worker 复位目标并重挂 RTT 续收);
@@ -560,6 +599,10 @@ struct SettingsReq {
     /// RTT 通道 0-15
     #[serde(default)]
     channel: Option<u32>,
+    /// 数据采集后端 id(阶段二;None = 不切换。校验与连接态门禁在
+    /// api_settings:未知/不可用 id → 400,连接态 → 409)
+    #[serde(default)]
+    backend: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -579,6 +622,27 @@ struct TimerReq {
 struct MarkReq {
     #[serde(default)]
     text: String,
+}
+
+/// 阶段二后端选定解析(serve 装配用,纯函数便于单测):CLI --backend(必须
+/// 命中可用列表才生效,非法忽略)→ 偏好 backend(serve 内归一化:不在可用
+/// 列表回落列表首个,与 chip 等字段同款容错;config 的 load 不感知可用面)→
+/// 列表首个。普通形态列表首 = jlink(历史缺省行为),强制形态仅 demo。
+fn resolve_backend(
+    cli: Option<&str>,
+    pref: &str,
+    available: &[&'static dyn RttBackend],
+) -> &'static dyn RttBackend {
+    let pick = |id: &str| available.iter().copied().find(|b| b.id() == id);
+    if let Some(id) = cli.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(b) = pick(id) {
+            return b;
+        }
+    }
+    if let Some(b) = pick(pref.trim()) {
+        return b;
+    }
+    available[0]
 }
 
 async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()> {
@@ -602,6 +666,19 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
 
     let (events_tx, _) = broadcast::channel(512);
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
+    // 可用后端列表(阶段二):--demo-log 强制形态仅 demo(不加载 DLL,保留
+    // 「demo 可与真实实例并存」语义);普通形态 jlink + demo(界面选后端的
+    // 核心价值:无硬件体验全功能)
+    let backends_available: Vec<&'static dyn RttBackend> = if opts.is_demo_forced() {
+        vec![backend::backend_by_id(backend::BACKEND_DEMO).expect("demo 后端未注册")]
+    } else {
+        vec![
+            backend::backend_by_id(backend::BACKEND_JLINK).expect("jlink 后端未注册"),
+            backend::backend_by_id(backend::BACKEND_DEMO).expect("demo 后端未注册"),
+        ]
+    };
+    // 选定:CLI --backend → 偏好 backend(serve 内归一化)→ 列表首个
+    let backend = resolve_backend(opts.backend.as_deref(), &saved.backend, &backends_available);
     // saved 的字段随后被逐个 move/partial move,先取出共享原子的初值
     let jlink_serial_init = saved.jlink_serial;
     let shared = Arc::new(Shared {
@@ -614,8 +691,7 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         connected: AtomicBool::new(false),
         seq: AtomicU64::new(0),
         clear_seq: AtomicU64::new(0),
-        worker: Mutex::new(None),
-        cmd_tx: Mutex::new(None),
+        session: Mutex::new(None),
         msg_tx: msg_tx.clone(),
         reconnecting: AtomicBool::new(false),
         frame_timeout_ms: Arc::new(AtomicU32::new(frame_timeout_init)),
@@ -625,13 +701,15 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         jlinks: Mutex::new(Vec::new()),
         jlink_serial: Mutex::new(jlink_serial_init),
         device_info: Mutex::new(None),
-        demo_mode: opts.demo,
+        backend: Mutex::new(backend),
+        // Vec<&'static> 克隆只是拷几个指针;装配块后还要用原列表找 jlink 启动枚举
+        backends_available: backends_available.clone(),
         prefs_base: saved.clone(),
         auto_frame: AtomicBool::new(saved.auto_frame),
         search_regex: AtomicBool::new(saved.search_regex),
         // 上次连接参数从偏好底版恢复(chip 为空 = 从未连接 → reconnect 复位
         // 409);必须在 saved.chip_name 被 move 之前借用
-        last_connect: Mutex::new(SavedConnect::from_prefs(&saved)),
+        last_connect: Mutex::new(ConnectParams::from_prefs(&saved)),
         chip_name: Mutex::new(saved.chip_name),
         iface_index: Mutex::new(saved.iface_index.clamp(0, 1)),
         speed_index: Mutex::new(saved.speed_index.clamp(0, SPEEDS_KHZ.len() as i32 - 1)),
@@ -650,45 +728,23 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         listen: opts.listen,
     });
 
-    if opts.demo {
-        // demo 虚拟 worker 的命令通道:连接/断开/重置/电源命令由 demo 线程消费
-        // (F2:此前 demo 无命令消费者,cmd_tx 发出的命令全部无人接收,
-        // 按钮「连接/断开/重置目标/电源输出」在 demo 下全部无效)
-        let (demo_cmd_tx, demo_cmd_rx) = mpsc::channel::<WorkerCmd>();
-        *shared.cmd_tx.lock().unwrap() = Some(demo_cmd_tx);
-        demo::spawn(msg_tx, demo_cmd_rx, shared.frame_timeout_ms.clone());
-        shared.connected.store(true, Ordering::Relaxed);
-        // demo 虚拟会话启动即"已连接":会话计时起点 + 状态文案 + 初始连接
-        // 标记行(与 State 迁移标记同款式;demo 的 State(true) 5 秒后才到,
-        // 期间 status/会话口径保持一致)
-        *shared.session_start.lock().unwrap() = Some(Instant::now());
-        *shared.status_text.lock().unwrap() = "已连接 (demo)".into();
-        shared
-            .pump
-            .lock()
-            .unwrap()
-            .push_colored_line(&state_marker_line(true), MARK_COLOR);
-        // gui 壳在途:托盘图标立即反映"已连接"(事件在事件循环启动前排队的语义,
-        // 见 gui.rs 模块头)
-        if let Some(cb) = &shared.on_state {
-            cb(ServiceEvent::ConnectedChanged(true));
-        }
-    } else {
-        // 设备库后台枚举(芯片型号 + 本机 J-Link),与桌面版同一模块
-        let (db_tx, db_rx) = mpsc::channel::<device_db::DbResult>();
-        device_db::spawn_background(db_tx);
-        let tx = msg_tx.clone();
-        std::thread::spawn(move || {
-            while let Ok(r) = db_rx.recv() {
-                let msg = match r {
-                    device_db::DbResult::DeviceNames(names) => WorkerMsg::DeviceNames(names),
-                    device_db::DbResult::Emulators(list) => WorkerMsg::JLinks(list),
-                };
-                if tx.send(msg).is_err() {
-                    break;
-                }
-            }
-        });
+    // 后端装配(阶段二,三入口统一,jlink/demo 各取所需,缺失能力为 trait
+    // default 空实现):① jlink 在可用列表时启动设备库后台枚举(普通形态恒
+    // 启动;强制形态 jlink 不可用,不加载 DLL);② 选定后端 on_selected 种子
+    // 设备候选(demo = 静态演示表;jlink = 清空候选走异步枚举回填,枚举已被
+    // ① 启动,幂等);③ 强制 demo 形态启动自动连接(demo:懒启动单例,线程
+    // 启动即连接,首条 State(true) 消息驱动 tick 完成连接态/标记行/托盘回调
+    // ——web 层不再预置,tick 消化先于 axum bind,首个 HTTP 可见时 connected=true)
+    if let Some(jlink) = backends_available
+        .iter()
+        .copied()
+        .find(|b| b.id() == backend::BACKEND_JLINK)
+    {
+        jlink.start_background_enumeration(&*shared);
+    }
+    backend.on_selected(&*shared);
+    if opts.is_demo_forced() {
+        backend.auto_connect_at_startup(&*shared);
     }
 
     // 数据泵线程:消化 worker 消息 → pump → 事件广播(10ms,与桌面版 tick 同构)
@@ -701,6 +757,7 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         .route("/", get(index))
         .route("/favicon.png", get(favicon))
         .route("/api/status", get(api_status))
+        .route("/api/backends", get(api_backends))
         .route("/api/prefs", get(api_prefs))
         .route("/api/themes", get(api_themes))
         .route("/api/theme-css/{id}", get(api_theme_css))
@@ -841,7 +898,7 @@ enum WsEvent<'a> {
     /// 连接状态 {"type":"state","connected":B,"status":"…"}
     State { connected: bool, status: String },
     /// 设备信息 {"type":"device","info":{8 字段}}——info 与 /api/status 的 device
-    /// 同形,继续由 serde_json::json! 构造(与 demo_device_json 单点同源)
+    /// 同形,继续由 serde_json::json! 构造(与 device_info_json 单点同源)
     Device { info: serde_json::Value },
     /// 进度文案 {"type":"progress","text":"…"}
     Progress { text: String },
@@ -895,7 +952,11 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
     // 因 elapsed 已超时立即发——与桌面版 tick step 6 同语义)
     let mut last_timer = Instant::now();
     loop {
-        std::thread::sleep(Duration::from_millis(FLUSH_MS));
+        // 先消化后睡眠(消化在前):装配阶段入队的消息(强制 demo 的启动
+        // State(true))必须在 axum bind 前落地,保证首个 HTTP 可见时连接态
+        // 已就绪(设计文档确定性论证;旧版 sleep-first 首轮要等 10ms,存在
+        // bind 后短窗内 connected=false 的竞态)。稳态节奏不变(每轮仍间隔
+        // FLUSH_MS),仅首个 tick 提前
         let rx_ending = *shared.rx_ending.lock().unwrap();
         let auto_frame = shared.auto_frame.load(Ordering::Relaxed);
         let mut pump = shared.pump.lock().unwrap();
@@ -903,19 +964,12 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
             match msg_rx.try_recv() {
                 Ok(WorkerMsg::Block(text)) => {
                     if !pump.paused {
-                        // RX 统计按原始块长计(hex 转换只是 demo 的显示变换)
-                        let raw_len = text.len();
-                        // demo 流是文本:hexRx 开启时把块文本按 UTF-8 字节转
-                        // 十六进制大写文本再上屏,演示 HEX 接收效果。仅 demo
-                        // 生效——真机路径已在 worker 内转换,这里再转就是二次
-                        // 转换(真机 hex 文本会被再 hex 一次)
-                        let shown = if shared.demo_mode && shared.hex_rx.load(Ordering::Relaxed) {
-                            text_to_hex_upper(&text)
-                        } else {
-                            text
-                        };
-                        shared.rx_bytes.fetch_add(raw_len as u64, Ordering::Relaxed);
-                        pump.absorb_text(&shown, rx_ending);
+                        // RX 统计按 worker 发出的块长计:HEX 接收的文本→hex
+                        // 转换已统一下沉到各后端 worker 内(真机 rtt.rs、demo
+                        // 线程消费 worker_shared().hex_rx),块到达时已是最终
+                        // 展示文本,demo 与真机 hex 的统计口径由此对齐
+                        shared.rx_bytes.fetch_add(text.len() as u64, Ordering::Relaxed);
+                        pump.absorb_text(&text, rx_ending);
                     }
                 }
                 Ok(WorkerMsg::Log(text)) => {
@@ -1001,21 +1055,21 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                 Ok(WorkerMsg::Exited) => {
                     // 只清"确实已停"的登记句柄:reset reconnect 场景下旧 worker
                     // 的 Exited 可能晚于新 worker 登记到达,不能误清新句柄
-                    // (alive=false 由 worker 线程在发出 Exited 前置位)
+                    // (alive=false 由 worker 线程在发出 Exited 前置位);
+                    // demo 后端的进程级单例线程不发 Exited(只因 APP_SHUTDOWN 退出)
                     let mine = {
-                        let mut w = shared.worker.lock().unwrap();
-                        let mine = match w.as_ref() {
+                        let mut s = shared.session.lock().unwrap();
+                        let mine = match s.as_ref() {
                             // 句柄已被 reset reconnect 提前取走:按幂等清理处理
                             None => true,
-                            Some(h) => !h.alive.load(Ordering::Relaxed),
+                            Some(h) => !h.handle.alive.load(Ordering::Relaxed),
                         };
                         if mine {
-                            *w = None;
+                            *s = None;
                         }
                         mine
                     };
                     if mine {
-                        *shared.cmd_tx.lock().unwrap() = None;
                         let prev = shared.connected.swap(false, Ordering::Relaxed);
                         if prev {
                             if let Some(cb) = &shared.on_state {
@@ -1085,6 +1139,8 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                 }
             }
         }
+        // 节流睡眠(本轮收尾):消化在前、睡眠在后,见循环头注释
+        std::thread::sleep(Duration::from_millis(FLUSH_MS));
     }
 }
 
@@ -1101,20 +1157,10 @@ async fn favicon() -> Response {
         .into_response()
 }
 
-/// demo 模式的演示设备信息(/api/status 的 device 字段;8 字段与真机同形,
-/// WS device 事件同字段名)
-fn demo_device_json() -> serde_json::Value {
-    serde_json::json!({
-        "firmware": "J-Link V11 demo", "hardware": "V11",
-        "serial": "600788888", "core": "Cortex-M4",
-        "cpu": "ARM 32-Bit", "target": "STM32F103C8",
-        "iface": "SWD", "speedKhz": 4000,
-    })
-}
-
 /// DeviceInfo → WS device 事件 / /api/status device 字段共用的 8 字段 JSON
-/// (单一构造点,键名契约由 device_info_json_keys_match_status_contract 锁定)
-fn device_info_json(info: &rtt::DeviceInfo) -> serde_json::Value {
+/// (单一构造点,键名契约由 device_info_json_keys_match_status_contract 锁定;
+/// demo 后端每次 false→true 迁移随发 DeviceInfo 演示九字段,亦经此单点)
+fn device_info_json(info: &DeviceInfo) -> serde_json::Value {
     serde_json::json!({
         "firmware": info.firmware, "hardware": info.hardware,
         "serial": info.serial, "core": info.core_name,
@@ -1125,20 +1171,14 @@ fn device_info_json(info: &rtt::DeviceInfo) -> serde_json::Value {
 
 async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value> {
     let connected = shared.connected.load(Ordering::Relaxed);
-    // device 8 字段(与 WS device 事件同形):demo 为演示数据且**仅连接态提供**
-    // (断开清空,与统计清零同口径;F2 前断开态仍回演示数据,前端设备信息
-    // 断开后看起来"仍连接"),真机取最近一次 DeviceInfo(State(false) 已清空,
-    // 断开后为 None)
-    let device = if shared.demo_mode && connected {
-        Some(demo_device_json())
-    } else {
-        shared
-            .device_info
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(device_info_json)
-    };
+    // device 8 字段(与 WS device 事件同形):由后端连接成功时发 DeviceInfo
+    // 消息供数,断开统一清空(State(false) 分支),与统计清零同口径
+    let device = shared
+        .device_info
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(device_info_json);
     let session_sec = shared
         .session_start
         .lock()
@@ -1155,6 +1195,7 @@ async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value
         "sessionStatus": shared.status_text.lock().unwrap().clone(),
         "device": device,
         "version": env!("CARGO_PKG_VERSION"),
+        "backend": shared.backend().id(),
     }))
 }
 
@@ -1176,6 +1217,29 @@ async fn api_prefs(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value>
         "sendEnding": *shared.send_ending.lock().unwrap(),
         "hexSend": shared.hex_send.load(Ordering::Relaxed),
         "jlinkSerial": *shared.jlink_serial.lock().unwrap(),
+        "backend": shared.backend().id(),
+    }))
+}
+
+/// /api/backends(阶段二后端可选面):当前选定 + 本进程可用后端列表。
+/// items 恒非空(普通形态 jlink+demo;--demo-log 强制形态仅 demo)。
+/// 文案来自后端实现的 &'static 字面量,前端仍按注入面纪律用 DOM API 渲染
+async fn api_backends(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value> {
+    let items: Vec<serde_json::Value> = shared
+        .backends_available
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "id": b.id(),
+                "name": b.display_name(),
+                "description": b.description(),
+                "isVirtual": b.is_virtual(),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "selected": shared.backend().id(),
+        "items": items,
     }))
 }
 
@@ -1224,23 +1288,9 @@ async fn api_history(State(shared): State<Arc<Shared>>) -> Json<Vec<String>> {
 }
 
 async fn api_devices(State(shared): State<Arc<Shared>>) -> Json<Vec<String>> {
-    // demo 模式返回演示设备库:无 J-Link 环境也能体验/测试补全交互
-    if shared.demo_mode {
-        return Json(demo_device_names());
-    }
+    // 设备候选统一从 shared.device_names 供数:jlink 来自后台枚举回传,
+    // demo 在装配期已由 initial_devices 种子(演示设备库)
     Json(shared.device_names.lock().unwrap().clone())
-}
-
-/// demo 模式的演示设备库(/api/devices 与 /api/connect 校验同源)
-fn demo_device_names() -> Vec<String> {
-    vec![
-        "STM32F103C8".into(),
-        "STM32F030C8".into(),
-        "STM32G474VET6".into(),
-        "STM32H743ZIT6".into(),
-        "GD32F303CCT6".into(),
-        "CH32V307VCT6".into(),
-    ]
 }
 
 async fn api_jlinks(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value> {
@@ -1251,63 +1301,29 @@ async fn api_jlinks(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value
         .collect::<Vec<_>>()))
 }
 
-/// spawn 真 worker 并登记句柄/命令通道(api_connect 与 reset reconnect 共用)。
-/// selected_sn:SavedConnect 携带的下拉选定值(已在 api_connect 对列表校验),
-/// 无选定/已失效时回落列表首台(旧行为)
-fn spawn_worker(shared: &Shared, params: &SavedConnect) {
-    let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCmd>();
-    let handle = rtt::spawn(
-        WorkerConfig {
-            chip: params.chip.clone(),
-            iface_index: params.iface_index,
-            speed_khz: SPEEDS_KHZ[params.speed_index.min(SPEEDS_KHZ.len() - 1)],
-            channel: params.channel.min(15),
-            frame_timeout_ms: shared.frame_timeout_ms.clone(),
-            selected_sn: params
-                .jlink_sn
-                .or_else(|| shared.jlinks.lock().unwrap().first().map(|(sn, _)| *sn)),
-            encoding_index: shared.encoding_index.clone(),
-            hex_rx: shared.hex_rx.clone(),
-        },
-        shared.msg_tx.clone(),
-        cmd_rx,
-    );
-    *shared.worker.lock().unwrap() = Some(handle);
-    *shared.cmd_tx.lock().unwrap() = Some(cmd_tx);
-}
-
-/// 连接:芯片名补全(库内子串匹配首个全称,与桌面版同规则)→ 连接参数写入
-/// 偏好快照源 → spawn worker(demo 模式命令进 demo 线程模拟连接,不加载 DLL)
+/// 连接:连接前门禁(后端 can_connect,Err→409)→ 芯片名补全(库内子串
+/// 匹配首个全称,与桌面版同规则)→ 连接参数写入偏好快照源 → 后端 connect
+/// (jlink spawn worker;demo 命令进单例线程模拟连接,不加载 DLL)
 async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectReq>) -> Response {
-    if shared
-        .worker
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|h| h.alive.load(Ordering::Relaxed))
-    {
-        return (StatusCode::CONFLICT, "已有连接").into_response();
-    }
-    // reset reconnect 的 1 秒等待窗口内 worker 已被 take 清空,上面的存活检查
-    // 会放行——重连门闩在此堵住双 worker 并发(审计 P1)
+    let backend = shared.backend();
+    // reset reconnect 的 1 秒等待窗口内 session 已被 take 清空,存活检查
+    // 会放行——重连门闩在此堵住双 worker 并发(审计 P1;demo 后端不会
+    // 置位此门闩,通用检查对其恒放行,与现状一致)
     if shared.reconnecting.load(Ordering::Relaxed) {
         return (StatusCode::CONFLICT, "正在自动重连,请稍候").into_response();
     }
-    // 设备库枚举进行中(仅首次启动无缓存的几秒):与 connect 并发加载 DLL
-    // 有损坏 DLL TLS 的风险(原 Python 项目实测),恢复 BUSY 门闩检查(审计 P2)
-    if device_db::busy() {
-        return (StatusCode::CONFLICT, "设备库枚举中,请稍候几秒再连接").into_response();
+    // 后端门禁(存活检查「已有连接」/ BUSY 门闩「设备库枚举中,请稍候几秒
+    // 再连接」;demo 恒 Ok)——文案由后端提供,与现状逐字一致
+    if let Err(msg) = backend.can_connect(&*shared) {
+        return (StatusCode::CONFLICT, msg).into_response();
     }
     let chip_raw = req.chip.trim().to_string();
     if chip_raw.is_empty() {
         return (StatusCode::BAD_REQUEST, "请先填写目标芯片型号").into_response();
     }
-    // 校验名单与前端看到的候选同源:demo 用演示设备库,真机用设备库枚举结果
-    let full: Vec<String> = if shared.demo_mode {
-        demo_device_names()
-    } else {
-        shared.device_names.lock().unwrap().clone()
-    };
+    // 校验名单与前端看到的候选同源:统一取 shared.device_names(demo 的
+    // 演示设备库已在装配期种子进同一槽)
+    let full: Vec<String> = shared.device_names.lock().unwrap().clone();
     let exact = full.iter().any(|n| n.eq_ignore_ascii_case(&chip_raw));
     let chip = if exact {
         chip_raw
@@ -1343,7 +1359,7 @@ async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectR
     *shared.channel.lock().unwrap() = channel;
     *shared.jlink_serial.lock().unwrap() = jlink_sn;
     // 上次连接参数:reset reconnect 模式的重连来源(demo 也记录,语义一致)
-    let params = SavedConnect {
+    let params = ConnectParams {
         chip: chip.clone(),
         iface_index,
         speed_index,
@@ -1352,47 +1368,27 @@ async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectR
     };
     *shared.last_connect.lock().unwrap() = Some(params.clone());
 
-    if shared.demo_mode {
-        // demo 虚拟 worker:命令进 demo 线程,立即 State(true)(F2 前此处
-        // 只记录参数,「连接」按钮在 demo 下完全无效)
-        if let Some(tx) = shared.cmd_tx.lock().unwrap().as_ref() {
-            let _ = tx.send(WorkerCmd::DemoConnect);
-        }
-        return StatusCode::OK.into_response();
+    if let Err(msg) = backend.connect(&*shared, &params) {
+        return (StatusCode::CONFLICT, msg).into_response();
     }
-
-    spawn_worker(&shared, &params);
     StatusCode::OK.into_response()
 }
 
-/// 断开:置停止标志,worker 的 Exited 消息回到未连接态(与桌面版同协议);
-/// demo 模式命令进 demo 线程(手动断开后不自动重连,由 demo 状态机保证)
+/// 断开:走当前后端(jlink = 置停止标志 + 空发送唤醒,Exited 消息回到
+/// 未连接态;demo = 内部 Disconnect 命令,手动断开后不自动重连,由 demo
+/// 状态机保证)
 async fn api_disconnect(State(shared): State<Arc<Shared>>) -> StatusCode {
-    if shared.demo_mode {
-        if let Some(tx) = shared.cmd_tx.lock().unwrap().as_ref() {
-            let _ = tx.send(WorkerCmd::DemoDisconnect);
-        }
-        return StatusCode::OK;
-    }
-    if let Some(h) = shared.worker.lock().unwrap().as_ref() {
-        h.stop.store(true, Ordering::Relaxed);
-    }
-    if let Some(tx) = shared.cmd_tx.lock().unwrap().as_ref() {
-        let _ = tx.send(WorkerCmd::Send(Vec::new())); // 唤醒阻塞中的 worker 尽快退出
-    }
+    shared.backend().disconnect(&*shared);
     StatusCode::OK
 }
 
 async fn api_power(State(shared): State<Arc<Shared>>, Json(req): Json<PowerReq>) -> Response {
-    // demo 与真机同语义:未连接拒绝(前端此时也禁用勾选框)
-    if shared.demo_mode && !shared.connected.load(Ordering::Relaxed) {
-        return (StatusCode::CONFLICT, "未连接").into_response();
+    // demo 与真机同语义:未连接拒绝(前端此时也禁用勾选框;409 文案由
+    // 后端提供,与现状逐字一致)
+    match shared.backend().power(&*shared, req.on) {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(msg) => (StatusCode::CONFLICT, msg).into_response(),
     }
-    let Some(tx) = shared.cmd_tx.lock().unwrap().clone() else {
-        return (StatusCode::CONFLICT, "未连接").into_response();
-    };
-    let _ = tx.send(WorkerCmd::Power(req.on));
-    StatusCode::OK.into_response()
 }
 
 #[derive(Deserialize)]
@@ -1403,41 +1399,12 @@ struct ResetReq {
     mode: Option<String>,
 }
 
-/// 断开 worker 供重连(reset reconnect 专用):置停止标志 + 空发送唤醒阻塞中
-/// 的读循环,引用立即清空;旧句柄返回给重连线程,等线程真正退出后才重连。
-/// 与 /api/disconnect 有意不同:那边保留句柄到 Exited 到达,维持"worker 存活
-/// 期间拒绝新连接"的门闩;这边等待职责由重连线程接管。
-fn take_worker_down(shared: &Shared) -> Option<Arc<WorkerHandle>> {
-    let old = shared.worker.lock().unwrap().take();
-    if let Some(h) = &old {
-        h.stop.store(true, Ordering::Relaxed);
-    }
-    if let Some(tx) = shared.cmd_tx.lock().unwrap().take() {
-        let _ = tx.send(WorkerCmd::Send(Vec::new())); // 唤醒阻塞中的 worker 尽快退出
-    }
-    old
-}
-
-/// 等旧 worker 线程退出(alive=false 由线程在发出 Exited 前置位);超时返回
-/// false——此时严禁 spawn 新 worker,见 rtt.rs「worker 生命周期铁律」
-fn wait_worker_exit(h: Option<&Arc<WorkerHandle>>, timeout: Duration) -> bool {
-    let Some(h) = h else {
-        return true;
-    };
-    let deadline = Instant::now() + timeout;
-    while h.alive.load(Ordering::Relaxed) {
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    true
-}
-
 /// 复位两模式:in-place = 现有 Reset 命令(worker 复位目标并重挂 RTT 续收);
 /// reconnect = 先走断开逻辑,1 秒后用上次连接参数重新 spawn worker(重启服务
-/// 且无上次参数 → 409)。demo 无真实目标:命令进 demo 线程模拟(日志行 +
-/// 短暂 State(false→true)),未连接态与真机同语义 409。
+/// 且无上次参数 → 409)。mode 解析、last_connect 检查、reconnecting 门闩置位
+/// 留在 web 层;具体执行走当前后端——reset_reconnect 不被支持时(demo,
+/// caps().reset_reconnect == false)一律回落 reset_in_place,与现状「demo
+/// 忽略 mode」逐字等价。
 async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
     // 兼容旧前端:POST 无请求体 = 缺省 in-place;非空则必须是合法 JSON
     let req: ResetReq = if body.is_empty() {
@@ -1451,23 +1418,20 @@ async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
             }
         }
     };
-    if shared.demo_mode {
-        if !shared.connected.load(Ordering::Relaxed) {
-            return (StatusCode::CONFLICT, "未连接").into_response();
-        }
-        if let Some(tx) = shared.cmd_tx.lock().unwrap().as_ref() {
-            let _ = tx.send(WorkerCmd::Reset);
-        }
-        return StatusCode::OK.into_response();
+    let backend = shared.backend();
+    // 不支持重连式复位的后端(demo):忽略 mode,一律 in-place 模拟
+    // (未连接 409,文案由后端提供与现状逐字一致)
+    if !backend.caps().reset_reconnect {
+        return match backend.reset_in_place(&*shared) {
+            Ok(()) => StatusCode::OK.into_response(),
+            Err(msg) => (StatusCode::CONFLICT, msg).into_response(),
+        };
     }
     match parse_reset_mode(req.mode.as_deref()) {
-        ResetMode::InPlace => {
-            let Some(tx) = shared.cmd_tx.lock().unwrap().clone() else {
-                return (StatusCode::CONFLICT, "未连接").into_response();
-            };
-            let _ = tx.send(WorkerCmd::Reset);
-            StatusCode::OK.into_response()
-        }
+        ResetMode::InPlace => match backend.reset_in_place(&*shared) {
+            Ok(()) => StatusCode::OK.into_response(),
+            Err(msg) => (StatusCode::CONFLICT, msg).into_response(),
+        },
         ResetMode::Reconnect => {
             // 已在重连等待期:拒绝重复触发(避免多个重连线程叠跑)
             if shared.reconnecting.load(Ordering::Relaxed) {
@@ -1476,37 +1440,18 @@ async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
             let Some(params) = shared.last_connect.lock().unwrap().clone() else {
                 return (StatusCode::CONFLICT, "无上次连接参数,无法重连").into_response();
             };
-            // 断开 → 1 秒后用上次参数重连(独立线程,HTTP 立即返回 200)
-            let old = take_worker_down(&shared);
-            // 重连等待期门闩(审计 P1):此刻起 api_connect 以 409 拒绝,
-            // 直到本线程让位或重连完成
+            // 重连等待期门闩(审计 P1):调用 reset_reconnect 之前置位(设计
+            // 契约 §3.2,比历史 take 后置位更保守,两行间无 await,可观测
+            // 等价)——此刻起 api_connect 以 409 拒绝,直到重连线程收尾清除
             shared.reconnecting.store(true, Ordering::Relaxed);
-            let shared2 = Arc::clone(&shared);
-            std::thread::spawn(move || {
-                let clear = |shared: &Arc<Shared>| {
+            match backend.reset_reconnect(shared.clone(), &params) {
+                Ok(()) => StatusCode::OK.into_response(),
+                Err(msg) => {
+                    // 后端未受理(理论不可达):门闩回滚,避免永久堵死连接
                     shared.reconnecting.store(false, Ordering::Relaxed);
-                };
-                std::thread::sleep(Duration::from_secs(1));
-                // 铁律:旧 worker 线程存活期间严禁 spawn 新 worker(双 worker
-                // 抢 J-Link 是数据损坏/状态错乱的根源)——先等旧线程真正退出
-                if !wait_worker_exit(old.as_ref(), Duration::from_secs(3)) {
-                    let _ = shared2.msg_tx.send(WorkerMsg::Log(
-                        "[自动重连] 上一连接未退出,已放弃本次重连\r\n".into(),
-                    ));
-                    clear(&shared2);
-                    return;
+                    (StatusCode::CONFLICT, msg).into_response()
                 }
-                // 等待期内用户已手动连接则让位;进程退出中不再拉起 worker
-                if shared2.worker.lock().unwrap().is_some()
-                    || rtt::APP_SHUTDOWN.load(Ordering::Relaxed)
-                {
-                    clear(&shared2);
-                    return;
-                }
-                spawn_worker(&shared2, &params);
-                clear(&shared2);
-            });
-            StatusCode::OK.into_response()
+            }
         }
     }
 }
@@ -1571,6 +1516,35 @@ async fn api_settings(State(shared): State<Arc<Shared>>, Json(req): Json<Setting
     }
     if let Some(v) = req.channel {
         *shared.channel.lock().unwrap() = v.clamp(0, 15);
+    }
+    // 后端切换(阶段二):未知/不可用 id → 400;连接态(判据 shared.connected,
+    // 不是 session 槽——demo 的会话槽恒活)→ 409「断开后才能切换后端」;
+    // 成功 = 换 Shared.backend 引用(写偏好走 snapshot_prefs 快照链路)+
+    // 旧后端 on_deselected + 新后端 on_selected(切走 demo 发内部 Disconnect
+    // 清连接态;切回 jlink 清候选 + 枚举回填)。同 id 幂等 no-op:不触发回调,
+    // 防止 demo 的 on_deselected 手动断开永久挂起 20s/3s 自动周期
+    if let Some(id) = req.backend.as_deref() {
+        let Some(target) = shared
+            .backends_available
+            .iter()
+            .copied()
+            .find(|b| b.id() == id)
+        else {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("未知或不可用的后端:{id}"),
+            )
+                .into_response();
+        };
+        if shared.connected.load(Ordering::Relaxed) {
+            return (StatusCode::CONFLICT, "断开后才能切换后端").into_response();
+        }
+        let old = shared.backend();
+        if old.id() != target.id() {
+            old.on_deselected(&*shared);
+            *shared.backend.lock().unwrap() = target;
+            target.on_selected(&*shared);
+        }
     }
     StatusCode::OK.into_response()
 }
@@ -1897,16 +1871,6 @@ mod tests {
     }
 
     #[test]
-    fn text_to_hex_upper_matches_worker_hex_format() {
-        assert_eq!(text_to_hex_upper(""), "");
-        assert_eq!(text_to_hex_upper("AB"), "41 42 ");
-        // 契约示例:"5B 20 64 65…" = "[ de" 的 UTF-8 字节(4 字节)
-        assert_eq!(text_to_hex_upper("[ de"), "5B 20 64 65 ");
-        // 多字节 UTF-8 按字节展开:"你" = E4 BD A0
-        assert_eq!(text_to_hex_upper("你"), "E4 BD A0 ");
-    }
-
-    #[test]
     fn state_marker_line_uses_manual_mark_style() {
         assert_eq!(marker_line("已连接", "01:02:03"), "── [01:02:03] 已连接 ──");
         assert_eq!(marker_line("已断开", "23:59:59"), "── [23:59:59] 已断开 ──");
@@ -1937,7 +1901,7 @@ mod tests {
     fn device_info_json_keys_match_status_contract() {
         // 审计 P3(Device 分支自引用恒真):键名契约在这里显式锁定——
         // WS device 事件与 /api/status device 字段共用 device_info_json 单点
-        let info = rtt::DeviceInfo {
+        let info = DeviceInfo {
             firmware: "f".into(),
             hardware: "h".into(),
             serial: "1".into(),
@@ -1968,6 +1932,44 @@ mod tests {
     }
 
     #[test]
+    fn settings_req_accepts_backend_key() {
+        // 阶段二:backend 可选键(缺省 None = 不切换请求;命中 = 切数据源)
+        let req: SettingsReq = serde_json::from_str(r#"{"backend":"demo"}"#).unwrap();
+        assert_eq!(req.backend.as_deref(), Some("demo"));
+        let req: SettingsReq = serde_json::from_str("{}").unwrap();
+        assert_eq!(req.backend, None);
+        // 与其它字段共存(逐字段可选语义)
+        let req: SettingsReq =
+            serde_json::from_str(r#"{"backend":"jlink","hexRx":true}"#).unwrap();
+        assert_eq!(req.backend.as_deref(), Some("jlink"));
+        assert_eq!(req.hex_rx, Some(true));
+    }
+
+    #[test]
+    fn resolve_backend_cli_then_pref_then_first() {
+        let jlink = backend::backend_by_id(backend::BACKEND_JLINK).unwrap();
+        let demo = backend::backend_by_id(backend::BACKEND_DEMO).unwrap();
+        let normal = [jlink, demo];
+        let forced = [demo];
+        let id_of = |b: &'static dyn RttBackend| b.id();
+        // ① CLI 命中可用列表 → 最高优先
+        assert_eq!(id_of(resolve_backend(Some("demo"), "jlink", &normal)), "demo");
+        // ② CLI 非法(未知 id)→ 忽略,偏好生效
+        assert_eq!(id_of(resolve_backend(Some("nope"), "demo", &normal)), "demo");
+        // ③ CLI 合法但强制形态不含该后端 → 忽略回落(--demo-log 恒 demo)
+        assert_eq!(id_of(resolve_backend(Some("jlink"), "jlink", &forced)), "demo");
+        // ④ 偏好归一化:不在可用列表(未知/空)→ 回落列表首个(普通形态 = jlink)
+        assert_eq!(id_of(resolve_backend(None, "probe-rs", &normal)), "jlink");
+        assert_eq!(id_of(resolve_backend(None, "", &normal)), "jlink");
+        // ⑤ 强制形态偏好是 jlink 也不可用 → 列表首个 = demo
+        assert_eq!(id_of(resolve_backend(None, "jlink", &forced)), "demo");
+        // ⑥ 偏好 demo + 普通形态 → demo(界面选后端持久化恢复的核心价值)
+        assert_eq!(id_of(resolve_backend(None, "demo", &normal)), "demo");
+        // id 匹配大小写敏感(与 backend_by_id 同口径),不静默归一
+        assert_eq!(id_of(resolve_backend(Some("DEMO"), "jlink", &normal)), "jlink");
+    }
+
+    #[test]
     fn connect_req_tolerates_missing_jlink_sn() {
         // jlinkSn 可选(缺省 = 自动选首台);命中时反序列化为 Some
         let req: ConnectReq = serde_json::from_str(r#"{"chip":"STM32F103C8"}"#).unwrap();
@@ -1975,32 +1977,6 @@ mod tests {
         let req: ConnectReq =
             serde_json::from_str(r#"{"chip":"STM32F103C8","jlinkSn":600788888}"#).unwrap();
         assert_eq!(req.jlink_sn, Some(600788888));
-    }
-
-    #[test]
-    fn saved_connect_from_prefs_clamps_and_requires_chip() {
-        let mut p = StoredPrefs::default();
-        assert_eq!(SavedConnect::from_prefs(&p), None); // 从未连接过
-        p.chip_name = "  STM32F103C8 ".into();
-        p.iface_index = 5; // 越界 → 夹到 1
-        p.speed_index = 99; // 越界 → 夹到 7(SPEEDS_KHZ 上限)
-        p.channel = 99; // 越界 → 夹到 15
-        assert_eq!(
-            SavedConnect::from_prefs(&p),
-            Some(SavedConnect {
-                chip: "STM32F103C8".into(),
-                iface_index: 1,
-                speed_index: 7,
-                channel: 15,
-                jlink_sn: None,
-            })
-        );
-        // J-Link 序列号随偏好恢复(reset reconnect 重连同一台)
-        p.jlink_serial = Some(602717758);
-        assert_eq!(
-            SavedConnect::from_prefs(&p).unwrap().jlink_sn,
-            Some(602717758)
-        );
     }
 
     #[test]

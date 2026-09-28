@@ -117,15 +117,18 @@ def test_fr22_demo_stream_appends_rows(page):
 
 
 def test_api_status_contract(server):
-    """/api/status 字段契约:connected/rxBytes/txBytes/rowsTotal/uptimeSec。
+    """/api/status 字段契约:connected/rxBytes/txBytes/rowsTotal/uptimeSec/backend。
 
     (2026-09-28 清理:前端与测试都不消费的 phase/port 死字段已从契约删除,
-    此前的 port 字段值还是 "jlink"/"demo",与字段名语义相悖。)"""
+    此前的 port 字段值还是 "jlink"/"demo",与字段名语义相悖。
+    阶段二后端可选面:backend=当前数据采集后端 id;fixture 为 --demo-log
+    强制形态,恒为 "demo"。)"""
     data = json.load(urllib.request.urlopen(f"{BASE}/api/status"))
-    for key in ("connected", "rxBytes", "txBytes", "rowsTotal", "uptimeSec"):
+    for key in ("connected", "rxBytes", "txBytes", "rowsTotal", "uptimeSec", "backend"):
         assert key in data, f"缺字段 {key}"
     assert data["connected"] is True
     assert isinstance(data["rowsTotal"], int)
+    assert data["backend"] == "demo", f"强制 demo 形态 backend 应为 demo:实测 {data['backend']}"
 
 
 def test_fr20_theme_switch_updates_tokens(page):

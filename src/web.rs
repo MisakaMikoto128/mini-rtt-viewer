@@ -6,7 +6,7 @@
 //!
 //! API 契约(与前端/测试对齐,改这里必同步 ui/web/index.html 与 tests/web):
 //! - GET  /                管理台单页
-//! - GET  /api/status      → {connected, phase, port, rxBytes, txBytes, rowsTotal,
+//! - GET  /api/status      → {connected, rxBytes, txBytes, rowsTotal,
 //!   uptimeSec, sessionSec, sessionStatus, device, version};device 8 字段
 //!   {firmware,hardware,serial,core,cpu,target,iface,speedKhz}(demo 模式为演示
 //!   数据);sessionSec=连接会话秒(State 连接迁移记起点,断开清零,demo 启动即
@@ -19,8 +19,9 @@
 //! - GET  /api/devices     → [芯片型号]
 //! - GET  /api/jlinks      → [{sn, name}]
 //! - GET  /api/history     → [text] 发送历史(最新在前,上限 50)
-//! - POST /api/connect     {chip, ifaceIndex, speedIndex, channel};连接参数写入偏好
-//!   快照源;demo 模式命令进 demo 线程模拟连接(demo 状态机),不加载 DLL
+//! - POST /api/connect     {chip, ifaceIndex, speedIndex, channel, jlinkSn?};
+//!   jlinkSn = 「J-Link」下拉选中的序列号(缺省/无效回落列表首台);连接参数
+//!   写入偏好快照源;demo 模式命令进 demo 线程模拟连接(demo 状态机),不加载 DLL
 //! - POST /api/disconnect  demo 模式命令进 demo 线程(手动断开后不自动重连)
 //! - POST /api/power       {on};demo 未连接 409,连接态日志行反馈(demo 无法真供电)
 //! - POST /api/reset       {mode?: "in-place"|"reconnect"};缺省 in-place(现有
@@ -72,7 +73,7 @@ use crate::ansi;
 use crate::config::{self, StoredPrefs};
 use crate::demo;
 use crate::device_db;
-use crate::log_model::{LogPump, MAX_LOG_ROWS};
+use crate::log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS, MAX_LOG_ROWS};
 use crate::rtt::{self, WorkerCmd, WorkerConfig, WorkerHandle, WorkerMsg, SPEEDS_KHZ};
 use axum::{
     body::Bytes,
@@ -155,6 +156,11 @@ pub fn run(opts: WebOptions) -> anyhow::Result<()> {
 /// 桌面壳装配:服务整体搬后台线程(主线程留给 tao 事件循环,见模块头注释)。
 /// 返回 ready 通道:`Ok(addr)` = 服务就绪;`Err` = 启动失败(端口被占等)。
 /// 就绪后的连接状态变化经 `on_event` 回调转发(gui 侧映射成 EventLoopProxy 事件)。
+///
+/// 契约(审计登记的一次性语义):ready 通道是**单向一次性**握手,服务线程
+/// 没有 cancel 句柄——**调用方在 READY_TIMEOUT 超时后必须退出进程**(main.rs
+/// 对 run_gui 的 Err 一律 process::exit),否则后台服务线程仍持有 tokio
+/// runtime 与可能已成功的端口绑定,下次启动会被误判「已有实例」。
 pub fn spawn_gui_service(
     opts: WebOptions,
     on_event: OnEvent,
@@ -208,11 +214,18 @@ struct Shared {
     worker: Mutex<Option<Arc<WorkerHandle>>>,
     cmd_tx: Mutex<Option<mpsc::Sender<WorkerCmd>>>,
     msg_tx: mpsc::Sender<WorkerMsg>,
+    /// reset reconnect 的 1 秒等待窗口门闩(审计 P1):take_worker_down 已把
+    /// worker 清空,此期间 api_connect 的存活检查会放行——用独立标志堵住
+    /// 「复位重连等待期内手动点连接 → 双 worker 并发抢 J-Link」的窗口
+    reconnecting: AtomicBool,
     frame_timeout_ms: Arc<AtomicU32>,
     encoding_index: Arc<AtomicU32>,
     hex_rx: Arc<AtomicBool>,
     device_names: Mutex<Vec<String>>,
     jlinks: Mutex<Vec<(u32, String)>>,
+    /// 「J-Link」下拉选中的调试器序列号(连接时校验后在列表内才生效;
+    /// None = 自动选首台。经快照落盘,prefs.jlink_serial 恢复)
+    jlink_serial: Mutex<Option<u32>>,
     device_info: Mutex<Option<rtt::DeviceInfo>>,
     demo_mode: bool,
     /// 连接状态变化回调(gui 壳注入,驱动托盘图标;纯服务模式 None)
@@ -368,6 +381,7 @@ fn snapshot_prefs(s: &Shared) -> StoredPrefs {
     p.timer_send = s.timer_on.load(Ordering::Relaxed);
     p.timer_interval = format!("{}", *s.timer_interval.lock().unwrap());
     p.send_history = s.send_history.lock().unwrap().clone();
+    p.jlink_serial = *s.jlink_serial.lock().unwrap();
     p.send_ending = *s.send_ending.lock().unwrap();
     p.hex_send = s.hex_send.load(Ordering::Relaxed);
     p
@@ -453,6 +467,10 @@ struct ConnectReq {
     speed_index: usize,
     #[serde(default)]
     channel: u32,
+    /// 「J-Link」下拉选中的序列号(前端 1273 行起接线;缺省/不在当前列表内
+    /// 一律回落列表首台,与旧行为兼容)
+    #[serde(default)]
+    jlink_sn: Option<u32>,
 }
 
 /// 上次成功连接的参数(reset reconnect 模式 1 秒后用它重连;字段均已夹取)
@@ -462,6 +480,7 @@ struct SavedConnect {
     iface_index: usize,
     speed_index: usize,
     channel: u32,
+    jlink_sn: Option<u32>,
 }
 
 impl SavedConnect {
@@ -476,6 +495,7 @@ impl SavedConnect {
             iface_index: p.iface_index.clamp(0, 1) as usize,
             speed_index: p.speed_index.clamp(0, SPEEDS_KHZ.len() as i32 - 1) as usize,
             channel: p.channel.clamp(0, 15) as u32,
+            jlink_sn: p.jlink_serial,
             chip,
         })
     }
@@ -571,7 +591,7 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         .parse::<u32>()
         .ok()
         .map(|v| v.clamp(1, 200))
-        .unwrap_or(20);
+        .unwrap_or(DEFAULT_FRAME_TIMEOUT_MS);
     let timer_interval_init = saved
         .timer_interval
         .trim()
@@ -582,6 +602,8 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
 
     let (events_tx, _) = broadcast::channel(512);
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
+    // saved 的字段随后被逐个 move/partial move,先取出共享原子的初值
+    let jlink_serial_init = saved.jlink_serial;
     let shared = Arc::new(Shared {
         pump: Mutex::new(LogPump::default()),
         rx_ending: Mutex::new(saved.rx_ending.clamp(0, 4)),
@@ -595,11 +617,13 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         worker: Mutex::new(None),
         cmd_tx: Mutex::new(None),
         msg_tx: msg_tx.clone(),
+        reconnecting: AtomicBool::new(false),
         frame_timeout_ms: Arc::new(AtomicU32::new(frame_timeout_init)),
         encoding_index: Arc::new(AtomicU32::new(saved.encoding_index.clamp(0, 4) as u32)),
         hex_rx: Arc::new(AtomicBool::new(saved.hex_rx)),
         device_names: Mutex::new(Vec::new()),
         jlinks: Mutex::new(Vec::new()),
+        jlink_serial: Mutex::new(jlink_serial_init),
         device_info: Mutex::new(None),
         demo_mode: opts.demo,
         prefs_base: saved.clone(),
@@ -766,10 +790,17 @@ struct AddrInfo {
     lan_ip: Option<String>,
 }
 async fn api_addr(State(shared): State<Arc<Shared>>) -> Json<AddrInfo> {
+    // lan_ipv4 的 UDP connect 是同步阻塞调用(审计 P2):网络栈异常/杀软拦截
+    // 时可达数百 ms,放 spawn_blocking 避免冻结 tokio worker 线程上的并发请求
+    let lan_ip = tokio::task::spawn_blocking(lan_ipv4)
+        .await
+        .ok()
+        .flatten()
+        .map(|i| i.to_string());
     Json(AddrInfo {
         port: shared.port,
         open: !shared.listen.is_loopback(),
-        lan_ip: lan_ipv4().map(|i| i.to_string()),
+        lan_ip,
     })
 }
 
@@ -864,7 +895,7 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
     // 因 elapsed 已超时立即发——与桌面版 tick step 6 同语义)
     let mut last_timer = Instant::now();
     loop {
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(FLUSH_MS));
         let rx_ending = *shared.rx_ending.lock().unwrap();
         let auto_frame = shared.auto_frame.load(Ordering::Relaxed);
         let mut pump = shared.pump.lock().unwrap();
@@ -933,17 +964,19 @@ fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
                     }
                     // 状态文案每条 State 都刷新(连接失败的错误详情也随 false 态带出)
                     *shared.status_text.lock().unwrap() = clean_status_text(&status);
+                    // WS 广播用清洗后的文案(审计 P1):status_text 的语义是
+                    // 「去横幅圆点前缀」,WS state 事件与 /api/status 的
+                    // sessionStatus 必须同口径,避免前端按已清洗消费却拿到原文
                     let _ = shared.events_tx.send(
-                        serde_json::to_string(&WsEvent::State { connected, status }).unwrap(),
+                        serde_json::to_string(&WsEvent::State {
+                            connected,
+                            status: clean_status_text(&status),
+                        })
+                        .unwrap(),
                     );
                 }
                 Ok(WorkerMsg::DeviceInfo(info)) => {
-                    let json = serde_json::json!({
-                        "firmware": info.firmware, "hardware": info.hardware,
-                        "serial": info.serial, "core": info.core_name,
-                        "cpu": info.core_cpu, "target": info.target,
-                        "iface": info.iface, "speedKhz": info.speed_khz,
-                    });
+                    let json = device_info_json(&info);
                     *shared.device_info.lock().unwrap() = Some(info);
                     let _ = shared
                         .events_tx
@@ -1079,6 +1112,17 @@ fn demo_device_json() -> serde_json::Value {
     })
 }
 
+/// DeviceInfo → WS device 事件 / /api/status device 字段共用的 8 字段 JSON
+/// (单一构造点,键名契约由 device_info_json_keys_match_status_contract 锁定)
+fn device_info_json(info: &rtt::DeviceInfo) -> serde_json::Value {
+    serde_json::json!({
+        "firmware": info.firmware, "hardware": info.hardware,
+        "serial": info.serial, "core": info.core_name,
+        "cpu": info.core_cpu, "target": info.target,
+        "iface": info.iface, "speedKhz": info.speed_khz,
+    })
+}
+
 async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value> {
     let connected = shared.connected.load(Ordering::Relaxed);
     // device 8 字段(与 WS device 事件同形):demo 为演示数据且**仅连接态提供**
@@ -1088,14 +1132,12 @@ async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value
     let device = if shared.demo_mode && connected {
         Some(demo_device_json())
     } else {
-        shared.device_info.lock().unwrap().as_ref().map(|d| {
-            serde_json::json!({
-                "firmware": d.firmware, "hardware": d.hardware,
-                "serial": d.serial, "core": d.core_name,
-                "cpu": d.core_cpu, "target": d.target,
-                "iface": d.iface, "speedKhz": d.speed_khz,
-            })
-        })
+        shared
+            .device_info
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(device_info_json)
     };
     let session_sec = shared
         .session_start
@@ -1105,8 +1147,6 @@ async fn api_status(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value
         .unwrap_or(0);
     Json(serde_json::json!({
         "connected": connected,
-        "phase": if connected { "connected" } else { "idle" },
-        "port": if connected { "jlink" } else { "demo" },
         "rxBytes": shared.rx_bytes.load(Ordering::Relaxed),
         "txBytes": shared.tx_bytes.load(Ordering::Relaxed),
         "rowsTotal": shared.pump.lock().unwrap().rows_len(),
@@ -1135,6 +1175,7 @@ async fn api_prefs(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value>
         "timerIntervalSec": *shared.timer_interval.lock().unwrap(),
         "sendEnding": *shared.send_ending.lock().unwrap(),
         "hexSend": shared.hex_send.load(Ordering::Relaxed),
+        "jlinkSerial": *shared.jlink_serial.lock().unwrap(),
     }))
 }
 
@@ -1211,8 +1252,8 @@ async fn api_jlinks(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value
 }
 
 /// spawn 真 worker 并登记句柄/命令通道(api_connect 与 reset reconnect 共用)。
-/// 注意:selected_sn 取 J-Link 列表**首台**——前端 #jlink 下拉的选中值尚未接入
-/// /api/connect(多台接入时下拉选择暂不生效,待接线;偏好 jlink_serial 同此)
+/// selected_sn:SavedConnect 携带的下拉选定值(已在 api_connect 对列表校验),
+/// 无选定/已失效时回落列表首台(旧行为)
 fn spawn_worker(shared: &Shared, params: &SavedConnect) {
     let (cmd_tx, cmd_rx) = mpsc::channel::<WorkerCmd>();
     let handle = rtt::spawn(
@@ -1222,7 +1263,9 @@ fn spawn_worker(shared: &Shared, params: &SavedConnect) {
             speed_khz: SPEEDS_KHZ[params.speed_index.min(SPEEDS_KHZ.len() - 1)],
             channel: params.channel.min(15),
             frame_timeout_ms: shared.frame_timeout_ms.clone(),
-            selected_sn: shared.jlinks.lock().unwrap().first().map(|(sn, _)| *sn),
+            selected_sn: params
+                .jlink_sn
+                .or_else(|| shared.jlinks.lock().unwrap().first().map(|(sn, _)| *sn)),
             encoding_index: shared.encoding_index.clone(),
             hex_rx: shared.hex_rx.clone(),
         },
@@ -1244,6 +1287,16 @@ async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectR
         .is_some_and(|h| h.alive.load(Ordering::Relaxed))
     {
         return (StatusCode::CONFLICT, "已有连接").into_response();
+    }
+    // reset reconnect 的 1 秒等待窗口内 worker 已被 take 清空,上面的存活检查
+    // 会放行——重连门闩在此堵住双 worker 并发(审计 P1)
+    if shared.reconnecting.load(Ordering::Relaxed) {
+        return (StatusCode::CONFLICT, "正在自动重连,请稍候").into_response();
+    }
+    // 设备库枚举进行中(仅首次启动无缓存的几秒):与 connect 并发加载 DLL
+    // 有损坏 DLL TLS 的风险(原 Python 项目实测),恢复 BUSY 门闩检查(审计 P2)
+    if device_db::busy() {
+        return (StatusCode::CONFLICT, "设备库枚举中,请稍候几秒再连接").into_response();
     }
     let chip_raw = req.chip.trim().to_string();
     if chip_raw.is_empty() {
@@ -1277,18 +1330,25 @@ async fn api_connect(State(shared): State<Arc<Shared>>, Json(req): Json<ConnectR
     let iface_index = req.iface_index.min(1);
     let speed_index = req.speed_index.min(SPEEDS_KHZ.len() - 1);
     let channel = req.channel.min(15);
+    // J-Link 选定:请求里的 sn 必须在当前列表内才生效(下拉可能是过期列表,
+    // 设备拔出后回落自动选首台,避免 connect 阶段「找不到序列号」直接失败)
+    let jlink_sn = req
+        .jlink_sn
+        .filter(|sn| shared.jlinks.lock().unwrap().iter().any(|(s, _)| s == sn));
 
     // 连接参数进偏好快照源(tick 内 500ms 落盘;重启后面板初值恢复)
     *shared.chip_name.lock().unwrap() = chip.clone();
     *shared.iface_index.lock().unwrap() = iface_index as i32;
     *shared.speed_index.lock().unwrap() = speed_index as i32;
     *shared.channel.lock().unwrap() = channel;
+    *shared.jlink_serial.lock().unwrap() = jlink_sn;
     // 上次连接参数:reset reconnect 模式的重连来源(demo 也记录,语义一致)
     let params = SavedConnect {
         chip: chip.clone(),
         iface_index,
         speed_index,
         channel,
+        jlink_sn,
     };
     *shared.last_connect.lock().unwrap() = Some(params.clone());
 
@@ -1409,13 +1469,23 @@ async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
             StatusCode::OK.into_response()
         }
         ResetMode::Reconnect => {
+            // 已在重连等待期:拒绝重复触发(避免多个重连线程叠跑)
+            if shared.reconnecting.load(Ordering::Relaxed) {
+                return (StatusCode::CONFLICT, "正在自动重连,请稍候").into_response();
+            }
             let Some(params) = shared.last_connect.lock().unwrap().clone() else {
                 return (StatusCode::CONFLICT, "无上次连接参数,无法重连").into_response();
             };
             // 断开 → 1 秒后用上次参数重连(独立线程,HTTP 立即返回 200)
             let old = take_worker_down(&shared);
+            // 重连等待期门闩(审计 P1):此刻起 api_connect 以 409 拒绝,
+            // 直到本线程让位或重连完成
+            shared.reconnecting.store(true, Ordering::Relaxed);
             let shared2 = Arc::clone(&shared);
             std::thread::spawn(move || {
+                let clear = |shared: &Arc<Shared>| {
+                    shared.reconnecting.store(false, Ordering::Relaxed);
+                };
                 std::thread::sleep(Duration::from_secs(1));
                 // 铁律:旧 worker 线程存活期间严禁 spawn 新 worker(双 worker
                 // 抢 J-Link 是数据损坏/状态错乱的根源)——先等旧线程真正退出
@@ -1423,27 +1493,32 @@ async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
                     let _ = shared2.msg_tx.send(WorkerMsg::Log(
                         "[自动重连] 上一连接未退出,已放弃本次重连\r\n".into(),
                     ));
+                    clear(&shared2);
                     return;
                 }
                 // 等待期内用户已手动连接则让位;进程退出中不再拉起 worker
                 if shared2.worker.lock().unwrap().is_some()
                     || rtt::APP_SHUTDOWN.load(Ordering::Relaxed)
                 {
+                    clear(&shared2);
                     return;
                 }
                 spawn_worker(&shared2, &params);
+                clear(&shared2);
             });
             StatusCode::OK.into_response()
         }
     }
 }
 
-/// 运行时参数:逐字段可选,worker 共享原子热切换(与桌面版同语义)
-async fn api_settings(
-    State(shared): State<Arc<Shared>>,
-    Json(req): Json<SettingsReq>,
-) -> StatusCode {
+/// 运行时参数:逐字段可选,worker 共享原子热切换(与桌面版同语义)。
+/// 负数一律 400(审计 P2:此前 i32 负值被 clamp(0,N) 静默夹成 0,调用方
+/// 得不到任何非法输入反馈;无符号字段负数由 serde 反序列化直接 400)
+async fn api_settings(State(shared): State<Arc<Shared>>, Json(req): Json<SettingsReq>) -> Response {
     if let Some(v) = req.rx_ending {
+        if v < 0 {
+            return (StatusCode::BAD_REQUEST, "rxEnding 不能为负数").into_response();
+        }
         *shared.rx_ending.lock().unwrap() = v.clamp(0, 4);
     }
     if let Some(v) = req.frame_timeout {
@@ -1452,6 +1527,9 @@ async fn api_settings(
             .store(v.clamp(1, 200), Ordering::Relaxed);
     }
     if let Some(v) = req.encoding_index {
+        if v < 0 {
+            return (StatusCode::BAD_REQUEST, "encodingIndex 不能为负数").into_response();
+        }
         shared
             .encoding_index
             .store(v.clamp(0, 4) as u32, Ordering::Relaxed);
@@ -1466,6 +1544,9 @@ async fn api_settings(
         shared.search_regex.store(v, Ordering::Relaxed);
     }
     if let Some(v) = req.send_ending {
+        if v < 0 {
+            return (StatusCode::BAD_REQUEST, "sendEnding 不能为负数").into_response();
+        }
         *shared.send_ending.lock().unwrap() = v.clamp(0, 3);
     }
     if let Some(v) = req.hex_send {
@@ -1477,15 +1558,21 @@ async fn api_settings(
         *shared.chip_name.lock().unwrap() = v.trim().to_string();
     }
     if let Some(v) = req.iface_index {
+        if v < 0 {
+            return (StatusCode::BAD_REQUEST, "ifaceIndex 不能为负数").into_response();
+        }
         *shared.iface_index.lock().unwrap() = v.clamp(0, 1);
     }
     if let Some(v) = req.speed_index {
+        if v < 0 {
+            return (StatusCode::BAD_REQUEST, "speedIndex 不能为负数").into_response();
+        }
         *shared.speed_index.lock().unwrap() = v.clamp(0, SPEEDS_KHZ.len() as i32 - 1);
     }
     if let Some(v) = req.channel {
         *shared.channel.lock().unwrap() = v.clamp(0, 15);
     }
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 async fn api_send(State(shared): State<Arc<Shared>>, Json(req): Json<SendReq>) -> Response {
@@ -1567,9 +1654,14 @@ fn state_marker_line(connected: bool) -> String {
 }
 
 /// worker 状态文案 → /api/status 展示文案:去横幅圆点前缀
-/// ("● 已连接 (demo)" → "已连接 (demo)")
+/// ("● 已连接 (demo)" → "已连接 (demo)")。循环剥离:双 bullet/前导空格
+/// 等变体也剥干净(审计 P3)
 fn clean_status_text(s: &str) -> String {
-    s.trim().trim_start_matches('●').trim().to_string()
+    let mut out = s.trim();
+    while let Some(stripped) = out.strip_prefix('●') {
+        out = stripped.trim();
+    }
+    out.to_string()
 }
 
 /// "YYYYMMDD_HHMMSS"(导出文件名)
@@ -1582,10 +1674,13 @@ fn now_stamp() -> String {
 }
 
 async fn api_mark(State(shared): State<Arc<Shared>>, Json(req): Json<MarkReq>) -> StatusCode {
+    const MARK_LABEL_CAP: usize = 200;
     let label = if req.text.is_empty() {
         "标记".to_string()
     } else {
-        req.text
+        // 512 单行兜底只作用于设备流(push_colored_line 不截),HTTP 直发的
+        // 标记在入口限长,防超长行经 WS/导出放大(审计 P3)
+        req.text.chars().take(MARK_LABEL_CAP).collect()
     };
     let mut pump = shared.pump.lock().unwrap();
     pump.push_colored_line(&marker_line(&label, &hms_stamp()), MARK_COLOR);
@@ -1611,17 +1706,15 @@ async fn api_clear(State(shared): State<Arc<Shared>>) -> StatusCode {
 /// 导出当前显示的全部日志(.log 纯文本附件:行文本 + \r\n 行尾,时间戳取
 /// 本地时间)
 async fn api_export(State(shared): State<Arc<Shared>>) -> Response {
-    let body = {
-        let pump = shared.pump.lock().unwrap();
-        let mut body = String::new();
-        for row in pump.snapshot_rows() {
-            for run in row {
-                body.push_str(&run.text);
-            }
-            body.push_str("\r\n");
+    // 锁内只做快照克隆,拼接放到锁外(审计 P3:缩短泵锁持有时间)
+    let rows = shared.pump.lock().unwrap().snapshot_rows();
+    let mut body = String::new();
+    for row in &rows {
+        for run in row {
+            body.push_str(&run.text);
         }
-        body
-    };
+        body.push_str("\r\n");
+    }
     let disposition = format!("attachment; filename=\"rtt_{}.log\"", now_stamp());
     (
         StatusCode::OK,
@@ -1641,7 +1734,11 @@ async fn ws_handler(ws: WebSocketUpgrade, State(shared): State<Arc<Shared>>) -> 
     ws.on_upgrade(move |socket| ws_loop(socket, shared))
 }
 
-/// WS 会话:初次全量快照 + 订阅事件流;Lagged 自动重同步
+/// WS 会话:初次全量快照 + 订阅事件流;Lagged 自动重同步。
+/// 重同步限流(审计 P2):慢消费者持续 Lagged 时,若每次都无条件发 500 行
+/// 快照,会形成「Lagged → 全量快照 → 又 Lagged」的重同步风暴(持泵锁全量
+/// 克隆+序列化,反噬数据泵节奏)。短窗内重同步过频即断开,由客户端重连取
+/// 新快照——重连粒度的循环替代每条消息粒度的风暴。
 async fn ws_loop(mut socket: WebSocket, shared: Arc<Shared>) {
     let mut rx = shared.events_tx.subscribe();
     {
@@ -1654,6 +1751,9 @@ async fn ws_loop(mut socket: WebSocket, shared: Arc<Shared>) {
             return;
         }
     }
+    // Lagged 重同步节流:1 秒内超过 3 次视为追不平,断开让客户端重连
+    let mut resync_window = Instant::now();
+    let mut resync_burst = 0u32;
     loop {
         tokio::select! {
             res = rx.recv() => {
@@ -1664,6 +1764,14 @@ async fn ws_loop(mut socket: WebSocket, shared: Arc<Shared>) {
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if resync_window.elapsed() >= Duration::from_secs(1) {
+                            resync_window = Instant::now();
+                            resync_burst = 0;
+                        }
+                        resync_burst += 1;
+                        if resync_burst > 3 {
+                            break;
+                        }
                         // 订阅滞后:丢弃的行不可恢复,重发全量快照让前端重同步
                         let snapshot = shared.pump.lock().unwrap().snapshot_rows();
                         let msg = serde_json::to_string(&WsEvent::Snapshot {
@@ -1820,6 +1928,53 @@ mod tests {
         assert_eq!(clean_status_text("● 已连接 (demo)"), "已连接 (demo)");
         assert_eq!(clean_status_text("● 未连接"), "未连接");
         assert_eq!(clean_status_text("plain"), "plain");
+        // 双 bullet / 前导空格变体(审计 P3:单次剥离剥不干净)
+        assert_eq!(clean_status_text("● ● 已连接"), "已连接");
+        assert_eq!(clean_status_text("  ● 已连接"), "已连接");
+    }
+
+    #[test]
+    fn device_info_json_keys_match_status_contract() {
+        // 审计 P3(Device 分支自引用恒真):键名契约在这里显式锁定——
+        // WS device 事件与 /api/status device 字段共用 device_info_json 单点
+        let info = rtt::DeviceInfo {
+            firmware: "f".into(),
+            hardware: "h".into(),
+            serial: "1".into(),
+            core_name: "c".into(),
+            core_id: "i".into(),
+            core_cpu: "cpu".into(),
+            target: "t".into(),
+            iface: "SWD".into(),
+            speed_khz: 4000,
+        };
+        let v = device_info_json(&info);
+        for k in [
+            "firmware", "hardware", "serial", "core", "cpu", "target", "iface", "speedKhz",
+        ] {
+            assert!(v.get(k).is_some(), "device 契约缺字段 {k}");
+        }
+        assert_eq!(v.get("speedKhz"), Some(&serde_json::json!(4000)));
+    }
+
+    #[test]
+    fn settings_negative_values_rejected() {
+        // 审计 P2:负数必须能在反序列化后识别(api_settings 据此 400),
+        // 而不是被 clamp 静默夹成 0
+        let req: SettingsReq = serde_json::from_str(r#"{"rxEnding":-1}"#).unwrap();
+        assert_eq!(req.rx_ending, Some(-1));
+        let req: SettingsReq = serde_json::from_str(r#"{"speedIndex":-5}"#).unwrap();
+        assert_eq!(req.speed_index, Some(-5));
+    }
+
+    #[test]
+    fn connect_req_tolerates_missing_jlink_sn() {
+        // jlinkSn 可选(缺省 = 自动选首台);命中时反序列化为 Some
+        let req: ConnectReq = serde_json::from_str(r#"{"chip":"STM32F103C8"}"#).unwrap();
+        assert_eq!(req.jlink_sn, None);
+        let req: ConnectReq =
+            serde_json::from_str(r#"{"chip":"STM32F103C8","jlinkSn":600788888}"#).unwrap();
+        assert_eq!(req.jlink_sn, Some(600788888));
     }
 
     #[test]
@@ -1837,7 +1992,14 @@ mod tests {
                 iface_index: 1,
                 speed_index: 7,
                 channel: 15,
+                jlink_sn: None,
             })
+        );
+        // J-Link 序列号随偏好恢复(reset reconnect 重连同一台)
+        p.jlink_serial = Some(602717758);
+        assert_eq!(
+            SavedConnect::from_prefs(&p).unwrap().jlink_sn,
+            Some(602717758)
         );
     }
 
@@ -1926,8 +2088,9 @@ mod tests {
             .unwrap(),
             r#"{"type":"state","connected":false,"status":"● 未连接 (demo)"}"#
         );
-        // device:info 载荷仍由原 json! 构造(与 /api/status 单点同源,未动),
-        // 断言只锁外层包装与历史 format! 逐字节同形
+        // device:info 载荷与 /api/status 的 device 同源(device_info_json 单点),
+        // 断言锁外层包装与历史 format! 逐字节同形;8 字段键名契约由
+        // device_info_json_keys_match_status_contract 单独锁定
         let info = serde_json::json!({
             "firmware": "J-Link V11 demo", "target": "STM32F103C8", "speedKhz": 4000,
         });

@@ -655,10 +655,16 @@
     // P1-8:与当前 #chip 值一致的候选常驻 accent 底白字(忽略大小写)
     const cur = ($('chip').value || '').trim().toUpperCase();
     const opts = chipOptions.filter(o => o.toUpperCase().includes(f));
-    list.innerHTML = opts.map(o =>
-      '<div class="opt' + (o.toUpperCase() === cur ? ' current' : '') +
-      '" data-v="' + o.replace(/"/g, '&quot;') + '">' + o + '</div>'
-    ).join('');
+    // 候选名来自设备库/磁盘缓存(device_names.txt 本机可篡改),innerHTML 拼接
+    // 是脚本注入面——DOM API 建 + textContent 承载名字(审计 F-2)
+    list.textContent = '';
+    for (const o of opts) {
+      const div = document.createElement('div');
+      div.className = 'opt' + (o.toUpperCase() === cur ? ' current' : '');
+      div.dataset.v = o;
+      div.textContent = o;
+      list.appendChild(div);
+    }
     list.style.display = (chipListOpen && opts.length) ? 'block' : 'none';
     list.querySelectorAll('.opt').forEach(el => {
       el.addEventListener('mousedown', e => { e.preventDefault(); pickChip(el.dataset.v); });
@@ -706,9 +712,29 @@
     $('chip-arrow').addEventListener('mousedown', e => e.preventDefault());
     $('chip-arrow').onclick = () => { chipListOpen ? closeChipList() : openChipList(''); };
   })();
+  // 选定的 J-Link 序列号(/api/prefs 恢复用):列表到达时若在列则套用一次
+  let pendingJlinkSn = null;
   function fillJlinks(list) {
-    $('jlink').innerHTML = '<option value="">自动</option>' +
-      list.map(j => '<option value="' + j.sn + '">' + j.name + '</option>').join('');
+    const sel = $('jlink');
+    const prev = sel.value; // 刷新(插拔/连接时 worker 重发)不清掉用户已选
+    // 产品名来自 DLL acProduct 固件字符串,innerHTML 拼接是注入面(审计 F-2)——
+    // DOM API 建,textContent 承载名字
+    sel.textContent = '';
+    const auto = document.createElement('option');
+    auto.value = '';
+    auto.textContent = '自动';
+    sel.appendChild(auto);
+    for (const j of list) {
+      const o = document.createElement('option');
+      o.value = j.sn;
+      o.textContent = j.name;
+      sel.appendChild(o);
+    }
+    const want = pendingJlinkSn != null ? String(pendingJlinkSn) : prev;
+    if (want && [...sel.options].some(o => o.value === want)) {
+      sel.value = want;
+      pendingJlinkSn = null;
+    }
   }
 
   function connect() {
@@ -718,6 +744,8 @@
       speedIndex: $('speed').selectedIndex,
       channel: +$('channel').value,
     };
+    // J-Link 下拉接线(审计 P1):选定才带 jlinkSn,空 = 服务端自动选首台
+    if ($('jlink').value !== '') body.jlinkSn = +$('jlink').value;
     fetch(API + '/api/connect', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
       .then(r => { if (!r.ok) r.text().then(t => { $('status').textContent = t; showToast(t); }); });
   }
@@ -1376,6 +1404,8 @@
       lsSet('search-regex', sregex ? '1' : '0');
       refreshToggles();
     }
+    // J-Link 下拉选定恢复(列表由 /api/jlinks 异步填充,这里先记下待套用)
+    if (p.jlinkSerial != null) pendingJlinkSn = p.jlinkSerial;
   }).catch(() => {});
   // 发送历史:服务端持久化(prefs.send_history,去重置顶上限 50)——启动拉一次,
   // 最新在前;本次会话新发送在 send() 里即时并入本地(同规则),↑↓ 浏览共用一份

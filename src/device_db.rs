@@ -65,14 +65,18 @@ pub fn spawn_background(tx: std::sync::mpsc::Sender<DbResult>) {
         if let Some(names) = load_cache() {
             let _ = tx.send(DbResult::DeviceNames(names));
         }
+        // BUSY 必须先于 JLinkDll::load() 置位(审计 P3):load 本身就是与
+        // connect 并发有风险的 DLL 调用,门闩要盖住整个 DLL 使用窗口
         DEVICE_DB_BUSY.store(true, Ordering::Relaxed);
         if let Ok(jlink) = JLinkDll::load() {
             if load_cache().is_none() {
                 let mut names = jlink.enumerate_device_names();
-                // 个别 DLL 版本 GetInfo 需要先 Open 才能读设备库:首轮为空则 Open 后重试一次
+                // 个别 DLL 版本 GetInfo 需要先 Open 才能读设备库:首轮为空则 Open 后重试一次;
+                // 用完立即 close——枚举线程不留孤儿 DLL 会话占用调试器(审计 P3)
                 if names.is_empty() {
                     jlink.open();
                     names = jlink.enumerate_device_names();
+                    jlink.close();
                 }
                 if !names.is_empty() {
                     let names = normalize(names);

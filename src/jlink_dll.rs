@@ -10,6 +10,7 @@
 
 use libloading::{Library, Symbol};
 use std::ffi::{c_char, c_int, c_uint, c_void, CString};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const RTT_CMD_START: c_int = 0;
 pub const RTT_CMD_STOP: c_int = 1;
@@ -19,6 +20,16 @@ pub const TIF_SWD: c_int = 1;
 
 pub struct JLinkDll {
     lib: Library,
+    /// close 幂等标志:显式 close 后 Drop 兜底不再重复调 JLINKARM_Close
+    closed: AtomicBool,
+}
+
+impl Drop for JLinkDll {
+    /// 兜底释放(审计 G-7):所有退出路径(含未来新增的提前 return)都保证
+    /// DLL 会话关闭,不再依赖调用方纪律。显式调用过 close 的实例在此为 no-op。
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 impl JLinkDll {
@@ -44,7 +55,10 @@ impl JLinkDll {
         for path in candidates.iter().chain(extra.iter()) {
             // libloading 需要 SAFESEARCH 处理,直接给绝对路径/裸名都可
             if let Ok(lib) = unsafe { Library::new(path) } {
-                return Ok(Self { lib });
+                return Ok(Self {
+                    lib,
+                    closed: AtomicBool::new(false),
+                });
             }
         }
         anyhow::bail!("找不到 JLink_x64.dll,请确认已安装 SEGGER J-Link 驱动")
@@ -88,7 +102,11 @@ impl JLinkDll {
         }
     }
 
+    /// 关闭 DLL 会话。幂等:重复调用是 no-op(Drop 兜底依赖此语义)。
     pub fn close(&self) {
+        if self.closed.swap(true, Ordering::Relaxed) {
+            return;
+        }
         unsafe {
             let f: Symbol<unsafe extern "C" fn()> = self.lib.get(b"JLINKARM_Close").unwrap();
             f()

@@ -12,6 +12,7 @@
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -31,11 +32,13 @@ EXE = os.environ.get("RTT_TEST_EXE") or r"target\release\mini-rtt-viewer.exe"
 _ACCENT_RGB = "rgb(43, 110, 143)"
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def server():
     # --no-window:纯服务模式(不开窗口/托盘,供 playwright 黑盒测试)。
     # APPDATA 指向临时目录:服务与测试环境隔离,不读不写用户真实偏好
-    # (面板初值恢复走的 /api/prefs 会回填持久化的 chip,干扰下拉交互用例)
+    # (面板初值恢复走的 /api/prefs 会回填持久化的 chip,干扰下拉交互用例)。
+    # 必须 module 级:session 级会让服务活到整场会话结束,后面的 module 级
+    # server(test_theme_plugin 等)起服时撞固定端口 18099(2026-09-28 实测)
     tmp_appdata = tempfile.mkdtemp(prefix="rtt-test-appdata-")
     env = {
         **os.environ,
@@ -57,11 +60,33 @@ def server():
         shutil.rmtree(tmp_appdata, ignore_errors=True)
         pytest.fail("mini-rtt-viewer 未在 15s 内就绪")
     yield proc
+    _shutdown(proc, tmp_appdata)
+
+
+def _shutdown(proc: subprocess.Popen, tmp_appdata: str) -> None:
+    """terminate → 等进程退出 → 等端口释放(qa_server.stop 同纪律),
+    否则下一个 module 的起服前置检查会拒绝被占端口。"""
     proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        s = socket.socket()
+        s.settimeout(0.5)
+        try:
+            s.connect(("127.0.0.1", PORT))
+            s.close()
+            time.sleep(0.2)
+        except OSError:
+            s.close()
+            break
     shutil.rmtree(tmp_appdata, ignore_errors=True)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def page(server):
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -92,9 +117,12 @@ def test_fr22_demo_stream_appends_rows(page):
 
 
 def test_api_status_contract(server):
-    """/api/status 字段契约:phase/port/rxBytes/txBytes/rowsTotal/uptimeSec。"""
+    """/api/status 字段契约:connected/rxBytes/txBytes/rowsTotal/uptimeSec。
+
+    (2026-09-28 清理:前端与测试都不消费的 phase/port 死字段已从契约删除,
+    此前的 port 字段值还是 "jlink"/"demo",与字段名语义相悖。)"""
     data = json.load(urllib.request.urlopen(f"{BASE}/api/status"))
-    for key in ("connected", "phase", "port", "rxBytes", "txBytes", "rowsTotal", "uptimeSec"):
+    for key in ("connected", "rxBytes", "txBytes", "rowsTotal", "uptimeSec"):
         assert key in data, f"缺字段 {key}"
     assert data["connected"] is True
     assert isinstance(data["rowsTotal"], int)

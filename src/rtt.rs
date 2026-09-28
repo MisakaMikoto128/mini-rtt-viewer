@@ -173,9 +173,17 @@ fn run(
     Ok(())
 }
 
+/// 退出请求判定(worker 线程各阻塞段之间检查):UI 断开(stop)或应用退出
+/// (APP_SHUTDOWN)都算。连接阶段的 DLL 调用(JLINKARM_Connect 等)本身
+/// 不可中断,只能在调用间隙检测——见 connect_target 的检查点布置(审计 R1)。
+fn stop_requested(stop: &AtomicBool) -> bool {
+    stop.load(Ordering::Relaxed) || APP_SHUTDOWN.load(Ordering::Relaxed)
+}
+
 /// 连接序列:加载 DLL → 抑制弹窗 → 选定调试器 → OpenEx → RTT START →
 /// TIF/速度/设备名 → Connect(带重试)→ State(true) + DeviceInfo。
-/// 成功返回已打开的 JLinkDll;失败路径自行 close 后返回 Err。
+/// 成功返回已打开的 JLinkDll;失败路径自行 close 后返回 Err
+/// (JLinkDll 有 Drop 兜底,中途 return 也不会漏 close)。
 fn connect_target(
     config: &WorkerConfig,
     tx: &mpsc::Sender<WorkerMsg>,
@@ -190,12 +198,18 @@ fn connect_target(
     } = config;
     let _ = tx.send(WorkerMsg::Progress("● 正在加载 JLink_x64.dll…".into()));
     let jlink = JLinkDll::load()?;
+    if stop_requested(stop) {
+        anyhow::bail!("退出中,已取消连接");
+    }
     // 抑制 DLL 模态弹窗必须最先做(调试器选择窗/固件升级提示都发生在 Open 内部),
     // 否则 worker 会卡在无人应答的隐藏对话框上
     jlink.disable_dialog_boxes();
     // 刷新 J-Link 下拉列表(用户可能插拔过)
     let emus = jlink.enumerate_emulators();
     let _ = tx.send(WorkerMsg::JLinks(emus.clone()));
+    if stop_requested(stop) {
+        anyhow::bail!("退出中,已取消连接");
+    }
 
     // 调试器选定,绝不让 DLL 自己弹选择窗:用户下拉指定优先;
     // 未指定但本机有 J-Link 时自动选第一台
@@ -214,7 +228,15 @@ fn connect_target(
 
     // 必须用 OpenEx:无参 Open 在多台 J-Link 时会重新弹 probe 选择窗,
     // OpenEx(pylink 同款入口)尊重上面的选定
-    jlink.open_ex();
+    // 返回码检查(审计 R2):Open 失败继续走会把 GetSN=0 的误导信息发给 UI,
+    // 真实失败环节(Open)反而被 connect() 的通用报错掩盖
+    let rc = jlink.open_ex();
+    if rc < 0 {
+        anyhow::bail!("J-Link 打开失败(错误码 {rc}):请检查驱动安装/设备连接");
+    }
+    if stop_requested(stop) {
+        anyhow::bail!("退出中,已取消连接");
+    }
 
     // Open 之后读到的序列号才是实际打开的设备(Open 前读到的只是选定值)
     let sn = jlink.serial_number();
@@ -232,23 +254,35 @@ fn connect_target(
     // 序列遵循原项目验证过的 DLL 状态机要求:RTT START 必须在 connect 之前
     let tif = if *iface_index == 0 { TIF_SWD } else { TIF_JTAG };
     jlink.rtt_control(RTT_CMD_START);
-    jlink.select_tif(tif);
-    jlink.set_speed(*speed_khz as i32);
+    let rc = jlink.select_tif(tif);
+    if rc < 0 {
+        anyhow::bail!("选择接口失败(错误码 {rc})");
+    }
+    let rc = jlink.set_speed(*speed_khz as i32);
+    if rc < 0 {
+        anyhow::bail!("设置速率 {speed_khz}kHz 失败(错误码 {rc})");
+    }
     let resp = jlink.exec_command(&format!("Device = {chip}"));
     if !resp.trim().is_empty() {
         let _ = tx.send(WorkerMsg::Log(format!("[J-Link] {resp}\r\n")));
+    }
+    if stop_requested(stop) {
+        anyhow::bail!("退出中,已取消连接");
     }
     // 目标连接第一次常会失败(DLL 内部状态机/目标未就绪),自动重试而非回退 UI 状态,
     // 避免按钮"断开→连接→断开"来回跳
     let mut rc = jlink.connect();
     for attempt in 1..4 {
-        if rc >= 0 || stop.load(Ordering::Relaxed) {
+        if rc >= 0 || stop_requested(stop) {
             break;
         }
         let _ = tx.send(WorkerMsg::Progress(format!(
             "● 连接中…(第 {attempt} 次重试)"
         )));
         thread::sleep(Duration::from_millis(400));
+        if stop_requested(stop) {
+            anyhow::bail!("退出中,已取消连接");
+        }
         rc = jlink.connect();
     }
     if rc < 0 {
@@ -381,7 +415,12 @@ fn rtt_read_loop(
                     if rc < 0 {
                         let _ = tx.send(WorkerMsg::Log(format!("[复位失败 rc={rc}]\r\n")));
                     } else {
-                        jlink.go();
+                        // go() 返回码不再静默丢弃(审计 R5):失败时 RTT 重挂成功
+                        // 也读不到运行中的固件,明确报出来
+                        let go_rc = jlink.go();
+                        if go_rc < 0 {
+                            let _ = tx.send(WorkerMsg::Log(format!("[Go 失败 rc={go_rc}]\r\n")));
+                        }
                         // 复位后固件重新初始化 RTT 控制块,重挂 RTT 保证继续可读
                         jlink.rtt_control(RTT_CMD_STOP);
                         jlink.rtt_control(RTT_CMD_START);

@@ -6,8 +6,9 @@
 //!   先移除旧文件再改名)
 //! - 保存时机由 web.rs 数据泵线程 tick_loop 节流(500ms 快照比对,不变不落盘);
 //!   进程退出(关窗强退 / Ctrl-C)不做退出补写,最后 ≤500ms 的改动可能不落盘
-//!   (gui.rs 模块头「跳过的清理与副作用」有说明)
+//!   (web.rs 与 gui.rs 模块头「跳过的清理与副作用」均有说明)
 
+use crate::log_model::DEFAULT_FRAME_TIMEOUT_MS;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -78,7 +79,7 @@ impl Default for StoredPrefs {
             rx_ending: 0,
             send_ending: 0,
             auto_frame: true,
-            frame_timeout: "20".into(),
+            frame_timeout: DEFAULT_FRAME_TIMEOUT_MS.to_string(),
             auto_scroll: true,
             hex_send: false,
             hex_rx: false,
@@ -115,7 +116,8 @@ fn prefs_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("MiniRttViewer").join("prefs.json"))
 }
 
-/// 读取偏好:文件缺失/损坏/字段缺失一律回落默认
+/// 读取偏好:文件缺失/损坏/字段缺失一律回落默认。损坏/读取失败(非缺失)
+/// 在 stderr 留痕(审计 G-9:静默重置用户无感知,留一行诊断便于定位)
 pub fn load() -> StoredPrefs {
     match prefs_path() {
         Some(p) => load_from(&p),
@@ -123,20 +125,38 @@ pub fn load() -> StoredPrefs {
     }
 }
 
-/// 保存偏好(原子替换);无路径或写入失败静默返回 false(偏好保存失败不值得打扰用户)
+/// 保存偏好(原子替换);无路径或写入失败返回 false。失败在 stderr 留痕,
+/// 不打扰 UI(偏好保存失败不值得弹窗,但不能完全无声)
 pub fn save(prefs: &StoredPrefs) -> bool {
     match prefs_path() {
-        Some(p) => save_to(&p, prefs).is_ok(),
+        Some(p) => match save_to(&p, prefs) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("[mini-rtt-viewer] 偏好落盘失败 {p:?}: {e}");
+                false
+            }
+        },
         None => false,
     }
 }
 
-/// 从指定路径读(测试与 load 共用)
+/// 从指定路径读(测试与 load 共用):缺失=正常回落;存在但损坏/读取失败
+/// =回落并留痕
 pub(crate) fn load_from(path: &std::path::Path) -> StoredPrefs {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    match std::fs::read_to_string(path) {
+        Ok(s) => match serde_json::from_str(&s) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[mini-rtt-viewer] 偏好文件损坏,回落默认 {path:?}: {e}");
+                StoredPrefs::default()
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => StoredPrefs::default(),
+        Err(e) => {
+            eprintln!("[mini-rtt-viewer] 偏好文件读取失败,回落默认 {path:?}: {e}");
+            StoredPrefs::default()
+        }
+    }
 }
 
 /// 写指定路径(测试与 save 共用):建目录 → 写 .tmp → 移除旧文件 → 原子改名

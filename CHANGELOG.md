@@ -1,5 +1,33 @@
 # Changelog
 
+## 未发布
+
+审计修复轮(docs/audit/ T1+T2 发现经逐条核验后修复属实项):
+
+- **安全/注入**:设备候选浮层与 J-Link 下拉改 DOM API + textContent 渲染,
+  消除 device_names.txt / DLL 产品名的 innerHTML 注入面;SECURITY.md 明示
+  开放监听下的具体攻击面(/api/send 任意字节注入等)
+- **连接正确性**:J-Link 下拉选中序列号接入 /api/connect(此前恒连首台),
+  随偏好持久化;reset reconnect 1 秒等待窗口加重连门闩,堵双 worker 并发;
+  恢复设备库枚举 BUSY 门闩检查(迁移时丢失);WS state 事件广播与
+  sessionStatus 同口径(去横幅圆点前缀);open_ex/select_tif/set_speed
+  返回码检查,失败环节如实上报;connect_target 各阻塞段检测退出
+  (stop/APP_SHUTDOWN),关窗不再卡满看门狗 3 秒
+- **健壮性**:api_settings 负数一律 400(不再静默夹成 0);api_addr 的
+  UDP 探测移入 spawn_blocking;WS Lagged 重同步 1 秒限 3 次(防慢消费者
+  快照风暴);api_mark 标签 200 字符上限;512 单行兜底覆盖 frame-end 强制
+  成行路径;JLinkDll 实现 Drop 兜底 close(幂等);ansi SGR 参数 >255 钳制;
+  偏好损坏/落盘失败 stderr 留痕;device_db BUSY 先于 DLL load 置位、
+  open() 兜底后立即 close
+- **契约清理**:/api/status 删除前端与测试都不消费的 phase/port 字段;
+  /api/prefs 与 /api/connect 增删 jlinkSerial/jlinkSn;FLUSH_MS、
+  DEFAULT_FRAME_TIMEOUT_MS 恢复为单一真源
+- **精简**:删除 log_model.rs 中 Web 化后无消费方的死代码
+  (wrap_runs/char_width_cols/set_wrap_cols/ScrollGeom 及其 13 个单测);
+  删除 pack/ 旧版发布包残留
+- **测试**:单测 59 条(新增负数拒绝/jlinkSn 可选/512 兜底/混流口径/
+  device 契约键名/清洗变体);tests/web 19 条全绿
+
 ## 0.4.2 (2026-09-25)
 
 关于框 + 远程访问 + 代码语言质量校验:

@@ -116,12 +116,17 @@ impl Perform for Collector {
                     // 冒号式:子参数在同一组内,如 [38,5,196] / [38,2,r,g,b] /
                     // [38,2,0,r,g,b](空子参数=默认色彩空间,vte 记为 0)
                     if p.len() >= 2 {
+                        // vte 把超大参数饱和到 u16,钳到 255 再窄化成 u8
+                        // (审计 P3:直接 `as u8` 会让 300 回绕成 44)
                         match p[1] {
                             5 if p.len() >= 3 => self.fg = Some(palette256(p[2])),
                             2 if p.len() >= 5 => {
                                 let base = if p.len() >= 6 { 3 } else { 2 };
-                                self.fg =
-                                    Some((p[base] as u8, p[base + 1] as u8, p[base + 2] as u8));
+                                self.fg = Some((
+                                    p[base].min(255) as u8,
+                                    p[base + 1].min(255) as u8,
+                                    p[base + 2].min(255) as u8,
+                                ));
                             }
                             _ => {}
                         }
@@ -146,7 +151,11 @@ impl Perform for Collector {
                                     }
                                 }
                                 if ok {
-                                    self.fg = Some((rgb[0] as u8, rgb[1] as u8, rgb[2] as u8));
+                                    self.fg = Some((
+                                        rgb[0].min(255) as u8,
+                                        rgb[1].min(255) as u8,
+                                        rgb[2].min(255) as u8,
+                                    ));
                                 }
                             }
                             _ => {}

@@ -63,3 +63,17 @@ ui-stack-eval.md 评估后定案:**UI 全面转 Web 形态**——Rust 数据层
 tao + wry WebView 内嵌同一管理台(SerialHub 同构),不引入 Tauri/egui/iced;
 `--no-window` 纯服务为第二形态。0.3.0 起 Slint 退役(ADR-4 的迁移悬案就此关闭)。
 落地证据:`src/web.rs` / `src/gui.rs`、CHANGELOG 0.3.0。
+
+## ADR-12 可替换后端抽象(2026-09-28 定案,已落地)
+
+数据源后端与 web 层解耦:新增 `src/backend.rs` 定义 `RttBackend` trait +
+`Host`(Shared 的最窄状态面)+ `SessionHandle` + 协议类型唯一真源;
+`backend_jlink.rs` 与 `demo.rs` 为前两个实现。web 层原有的 6+2 处
+`demo_mode` 布尔分叉全部收敛为 trait 方法;`WorkerCmd` 剔除 demo 专用变体
+(demo 连接/断开走其私有 DemoCmd 通道)。后端可在界面「数据源」下拉选择
+(断开态才可切,409 拦连接态),选择持久化到 `StoredPrefs.backend`;
+`--demo-log` 强制形态行为与历史逐字节一致。设计契约(含分阶段迁移、
+验证矩阵、probe-rs 接入路径)见 `docs/product/backend-abstraction.md`。
+**接入新后端(如 probe-rs)= 实现 trait + 注册,web 层零改动**;若 web 层
+出现按后端名的 if,即缝漏,回改 backend.rs。落地证据:cargo test --lib 64 绿、
+tests/web 34 条黑盒绿(含浏览器实测后端下拉切换)。

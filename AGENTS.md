@@ -1,24 +1,32 @@
 # Mini RTT Viewer — 项目经验笔记
 
-## 项目现状速览(2026-09-28,v0.4.2 + 审计修复轮)
+## 项目现状速览(2026-09-28,v0.4.2 + 后端抽象化)
 
 **一句话**:J-Link RTT 日志查看器,单 exe 双形态——桌面壳(tao+wry+tray 内嵌
 WebView)与纯服务(`--no-window`)共用同一套 Rust 数据层 + axum Web 管理台。
-**旧 Slint 前端已退役**,凡是描述 Slint/`log_view.slint`/`main.rs Ctx::tick`
-的旧笔记(含 git 历史里的本文件旧版)只作历史参考,别照着改代码。
+**数据源后端已抽象化**(`RttBackend` trait,jlink/demo 双后端,界面可选),
+设计契约在 `docs/product/backend-abstraction.md`;**旧 Slint 前端已退役**,
+凡是描述 Slint/`log_view.slint`/`main.rs Ctx::tick` 的旧笔记(含 git 历史
+里的本文件旧版)只作历史参考,别照着改代码。
 
 **架构与数据流**(模块树唯一真源 `src/lib.rs`,bin/examples 一律
 `use mini_rtt_viewer::…`):
-- `main.rs` 只做 CLI 装配:`--demo-log/--port/--listen/--no-window/--no-tray`
+- `main.rs` 只做 CLI 装配:`--demo-log/--backend/--port/--listen/--no-window/--no-tray`
   → `web::run`(纯服务)或 `gui::run_gui`(桌面壳)
-- `web.rs`(核心,约 2000 行):`Shared` 共享状态 + axum 路由 + `tick_loop`
+- `backend.rs`(缝,2026-09-28 新增):`RttBackend` trait + `Host`(Shared
+  实现的最窄状态面)+ `SessionHandle` + 协议类型 `WorkerMsg/WorkerCmd/
+  WorkerHandle/DeviceInfo/APP_SHUTDOWN` + 注册表 `backend_by_id`;
+  `backend_jlink.rs`:JLink 后端(worker spawn/枚举桥接/reset reconnect 全在
+  这);web 层**禁止**再出现按后端名的 if 分叉
+- `web.rs`(核心):`Shared` 共享状态(实现 Host)+ axum 路由 + `tick_loop`
   数据泵线程(10ms = `log_model::FLUSH_MS`,消化 worker 消息 → LogPump →
   broadcast → 各 WS 连接;500ms 统计节流 + 偏好快照落盘 + 定时发送)
-- `rtt.rs`:worker 线程,`connect_target`(连接序列)+ `rtt_read_loop`
+- `rtt.rs`:JLink worker 线程,`connect_target`(连接序列)+ `rtt_read_loop`
   (5ms 轮询 + 断帧判定 + 字符集/HEX 热切换);`jlink_dll.rs`:FFI
 - `log_model.rs`:纯逻辑日志泵(断行/ANSI/512 兜底/500 行上限),可单测
-- `config.rs` 偏好持久化 / `device_db.rs` 设备库后台枚举 / `demo.rs`
-  虚拟 worker(带状态机,覆盖连接/断开分支)
+- `config.rs` 偏好持久化(含 `backend` 字段)/ `device_db.rs` 设备库后台枚举
+  (归 jlink 后端驱使)/ `demo.rs` 虚拟后端(懒启动单例 + DemoCmd 私有通道,
+  20s/3s 自动周期状态机)
 - 前端 `ui/web/index.html` 经 `include_str!` 内嵌,无独立构建步骤
 
 **审计(2026-09-25 起的 /goal 长任务,引擎自有)**:报告与进度在
@@ -33,6 +41,20 @@ R3 热切换丢半字节(报告自判"登记不修")。
 `mini-rtt-viewer-probe-rs`(probe-rs 0.32 后端,卡 Windows Zadig 驱动,
 双后端路线待用户决策,**保留勿动**);`audit/nova-20260925` 为审计引擎
 分支(本地存在,未检出)。
+
+## 后端抽象(2026-09-28,RttBackend 缝的纪律)
+
+- **加新后端 = 新文件实现 `RttBackend` + `backend_by_id` 注册**,web 层零改动;
+  若发现 web 层需要为某后端写 if,说明缝漏了——回改 backend.rs,别在 web.rs
+  加分支(设计契约 §8)
+- demo 后端的会话句柄**恒活**(单例线程,断开只是状态翻转):一切"是否已连接"
+  门禁判据用 `Shared.connected`,**严禁用 session 槽判空**(demo 永不空);
+  demo 的连接/断开走其私有 `DemoCmd` 通道,不进共享 `WorkerCmd`
+- 后端选择契约:settings 切后端断开态才允许(connected 判据 409);同 id
+  幂等 no-op;普通形态可用 [jlink,demo],`--demo-log` 强制仅 demo 且启动
+  自动连接(与历史行为逐字节一致,别"顺手"改)
+- 归一化时机:`StoredPrefs.backend` 在 serve()(拿到 WebOptions 后)才校验
+  归位,config.rs 的 load 不感知可用列表
 
 ---
 
@@ -105,6 +127,8 @@ R3 热切换丢半字节(报告自判"登记不修")。
 键名由 `device_info_json_keys_match_status_contract` 锁定(单一构造点
 `device_info_json`)。camelCase 坑:serde `rename_all="camelCase"` 只改
 **变体名**,不变体字段,多词字段必须显式 rename(Stats.sessionSec 前科)。
+后端选择面(2026-09-28):GET /api/backends、/api/status 的 `backend` 字段、
+settings 的 `backend` 键、StoredPrefs 的 `backend` 字段同属契约面。
 2026-09-28 已删除前端/测试都不消费的 `/api/status` phase/port 死字段
 (旧 port 字段值还是 "jlink"/"demo",与字段名语义相悖)。
 
@@ -169,9 +193,9 @@ textContent,**禁止 innerHTML 拼接**(即使做了 `"` 转义也不行)。
 
 ## 验证工具
 
-- `cargo test --lib`(log_model/web/rtt/config/ansi/gui 纯逻辑)
-- `python -m pytest tests/web -q`(19 条黑盒:HTTP 契约/主题/HEX/持久化/
-  Playwright UI;服务固定 18099 端口,组间残留进程会挡下一组)
+- `cargo test --lib`(backend/log_model/web/rtt/config/ansi/gui 纯逻辑)
+- `python -m pytest tests/web -q`(34 条黑盒:HTTP 契约/后端可选面/主题/HEX/
+  持久化/Playwright UI;服务固定 18099 端口,组间残留进程会挡下一组)
 - 冒烟:`mini-rtt-viewer.exe --no-window --demo-log --port 8777`
   (带 `RTT_PREFS_FILE` 隔离!)+ curl 打 API;带 UI 演示用 `--demo-log`
   (`powershell Start-Process` 分离启动)

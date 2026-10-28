@@ -3,6 +3,7 @@ import { fmtBytes as fmt, fmtRate, fmtUptime } from './log-view.js';
 import { createSearch } from './search.js';
 import { hexToText, initDisplaySettings, textToHex } from './settings.js';
 import { initDialogs, showToast } from './dialogs.js';
+import { initSound, playSound } from './sound.js';
 
 const log = $('log');
 let connected = false, autoScroll = true;
@@ -105,7 +106,9 @@ function updateRates(m) {
 function zeroRates() { $('rx-rate').textContent = '0 B/s'; $('tx-rate').textContent = '0 B/s'; lastStats = null; }
 // 单只主按钮:「连接」(accent)⇄「断开」(红色系 danger)切换
 function setState(on, status) {
+  const changed = connected !== on;
   connected = on;
+  if (changed) playSound(on ? 'connect' : 'disconnect');
   $('dot').classList.toggle('on', on);
   if (status) $('status').textContent = status.replace('● ', '');
   // S1/S2:断开清零(速率归零显示、时长归 0、字节快照复位)
@@ -371,6 +374,7 @@ function send() {
       sendHistory.unshift(v);
       if (sendHistory.length > 50) sendHistory.pop();
       histIdx = -1; draft = '';
+      playSound('send');
     })
     .catch(error => {
       sendBox.classList.add('send-err');
@@ -417,6 +421,7 @@ $('timestamps').addEventListener('change', e => {
 });
 
 initDisplaySettings();
+initSound();
 
 const search = createSearch({ log, postSettings, timestamps: () => tsOn });
 

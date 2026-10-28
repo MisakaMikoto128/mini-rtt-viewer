@@ -29,6 +29,7 @@
 - 发送:向所选下行通道发送数据,Enter 快捷发送,成功后保留原文便于修改和连续重发,行尾可选(CRLF / LF / CR / 无),HEX 发送、定时发送、发送历史 ↑↓
 - 日志:七套内置主题(深色/浅色/OLED 纯黑/护眼暖色/精密仪器/终端专注/实验室浅色)+ 自定义主题(themes/*.css 拖入即用),主题选择本机保存并在刷新后恢复;VS Code 式正则搜索(Ctrl+F)、拖选/右键复制、导出 .log、长行自动换行
 - 会话:连接/断开自动标记、手动标记、TX/RX 字节与速率、会话时长、日志时间戳开关
+- 音效:连接、断开、发送成功与错误使用低音量短正弦波反馈;不随日志流或定时发送播放,可关闭并经 localStorage 记忆
 - 双形态:桌面壳(窗口 + 托盘)与纯服务(`--no-window`)共用同一管理台;单实例互斥(端口)
 
 ## 使用前提
@@ -114,7 +115,7 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 | `src/device_db.rs` | 设备库后台枚举 + 磁盘缓存 + 多台调试器列表 |
 | `ui/web/index.html` | 管理台语义结构；连接/设备/接收侧栏、日志、发送区与状态栏 |
 | `ui/web/styles.css` | 七主题令牌、原左右布局、3px 滚动条与键盘焦点样式 |
-| `ui/web/*.js` | 原生 ES modules：全局协调、API、日志视图、搜索、显示设置与弹窗 |
+| `ui/web/*.js` | 原生 ES modules：全局协调、API、日志视图、搜索、显示设置、弹窗与合成音效 |
 | `examples/qa_server.rs` | 仅供 Web 黑盒测试的独立 QA 数据流，不参与正式后端注册 |
 | `examples/emu_check.rs` | 无界面验证:枚举调试器 + 选定/实际打开一致性 |
 | `examples/rtt_check.rs` | 无界面 RTT 直读(连接序列排障用) |

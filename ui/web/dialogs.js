@@ -1,9 +1,11 @@
 import { $, getJson, postJson, request } from './api.js';
+import { playSound } from './sound.js';
 
 let toastEl = null;
 let toastTimer = 0;
 
 export function showToast(message, kind) {
+  if (kind !== 'ok') playSound('error');
   if (!toastEl) {
     toastEl = document.createElement('div');
     toastEl.id = 'toast';

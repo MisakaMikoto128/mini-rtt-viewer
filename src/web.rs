@@ -120,6 +120,7 @@ const LOG_VIEW_JS: &str = include_str!("../ui/web/log-view.js");
 const SEARCH_JS: &str = include_str!("../ui/web/search.js");
 const SETTINGS_JS: &str = include_str!("../ui/web/settings.js");
 const DIALOGS_JS: &str = include_str!("../ui/web/dialogs.js");
+const SOUND_JS: &str = include_str!("../ui/web/sound.js");
 /// favicon(build 时内嵌,不依赖进程工作目录;运行时读 assets/ 在 cwd 不对时 404)
 const FAVICON: &[u8] = include_bytes!("../assets/app-32.png");
 /// 会话标记行颜色(与桌面版 MARK_COLOR 一致)
@@ -379,6 +380,10 @@ async fn serve(
         .route(
             "/dialogs.js",
             get(|| async { embedded_asset(DIALOGS_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/sound.js",
+            get(|| async { embedded_asset(SOUND_JS, "text/javascript; charset=utf-8") }),
         )
         .route("/api/status", get(api_status))
         .route("/api/backends", get(api_backends))

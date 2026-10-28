@@ -31,7 +31,8 @@ UI/CLI/注册表。**旧 Slint 前端已退役**,
   (归 jlink 后端驱使);`examples/qa_server.rs` 是仅供黑盒测试的独立数据流
 - 前端 `ui/web/index.html` + `styles.css` + 原生 ES modules 经 `include_str!`
   内嵌,无独立构建步骤;`app.js` 只做全局协调,API/日志视图/搜索/显示设置/
-  弹窗分别位于同名模块。业务偏好只由服务端持有,localStorage 仅存显示偏好
+  弹窗分别位于同名模块;`sound.js` 用 Web Audio 合成短正弦波,只在用户手势后
+  解锁。业务偏好只由服务端持有,localStorage 仅存主题/字号/音效等界面偏好
 
 **分支**:`feat/probe-rs-backend` 旧实验分支在 worktree
 `mini-rtt-viewer-probe-rs`(probe-rs 0.32 后端,卡 Windows Zadig 驱动,

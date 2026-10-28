@@ -47,7 +47,7 @@ def test_viewport_has_no_horizontal_overflow(page, width, height):
 def test_receive_controls_belong_to_original_sidebar(page):
     selectors = [
         "#clear-btn", "#pause-btn", "#mark-btn", "#export-btn", "#theme",
-        "#auto-frame", "#rx-ending", "#encoding", "#hex-rx", "#timestamps",
+        "#auto-frame", "#rx-ending", "#encoding", "#hex-rx", "#timestamps", "#sound-enabled",
     ]
     for selector in selectors:
         assert page.evaluate(

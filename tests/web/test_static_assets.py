@@ -26,6 +26,7 @@ def server(tmp_path_factory):
         ("/search.js", "text/javascript"),
         ("/settings.js", "text/javascript"),
         ("/dialogs.js", "text/javascript"),
+        ("/sound.js", "text/javascript"),
     ],
 )
 def test_embedded_assets_have_executable_mime(server, path, mime):

@@ -40,15 +40,38 @@
 
 芯片型号需填写 J-Link 支持的完整型号名(如 `STM32F030C8`、`STM32H750VB`),与官方 RTT Viewer 中的写法一致。
 
+## 命令行
+
+```text
+mini-rtt-viewer [--backend jlink|demo] [--listen 127.0.0.1] [--port 8686]
+                [--no-window] [--no-tray]
+mini-rtt-viewer --demo-log
+```
+
+默认监听 `127.0.0.1:8686`，桌面窗口与浏览器共用管理台。`--no-window` 仅启动服务；
+`--demo-log` 强制 Demo 后端并自动连接。`--listen 0.0.0.0` 会开放无鉴权控制面，
+仅在可信网络中使用。完整说明运行 `mini-rtt-viewer --help`。
+
 ## 构建
 
 ```bat
 cargo build --release
-cargo test                    :: 日志泵纯逻辑单元测试
+cargo test --locked
 build_release.bat   :: 构建 + 可选 UPX 压缩 + 输出到 dist\
 ```
 
-Rust 1.75+。`tools/` 目录放入 UPX(可选)后脚本会自动压缩。提交前跑 `cargo clippy --all-targets`,当前零警告。
+Rust 1.75+。`tools/` 目录放入 UPX(可选)后脚本会自动压缩，不存在时跳过压缩。
+提交前运行完整门禁：
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+python -m pytest tests/web -q
+```
+
+Web 测试默认使用 `target/release/mini-rtt-viewer.exe`；也可通过 `RTT_TEST_EXE`
+指定当前构建。测试会使用临时偏好文件，不读写真实用户配置。
 
 ## 发布
 
@@ -65,7 +88,7 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 
 | 组件 | 选择 | 理由 |
 |---|---|---|
-| UI | 内嵌 Web 管理台(单页 HTML/JS,编译期内嵌)+ tao/wry 桌面壳 | CSS 布局成熟、DevTools 可调试;WebView2 随 Windows 10/11 自带;`--no-window` 纯服务共用同一界面 |
+| UI | 内嵌 Web 管理台(原生 HTML/CSS/ES modules,编译期内嵌)+ tao/wry 桌面壳 | 无前端构建步骤;CSS 布局成熟、DevTools 可调试;WebView2 随 Windows 10/11 自带;`--no-window` 纯服务共用同一界面 |
 | J-Link 访问 | FFI 直调 `JLink_x64.dll` | 与官方工具/驱动共存,不抢 USB(纯 USB 协议实现需要 Zadig 换驱动,会破坏 SEGGER 工具链) |
 | 并发模型 | std::thread + mpsc + 10ms 消息泵 | worker 读线程不碰 UI,泵做断行与事件广播;停止/退出经原子标志轮询,阻塞等待均有界 |
 
@@ -76,17 +99,22 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 | 文件 | 职责 |
 |---|---|
 | `src/lib.rs` | 模块树唯一入口,bin/examples 一律 `use` 本 crate |
-| `src/main.rs` | CLI 入口(`--demo-log` / `--port` / `--no-window` / `--no-tray`):分派桌面壳 / 纯服务两种形态 |
+| `src/main.rs` | CLI 入口(`--demo-log` / `--backend` / `--listen` / `--port` / `--no-window` / `--no-tray`):分派桌面壳 / 纯服务两种形态 |
 | `src/gui.rs` | 桌面壳:tao 事件循环 + wry WebView(内嵌管理台)+ 托盘图标与退出序列 |
-| `src/web.rs` | 管理台服务:axum 路由 + WS 推流 + 10ms 数据泵 tick(断行/统计/偏好快照落盘),API 契约见模块头注释 |
-| `src/config.rs` | 偏好持久化(`%APPDATA%/MiniRttViewer/prefs.json`,serde 容错 + 原子写) |
+| `src/backend.rs` | `RttBackend` 后端抽象、会话协议与注册表；J-Link / Demo 共用同一 Web 层 |
+| `src/backend_jlink.rs` | J-Link 后端：worker 生命周期、探针枚举桥接与复位重连 |
+| `src/web.rs` | Web facade：服务装配、固定路由与后端解析，API 契约见模块头注释 |
+| `src/web/` | 按职责拆分的共享状态、HTTP API、数据泵、WebSocket 与主题扫描 |
+| `src/config.rs` | 业务偏好唯一持久化真源(`%APPDATA%/MiniRttViewer/prefs.json`,serde 容错 + 原子写) |
 | `src/log_model.rs` | 日志泵纯逻辑(断行/缓冲/ANSI 带色行/行数上限),有单元测试 |
 | `src/ansi.rs` | ANSI 转义 → 带色文本段(vte 状态机,颜色状态跨行跨块保持),有单元测试 |
 | `src/rtt.rs` | worker 线程:`connect_target` 连接序列 + `rtt_read_loop` 读循环(断帧判定/命令消化/字符集增量解码) |
 | `src/jlink_dll.rs` | JLink_x64.dll 最小 FFI 绑定(连接/RTT/设备信息/调试器与设备库枚举选定) |
 | `src/device_db.rs` | 设备库后台枚举 + 磁盘缓存 + 多台调试器列表 |
 | `src/demo.rs` | `--demo-log` 演示数据源(中英混排 + emoji + ANSI 颜色样例,模拟连接/断开/重置循环) |
-| `ui/web/index.html` | 管理台单页(四主题/日志流/搜索/发送,编译期内嵌进 exe) |
+| `ui/web/index.html` | 管理台语义结构；连接侧栏、日志工具条、发送区与状态栏 |
+| `ui/web/styles.css` | 四主题令牌、响应式布局、抽屉侧栏与键盘焦点样式 |
+| `ui/web/*.js` | 原生 ES modules：全局协调、API、日志视图、搜索、显示设置与弹窗 |
 | `examples/emu_check.rs` | 无界面验证:枚举调试器 + 选定/实际打开一致性 |
 | `examples/rtt_check.rs` | 无界面 RTT 直读(连接序列排障用) |
 | `AGENTS.md` | 实际踩坑经验笔记(改代码前先读) |

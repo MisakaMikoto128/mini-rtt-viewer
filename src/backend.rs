@@ -209,16 +209,21 @@ pub fn backend_by_id(id: &str) -> Option<&'static dyn RttBackend> {
     }
 }
 
-/// 文本 → 十六进制大写文本(UTF-8 字节,每字节两位、空格分隔,与真机 worker
-/// 的 HEX 接收输出同格式,如 "[ de" → "5B 20 64 65 ")。真机 worker 的 HEX
-/// 路径与 demo 下沉的 HEX 转换共用本函数(单点,防两处实现漂移)。
-pub fn text_to_hex_upper(s: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(s.len() * 3);
-    for b in s.as_bytes() {
-        let _ = write!(out, "{b:02X} ");
+/// 字节 → 十六进制大写文本(每字节两位、空格分隔，如 "[ de" 的 UTF-8
+/// 字节 → "5B 20 64 65 ")。真机与 Demo 的 HEX 接收共用这一实现。
+pub fn bytes_to_hex_upper(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(bytes.len() * 3);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0F) as usize] as char);
+        out.push(' ');
     }
     out
+}
+
+pub fn text_to_hex_upper(s: &str) -> String {
+    bytes_to_hex_upper(s.as_bytes())
 }
 
 #[cfg(test)]

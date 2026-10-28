@@ -428,14 +428,19 @@ def test_ui_layout_p0(page):
     assert not bad, f"控件高应 40±2:越界 {bad}"
 
     # 2b) 发送选项行 #send-opts(「发送」组迁入发送条的紧凑行):控件 32±2
-    opt_h = page.evaluate(
-        """() => {
-            const h = el => el.getBoundingClientRect().height;
-            return [h(document.getElementById('tx-ending')),
-                    h(document.getElementById('timer-interval'))];
-        }"""
-    )
-    assert all(30 <= v <= 34 for v in opt_h), f"发送选项行控件应 32±2:实测 {opt_h}"
+    #     定时间隔默认隐藏，启用定时发送后再测量。
+    page.check("#timer-on")
+    try:
+        opt_h = page.evaluate(
+            """() => {
+                const h = el => el.getBoundingClientRect().height;
+                return [h(document.getElementById('tx-ending')),
+                        h(document.getElementById('timer-interval'))];
+            }"""
+        )
+        assert all(30 <= v <= 34 for v in opt_h), f"发送选项行控件应 32±2:实测 {opt_h}"
+    finally:
+        page.uncheck("#timer-on")
     send_h = page.evaluate(
         "(() => { const t = document.getElementById('send-text').getBoundingClientRect().height;"
         " const b = document.getElementById('send-btn').getBoundingClientRect().height;"

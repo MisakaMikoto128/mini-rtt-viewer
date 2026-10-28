@@ -72,10 +72,7 @@ impl RttBackend for JLinkBackend {
     /// DbResult → WorkerMsg 桥接线程把结果送进统一消息泵。幂等:进程内
     /// 只启动一次(serve 装配 + on_selected 切回场景共用)
     fn start_background_enumeration(&self, host: &dyn Host) {
-        if self
-            .enumeration_started
-            .swap(true, Ordering::Relaxed)
-        {
+        if self.enumeration_started.swap(true, Ordering::Relaxed) {
             return;
         }
         let (db_tx, db_rx) = mpsc::channel::<device_db::DbResult>();
@@ -188,7 +185,10 @@ impl RttBackend for JLinkBackend {
             std::thread::sleep(Duration::from_secs(1));
             // 铁律:旧 worker 线程存活期间严禁 spawn 新 worker(双 worker
             // 抢 J-Link 是数据损坏/状态错乱的根源)——先等旧线程真正退出
-            if !wait_worker_exit(old.as_ref().map(|s| s.handle.as_ref()), Duration::from_secs(3)) {
+            if !wait_worker_exit(
+                old.as_ref().map(|s| s.handle.as_ref()),
+                Duration::from_secs(3),
+            ) {
                 let _ = host.msg_tx().send(WorkerMsg::Log(
                     "[自动重连] 上一连接未退出,已放弃本次重连\r\n".into(),
                 ));

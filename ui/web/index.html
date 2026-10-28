@@ -5,414 +5,135 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mini RTT Viewer — 管理台</title>
 <link rel="icon" type="image/png" href="favicon.png">
-<style>
-  /* 主题表(四主题按降饱和钢蓝系统一重配;与桌面版四主题对齐)
-     基准:body/日志底 #0E1013、卡片 #16181D、边框 #262A31、accent #2B6E8F */
-  :root, :root[data-theme="dark"] {
-    color-scheme: dark; /* P2-3/V8:原生控件(下拉/滚动条)随主题明暗 */
-    --bg:#0E1013; --panel:#0E1013; --card:#16181D; --input:#0F1216; --btn:#232830;
-    --text:#E6E8EB; --secondary:#9AA0A8; --muted:#6A7078; --border:#262A31;
-    --accent:#2B6E8F; --ok:#4C9E62; --err:#C95F68; --danger:#A84E58;
-    --log-bg:#0E1013; --log-fg:#D8DBE0; --log-fs:14px; --log-lh:21px;
-    --search-hit:rgba(255,213,79,.28); --search-hit-current:rgba(255,152,0,.55);
-  }
-  :root[data-theme="light"] {
-    color-scheme: light;
-    --bg:#EEF1F4; --panel:#EEF1F4; --card:#FFFFFF; --input:#F3F5F7; --btn:#E7EBEF;
-    --text:#1E2226; --secondary:#5F6B76; --muted:#8B949D; --border:#D3D8DE;
-    --accent:#2B6E8F; --ok:#2E7D32; --err:#C4454E; --danger:#C05A54;
-    --log-bg:#FFFFFF; --log-fg:#24282C;
-    --search-hit:rgba(230,180,0,.40); --search-hit-current:rgba(255,145,0,.60);
-  }
-  :root[data-theme="oled"] {
-    color-scheme: dark;
-    --bg:#000000; --panel:#000000; --card:#0C0E11; --input:#050607; --btn:#181C22;
-    --text:#E2E4E7; --secondary:#9AA0A8; --muted:#5E646B; --border:#22262C;
-    --accent:#2B6E8F; --ok:#4C9E62; --err:#D0606A; --danger:#B0505A;
-    --log-bg:#000000; --log-fg:#D4D7DB;
-    --search-hit:rgba(255,213,79,.33); --search-hit-current:rgba(255,152,0,.60);
-  }
-  :root[data-theme="sepia"] {
-    color-scheme: light;
-    --bg:#F0E8D5; --panel:#F0E8D5; --card:#F9F3E3; --input:#F2EBD9; --btn:#EAE0C6;
-    --text:#3A3222; --secondary:#7C6E52; --muted:#9C8F70; --border:#D8CCAA;
-    --accent:#356A80; --ok:#4E7D46; --err:#B34A44; --danger:#AC5548;
-    --log-bg:#F6F0DF; --log-fg:#463C28;
-    --search-hit:rgba(210,160,30,.35); --search-hit-current:rgba(224,120,32,.55);
-  }
-  * { box-sizing: border-box; margin: 0; }
-  body { background: var(--bg); color: var(--text); font: 13px/1.5 "Segoe UI", system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-
-  /* 控件基线(UX 规格):统一高 40px / 字号 14px / 圆角 6px,按钮同 40(V3,
-     42/40 双高度体系已废);textarea 一并纳入主题(P0-1/V1,原 UA 白底直角)
-     特例:#send-text/#send-btn 72;#send-opts 行内控件 32(紧凑行,同搜索条令牌);
-     搜索条 32、其内 .s-btn/#s-input 24、.combo>.arrow 由更具体(优先级更高)的选择器覆盖 */
-  select, input:not([type="checkbox"]), textarea, button {
-    background: var(--input); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 0 12px; font-family: inherit; font-size: 14px; height: 40px; }
-  select:focus, input:focus, textarea:focus, button:focus { outline: none; border-color: var(--accent); }
-  button { cursor: pointer; background: var(--btn); }
-  button:hover:not(:disabled) { border-color: var(--accent); }
-  button:disabled { opacity: .45; cursor: default; }
-  select:disabled, input:disabled { opacity: .55; }
-  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  button.primary:hover:not(:disabled) { filter: brightness(1.12); }
-  button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
-  label.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--secondary);
-    cursor: pointer; min-height: 18px; line-height: 18px; } /* 行高 20→18(P0-2 密度) */
-  label.check input { width: 15px; height: 15px; accent-color: var(--accent); margin: 0; flex: none; }
-  .unit { font-size: 12px; color: var(--secondary); } /* muted→secondary(P2-2/V7,12px 小字对比度) */
-
-  main { flex: 1; display: flex; min-height: 0; }
-  /* 左面板 420px(1280 视口下约 1/3);组间距 8px(V4,原 12 脱离 8pt 档);
-     P0-2 一屏化:内容(含接收组)必须 ≤765 无滚动。水平 padding 16→20 与
-     组 padding 16→12 相抵,卡片内容宽与 label/复选框 x=33 对齐保持不变 */
-  aside { width: 420px; min-width: 420px; background: var(--panel); border-right: 1px solid var(--border);
-    overflow: hidden; padding: 16px 20px; display: flex; flex-direction: column; }
-  /* 滚动条居中(FR-28 后用户要求):aside 只裁剪不滚动,内层 .aside-scroll 滚动。
-     负 margin 把滚动容器伸进 aside 的 20px 右留白,自身 padding-right 7 隔开卡片,
-     滚动条落在留白带正中(两侧各 7px);scrollbar-gutter: stable 保证溢出出现/
-     消失时卡片零位移。卡片右缘 399 / 滚动条 [406,412] / 面板内缘 419 */
-  .aside-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable;
-    margin-right: -13px; padding-right: 7px;
-    display: flex; flex-direction: column; gap: 8px; }
-  .aside-scroll::-webkit-scrollbar { width: 6px; }
-  .aside-scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 3px; }
-  .aside-scroll::-webkit-scrollbar-thumb:hover { background: var(--muted); }
-  .aside-scroll::-webkit-scrollbar-track { background: transparent; }
-  /* 分组卡:bg var(--card) / border 1px var(--border) / radius 8px / padding 12px
-     (P0-2 密度:16→12;水平由 aside 20px 补偿,label x=33 不变) */
-  .group { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
-    display: flex; flex-direction: column; gap: 8px; }
-  .group > .title { margin-bottom: 0; }
-  .group > .title, summary.title { font-size: 14px; font-weight: 600; color: var(--text); }
-  summary.title { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; }
-  summary.title::-webkit-details-marker { display: none; }
-  summary.title::before { content: '▸'; color: var(--muted); font-size: 12px; }
-  details[open] > summary.title::before { content: '▾'; }
-  /* 标签在控件上方:label 13px #9AA0A8 在上,控件全宽在下 */
-  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .field > .label { font-size: 13px; line-height: 1.2; color: var(--secondary); }
-  .field > select, .field > input, .field > .combo { width: 100%; }
-  /* .combo 的 flex:1 是给横排共享宽度用的;在纵向 .field 里必须关掉,否则
-     flex-basis:0 吃进主轴(纵向=高度)把容器压瘪 */
-  .field > .combo { flex: none; }
-  .row2 { display: flex; gap: 8px; }
-  .row2 > .field { flex: 1; min-width: 0; }
-  /* 三列行(接口/速度/通道,P0-2 一屏化:通道并入连接参数行) */
-  .row3 { display: flex; gap: 8px; }
-  .row3 > .field { flex: 1; min-width: 0; }
-  .btn-row { display: flex; gap: 8px; }
-  .btn-row button { flex: 1; padding: 0; }
-  .power-row { display: flex; justify-content: space-between; align-items: center; }
-  /* 右侧电源子组:checkbox 与说明文字恒相邻(P0-2:自动滚动并入本行后,
-     space-between 的第三个子项不再让说明脱离电源复选框) */
-  .power-row .power-group { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .power-note { font-size: 12px; color: var(--secondary); } /* muted→secondary(P2-2/V7) */
-  /* 断帧行合并:checkbox + label + input(80px)+ ms 同排 */
-  .aframe-row { display: flex; align-items: center; gap: 8px; }
-  .aframe-row label.check { flex: 1; }
-  #frame-timeout { width: 80px; flex: none; }
-  /* 字号 A± 与主题下拉同区(接收组底部) */
-  .theme-row { display: flex; align-items: center; gap: 8px; }
-  .theme-row button { width: 44px; padding: 0; flex: none; }
-  .theme-row select { flex: 1; min-width: 0; }
-  .info-grid { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px 10px; font-size: 12px; }
-  .info-grid .k { color: var(--secondary); }
-
-  /* 右列:日志(flex:1)+ 发送条(通栏,border-top 分隔) */
-  #content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  /* #log 包一层 position:relative wrapper:搜索条浮层锚定其视口右上,
-     绝对定位不占用流内空间 → 不改变 #log 可用宽高(无 reflow) */
-  #log-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
-  #log { flex: 1; min-width: 0; overflow-y: auto; background: var(--log-bg); color: var(--log-fg);
-    font-family: Consolas, monospace; font-size: var(--log-fs, 14px); line-height: var(--log-lh, 21px);
-    letter-spacing: -0.4px; padding: 8px 12px; }
-  /* 行距/字距复刻并微调 VS Code:行高 = round(字号 × 1.5)(GOLDEN_LINE_HEIGHT_RATIO),
-     A± 改字号时 JS 联动重算;字距候选四档(0/-0.25/-0.4/-0.6)实测取 -0.4px:
-     比 Consolas 默认步进(7.7px)收紧 ~5%,无字形碰撞;-0.6 起冒号/括号处发闷 */
-  #log .row { white-space: pre-wrap; word-break: break-all; }
-  /* 日志滚动条与 aside 同款(P2-3/V8):6px 细拇指,随主题 --muted 着色 */
-  #log::-webkit-scrollbar { width: 6px; }
-  #log::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent); border-radius: 3px; }
-  #log::-webkit-scrollbar-thumb:hover { background: var(--muted); }
-  #log::-webkit-scrollbar-track { background: transparent; }
-  /* 命中标记:词级 mark,保留行内 ANSI span 结构(命中子串包 mark,前景色不变) */
-  #log mark.s-hit { background: var(--search-hit); color: inherit; border-radius: 2px; }
-  #log mark.s-hit.cur { background: var(--search-hit-current); }
-  /* 时间戳前缀(S4):显示层装饰,--muted 暗色不抢正文;搜索匹配与导出内容
-     均不含它(rec.text 只存 runs 原文,前缀是渲染期附加 span) */
-  #log .ts { color: var(--muted); }
-
-  /* 发送条:日志区下方通栏,上排 32px 紧凑选项行(发送行尾/定时间隔/HEX 发送/
-     定时发送,P0-2/V2 自左面板「发送」组迁入;32 同搜索条令牌)+ 下排
-     textarea 72 + 发送按钮 115×72。水平 inset 12 与 #log padding、搜索条右缘
-     同值(V5 三线合一:文本/textarea 左缘 432,按钮/搜索条右缘 1268) */
-  #send-bar { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px;
-    border-top: 1px solid var(--border); background: var(--panel); }
-  #send-opts { display: flex; align-items: center; gap: 8px; height: 32px; flex: none; }
-  #send-opts .spacer { flex: 1; }
-  #send-opts .s-label { flex: none; font-size: 12px; color: var(--secondary); }
-  #send-opts select, #send-opts input { height: 32px; font-size: 13px; padding: 0 8px; }
-  #send-opts select { width: 96px; flex: none; }
-  #send-opts #timer-interval { width: 56px; text-align: center; }
-  .send-main { display: flex; align-items: flex-end; gap: 8px; }
-  #send-text { flex: 1; min-width: 0; height: 72px; resize: none; padding: 9px 12px;
-    font: 14px/1.5 Consolas, monospace; }
-  #send-btn { width: 115px; flex: none; height: 72px; font-size: 14px; }
-
-  /* VS Code 式日志搜索条(P0):浮于 #log 视口右上,深浅两档投影 */
-  #search-bar { position: absolute; top: 8px; right: 12px; width: 340px; height: 32px;
-    display: flex; align-items: center; gap: 3px; padding: 0 5px 0 6px; z-index: 40;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-    box-shadow: 0 1px 2px rgba(0,0,0,.18), 0 6px 16px rgba(0,0,0,.24); }
-  #search-bar[hidden] { display: none; }
-  #search-bar .s-btn { width: 24px; height: 24px; min-width: 24px; padding: 0;
-    border: 1px solid transparent; border-radius: 4px; background: transparent;
-    color: var(--secondary); font-size: 12px; line-height: 1;
-    display: flex; align-items: center; justify-content: center; }
-  #search-bar .s-btn:focus { border-color: transparent; }
-  #search-bar .s-btn:hover:not(:disabled) { border-color: transparent; color: var(--text); }
-  #search-bar .s-btn.on { background: color-mix(in srgb, var(--accent) 15%, transparent);
-    color: var(--accent); }
-  #search-bar .s-btn:disabled { opacity: .4; }
-  #s-input { flex: 1; min-width: 0; height: 24px; padding: 0 6px;
-    font: 13px Consolas, monospace; background: var(--input);
-    border: 1px solid var(--border); border-radius: 4px; }
-  #s-input.err, #s-input.err:focus { border-color: var(--err); }
-  #s-count { font-size: 12px; color: var(--secondary); min-width: 36px; text-align: center;
-    white-space: nowrap; } /* muted→secondary(P2-2/V7) */
-  #s-count.err { color: var(--err); }
-
-  /* 日志区右键菜单(复制选中文本 / 全选):原生 popover="auto"(Baseline 2024,
-     WebView2 evergreen 与 2024+ 浏览器支持)——top layer + 自带 Esc 关/点外关
-     (light-dismiss),JS 不再手动管理 hidden 与 window mousedown/blur 全局监听 */
-  #ctx-menu { position: fixed; z-index: 60; min-width: 150px; background: var(--card);
-    border: 1px solid var(--border); border-radius: 8px; padding: 4px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.4); }
-  .ctx-item { padding: 7px 12px; font-size: 13px; border-radius: 4px; cursor: pointer; color: var(--text); } /* 5→4(P2-5/V10 圆角三档) */
-  .ctx-item:hover { background: var(--accent); color: #fff; }
-  .ctx-item.disabled { opacity: .4; pointer-events: none; }
-
-  footer { display: flex; gap: 16px; padding: 8px 16px; background: var(--panel);
-    border-top: 1px solid var(--border); font-size: 12px; color: var(--secondary); align-items: center; }
-  /* dot→#status 8px(V9):灯与文案是同一语义组,负 margin 抵掉 8 gap;
-     右侧集群间保持 16 */
-  footer .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); margin-right: -8px; }
-  footer .dot.on { background: var(--ok); }
-  footer .spacer { flex: 1; }
-  /* chip-line 分隔符定宽居中(P2-1/V6):· 字形 rightBearing 为负导致
-     「芯片 ·SWD」光学不对称;9px 盒内居中使两侧间距恒等 */
-  #chip-line .sep { display: inline-block; width: 9px; text-align: center; }
-  /* 底栏新增(S1/S2/S9/S10):速率/时长继承 secondary;版本再暗一档(muted);
-     「浏览器打开」是 footer 紧凑行专用小按钮(22px,不进 40 控件体系),
-     纯浏览器访问时 hidden(壳标记 window.__MINI_SHELL 由 gui.rs 注入) */
-  #version { color: var(--muted); }
-  #open-browser, #remote-btn { height: 22px; padding: 0 10px; font-size: 12px; border-radius: 4px; flex: none; }
-
-  /* 远程访问框(FR-28):地址 = 整行可点的复制卡片(悬停 accent 描边,
-     复制成功右上短暂「✓ 已复制」);令牌复用 about 系,四主题跟随。
-     地址本就是网页 URL——其他设备打开即同一套界面;局域网可达需
-     --listen 0.0.0.0(服务端默认仅回环,SECURITY.md 说明) */
-  #remote { margin: auto; min-width: 380px; }
-  .remote-card { display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    width: 100%; text-align: left; background: var(--input); border: 1px solid var(--border);
-    border-radius: 6px; padding: 10px 12px; margin: 8px 0 0; cursor: pointer;
-    transition: border-color .15s; font-family: inherit; }
-  .remote-card:hover { border-color: var(--accent); }
-  .remote-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-  .remote-label { font-size: 12px; color: var(--secondary); }
-  .remote-url { font-family: Consolas, monospace; font-size: 14px; color: var(--text);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .remote-copy-state { flex: none; display: inline-flex; align-items: center;
-    font-size: 12px; color: var(--secondary); transition: color .15s; }
-  .remote-card:hover .remote-copy-state { color: var(--accent); }
-  .remote-copy-state svg { display: block; }
-  .remote-copy-state .st-done, .remote-copy-state.done .st-idle { display: none; }
-  .remote-copy-state .st-idle, .remote-copy-state.done .st-done { display: inline-flex;
-    align-items: center; gap: 5px; }
-  .remote-copy-state.done .st-done { color: var(--ok); }
-
-  /* 关于框(原生 <dialog>:Esc 原生关、点背板关;四主题走令牌)。底栏版本号
-     即按钮(footer 紧凑行 22px,同 #open-browser 体系),hover 提示可点 */
-  #version { height: 22px; padding: 0 6px; font-size: 12px; border-radius: 4px; flex: none;
-    background: none; border: none; cursor: pointer; }
-  #version:hover { color: var(--text); }
-  #about { margin: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--card);
-    color: var(--text); padding: 20px; min-width: 320px; max-width: 86vw; }
-  #about::backdrop { background: rgba(0, 0, 0, .45); }
-  .about-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-  .about-name { font-size: 15px; font-weight: 600; }
-  .about-ver { font-size: 13px; color: var(--secondary); margin-top: 2px; }
-  .about-line { font-size: 13px; color: var(--secondary); margin: 4px 0; }
-  .about-links { display: flex; gap: 8px; margin-top: 14px; }
-  .about-links button, .about-actions button { height: 32px; padding: 0 14px; font-size: 13px; }
-  .about-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
-
-  /* 可编辑下拉(输入即筛选,参考工程波特率框同款交互)
-     容器化:边框/圆角/底色收归 .combo,input 与箭头透明无边框(P0-1/P2-9) */
-  .combo { position: relative; flex: 1; min-width: 0; display: flex; height: 40px;
-    background: var(--input); border: 1px solid var(--border); border-radius: 6px; }
-  .combo:focus-within { border: 2px solid var(--accent); }
-  .combo > input { flex: 1; min-width: 0; border: none; background: transparent;
-    height: 100%; padding: 0 12px; font-size: 14px; }
-  .combo > input:focus { border: none; }
-  .combo > .arrow { width: 34px; min-width: 34px; height: 100%; border: none; background: transparent;
-    color: var(--accent); padding: 0; display: flex; align-items: center; justify-content: center;
-    cursor: pointer; }
-  .combo > .arrow:hover { opacity: .75; }
-  /* 浮层卡片质感(P1-6):var(--card) 底 + 8px 圆角(V10 归档,原 10)+ 深投影;
-     间距 8px(P2-10):top:100% 锚在 padding 盒上,扣除聚焦态 2px 边框后实测 6-7px */
-  .combo-list { position: absolute; top: 100%; left: 0; right: 0; margin-top: 8px;
-    background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px;
-    max-height: 220px; overflow-y: auto; z-index: 30; display: none;
-    box-shadow: 0 8px 24px rgba(0,0,0,.4); }
-  /* 候选项胶囊化(P0-3/P1-7):圆角胶囊、项间 2px、hover/激活/当前值 accent 底白字 */
-  .combo-list .opt { padding: 9px 12px; margin: 2px 0; cursor: pointer; font-size: 13px;
-    border-radius: 6px; } /* 7→6(V10) */
-  .combo-list .opt:first-child { margin-top: 0; }
-  .combo-list .opt:last-child { margin-bottom: 0; }
-  .combo-list .opt:hover, .combo-list .opt.active, .combo-list .opt.current {
-    background: var(--accent); color: #fff; font-weight: 600; }
-  /* 细滚动条(P2-11,可选) */
-  .combo-list::-webkit-scrollbar { width: 6px; }
-  .combo-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-
-  /* 设备信息断开置灰(F2,状态驱动:断开后内容为上次数据,置灰示不可信;
-     Dev-UI 如重构设备卡请保留 .off 开关语义) */
-  #device-details.off .info-grid { opacity: .45; }
-  /* 发送错误(F8b):后端 400 错误信息必须可见——输入框红边 + toast */
-  #send-text.send-err { border-color: var(--err); }
-  #toast { position: fixed; right: 16px; bottom: 172px; z-index: 70; max-width: 60vw;
-    background: var(--card); color: var(--err); border: 1px solid var(--err);
-    border-radius: 8px; padding: 8px 14px; font-size: 13px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.4);
-    opacity: 0; transform: translateY(6px); transition: opacity .15s, transform .15s;
-    pointer-events: none; }
-  #toast.show { opacity: 1; transform: none; }
-  /* 成功/中性变体(S2 导出、S3 复制反馈):非红,复用 --ok 令牌,四主题跟随 */
-  #toast.ok { color: var(--ok); border-color: var(--ok); }
-</style>
+<link rel="stylesheet" href="/styles.css">
 </head>
 <body>
 <main>
-  <aside>
-    <div class="aside-scroll">
-    <div class="group">
-      <div class="title">连接设置</div>
-      <div class="field"><span class="label">J-Link</span>
-        <select id="jlink"></select></div>
-      <div class="field"><span class="label">数据源</span>
-        <select id="backend"></select></div>
-      <div class="field"><span class="label">目标设备</span>
-        <div class="combo" id="chip-combo">
-          <input id="chip" autocomplete="off" placeholder="STM32F103C8">
-          <button class="arrow" id="chip-arrow" tabindex="-1" aria-label="展开设备库">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-          <div class="combo-list" id="chip-list"></div>
-        </div></div>
-      <div class="row3">
-        <div class="field"><span class="label">接口</span>
-          <select id="iface"><option value="0">SWD</option><option value="1">JTAG</option></select></div>
-        <div class="field"><span class="label">速度 (kHz)</span>
-          <select id="speed"><option>100</option><option>200</option><option>500</option><option selected>1000</option><option>2000</option><option>4000</option><option>8000</option><option>12000</option></select></div>
-        <div class="field"><span class="label">RTT 通道</span>
-          <select id="channel"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select></div>
-      </div>
-      <button id="connect-btn" class="primary">连接</button>
-      <button id="reset-btn" disabled>重置目标</button>
+  <aside id="sidebar" aria-label="连接与设备">
+    <div class="sidebar-head">
+      <strong>连接与设备</strong>
+      <button type="button" id="sidebar-close" aria-label="关闭连接设置">×</button>
     </div>
-
-    <details class="group" id="device-details">
-      <summary class="title">设备信息</summary>
-      <div class="info-grid" id="device-info">
-        <span class="k">固件版本</span><span>—</span>
-        <span class="k">目标芯片</span><span>—</span>
-        <span class="k">接口</span><span>—</span>
-        <span class="k">序列号</span><span>—</span>
-      </div>
-    </details>
-
-    <div class="group">
-      <div class="title">接收</div>
-      <div class="btn-row">
-        <button id="clear-btn">清空</button>
-        <button id="pause-btn">暂停</button>
-        <button id="mark-btn">标记</button>
-        <button id="export-btn">导出</button>
-      </div>
-      <div class="aframe-row">
-        <label class="check"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
-        <input type="text" id="frame-timeout" value="20">
-        <span class="unit">ms</span>
-      </div>
-      <div class="power-row">
-        <label class="check"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
-        <div class="power-group">
+    <div class="aside-scroll">
+      <div class="group">
+        <div class="title">连接设置</div>
+        <div class="field"><span class="label">J-Link</span>
+          <select id="jlink" aria-label="J-Link 调试器"></select></div>
+        <div class="field"><span class="label">数据源</span>
+          <select id="backend" aria-label="数据源后端"></select></div>
+        <div class="field"><span class="label">目标设备</span>
+          <div class="combo" id="chip-combo">
+            <input id="chip" autocomplete="off" placeholder="STM32F103C8" role="combobox"
+              aria-autocomplete="list" aria-expanded="false" aria-controls="chip-list">
+            <button type="button" class="arrow" id="chip-arrow" aria-label="展开设备库"
+              aria-expanded="false" aria-controls="chip-list">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div class="combo-list" id="chip-list" role="listbox" aria-label="目标设备候选"></div>
+          </div></div>
+        <div class="row3">
+          <div class="field"><span class="label">接口</span>
+            <select id="iface"><option value="0">SWD</option><option value="1">JTAG</option></select></div>
+          <div class="field"><span class="label">速度 (kHz)</span>
+            <select id="speed"><option>100</option><option>200</option><option>500</option><option selected>1000</option><option>2000</option><option>4000</option><option>8000</option><option>12000</option></select></div>
+          <div class="field"><span class="label">RTT 通道</span>
+            <select id="channel"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>15</option></select></div>
+        </div>
+        <div class="connect-actions">
+          <button type="button" id="connect-btn" class="primary">连接</button>
+          <button type="button" id="reset-btn" disabled>重置目标</button>
+        </div>
+        <div class="power-row">
           <label class="check"><input type="checkbox" id="power" disabled> 电源输出</label>
           <span class="power-note">J-Link 19 脚供电</span>
         </div>
       </div>
-      <div class="row2">
-        <div class="field"><span class="label">行尾</span>
-          <select id="rx-ending">
-            <option value="0" selected>自动</option><option value="1">CRLF</option>
-            <option value="2">LF</option><option value="3">CR</option><option value="4">无</option>
-          </select></div>
-        <div class="field"><span class="label">字符集</span>
-          <select id="encoding">
-            <option value="0" selected>UTF-8</option><option value="1">GBK</option>
-            <option value="2">UTF-16 LE</option><option value="3">Latin-1</option><option value="4">ASCII</option>
-          </select></div>
-      </div>
-      <div class="row2">
-        <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收(动态生效)</label>
-        <label class="check" title="行首显示本机到达时刻 [HH:MM:SS.mmm](仅开关打开后到达的行)"><input type="checkbox" id="timestamps"> 时间戳</label>
-      </div>
-      <div class="theme-row">
-        <button id="A-minus" title="减小日志字号">A-</button>
-        <button id="A-plus" title="增大日志字号">A+</button>
-        <select id="theme">
-          <option value="dark">深色</option>
-          <option value="light">浅色</option>
-          <option value="oled">OLED 纯黑</option>
-          <option value="sepia">护眼暖色</option>
-        </select>
-      </div>
-    </div>
+      <details class="group" id="device-details">
+        <summary class="title">设备信息</summary>
+        <div class="info-grid" id="device-info">
+          <span class="k">固件版本</span><span>—</span>
+          <span class="k">目标芯片</span><span>—</span>
+          <span class="k">接口</span><span>—</span>
+          <span class="k">序列号</span><span>—</span>
+        </div>
+      </details>
     </div>
   </aside>
   <section id="content">
+    <div id="log-toolbar" aria-label="日志工具条">
+      <button type="button" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true">连接设置</button>
+      <div class="log-actions">
+        <button type="button" id="clear-btn">清空</button>
+        <button type="button" id="pause-btn" aria-pressed="false">暂停</button>
+        <button type="button" id="mark-btn">标记</button>
+        <button type="button" id="export-btn">导出</button>
+      </div>
+      <div class="display-controls">
+        <label class="check"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
+        <label class="check" title="行首显示本机到达时刻 [HH:MM:SS.mmm](仅开关打开后到达的行)"><input type="checkbox" id="timestamps"> 时间戳</label>
+        <div class="font-controls" aria-label="日志字号">
+          <button type="button" id="A-minus" title="减小日志字号" aria-label="减小日志字号">A-</button>
+          <button type="button" id="A-plus" title="增大日志字号" aria-label="增大日志字号">A+</button>
+        </div>
+        <select id="theme" aria-label="界面主题">
+          <option value="dark">深色</option><option value="light">浅色</option>
+          <option value="oled">OLED 纯黑</option><option value="sepia">护眼暖色</option>
+        </select>
+      </div>
+    </div>
+    <div id="receive-bar" aria-label="接收设置">
+      <div class="frame-control">
+        <label class="check"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
+        <input type="text" id="frame-timeout" value="20" aria-label="断帧间隔毫秒">
+        <span class="unit">ms</span>
+      </div>
+      <label class="inline-field">行尾
+        <select id="rx-ending">
+          <option value="0" selected>自动</option><option value="1">CRLF</option>
+          <option value="2">LF</option><option value="3">CR</option><option value="4">无</option>
+        </select>
+      </label>
+      <label class="inline-field">字符集
+        <select id="encoding">
+          <option value="0" selected>UTF-8</option><option value="1">GBK</option>
+          <option value="2">UTF-16 LE</option><option value="3">Latin-1</option><option value="4">ASCII</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收</label>
+    </div>
     <div id="log-wrap">
-      <div id="log"></div>
+      <div id="log" role="log" aria-label="RTT 日志" aria-live="off" tabindex="0"></div>
       <div id="search-bar" hidden>
-        <button class="s-btn" id="s-case" title="区分大小写" tabindex="-1">Aa</button>
-        <button class="s-btn" id="s-regex" title="使用正则表达式" tabindex="-1">.*</button>
-        <input id="s-input" type="text" placeholder="查找" spellcheck="false" autocomplete="off">
-        <span id="s-count">—</span>
-        <button class="s-btn" id="s-prev" title="上一处 (Shift+Enter)" tabindex="-1">↑</button>
-        <button class="s-btn" id="s-next" title="下一处 (Enter)" tabindex="-1">↓</button>
-        <button class="s-btn" id="s-close" title="关闭 (Esc)" tabindex="-1">×</button>
+        <button type="button" class="s-btn" id="s-case" title="区分大小写" aria-label="区分大小写" aria-pressed="false">Aa</button>
+        <button type="button" class="s-btn" id="s-regex" title="使用正则表达式" aria-label="使用正则表达式" aria-pressed="false">.*</button>
+        <input id="s-input" type="text" placeholder="查找" spellcheck="false" autocomplete="off" aria-label="查找日志">
+        <span id="s-count" aria-live="polite">—</span>
+        <button type="button" class="s-btn" id="s-prev" title="上一处 (Shift+Enter)" aria-label="上一处">↑</button>
+        <button type="button" class="s-btn" id="s-next" title="下一处 (Enter)" aria-label="下一处">↓</button>
+        <button type="button" class="s-btn" id="s-close" title="关闭 (Esc)" aria-label="关闭搜索">×</button>
       </div>
     </div>
     <div id="send-bar">
       <div id="send-opts">
-        <label class="check" title="输入按十六进制字节发送"><input type="checkbox" id="hex-send"> HEX 发送</label>
-        <label class="check" title="按设定间隔重发最近发送的内容"><input type="checkbox" id="timer-on"> 定时发送</label>
+        <div class="send-modes">
+          <label class="check" title="输入按十六进制字节发送"><input type="checkbox" id="hex-send"> HEX 发送</label>
+          <label class="check" title="按设定间隔重发最近发送的内容"><input type="checkbox" id="timer-on"> 定时发送</label>
+        </div>
+        <div id="timer-fields" hidden>
+          <label class="s-label" for="timer-interval">定时间隔</label>
+          <input type="text" id="timer-interval" value="1" inputmode="decimal">
+          <span class="s-label">秒</span>
+        </div>
         <span class="spacer"></span>
-        <span class="s-label">发送行尾</span>
+        <label class="s-label" for="tx-ending">发送行尾</label>
         <select id="tx-ending">
           <option value="0" selected>CRLF</option><option value="1">LF</option>
           <option value="2">CR</option><option value="3">无</option>
         </select>
-        <span class="s-label">定时间隔</span>
-        <input type="text" id="timer-interval" value="1">
-        <span class="s-label">秒</span>
       </div>
       <div class="send-main">
-        <textarea id="send-text" rows="3" placeholder="发送到所选通道… (Enter 发送,Shift+Enter 换行)" autocomplete="off"></textarea>
-        <button id="send-btn" disabled>发送</button>
+        <textarea id="send-text" rows="3" placeholder="发送到所选通道… (Enter 发送,Shift+Enter 换行)" autocomplete="off" aria-label="发送内容"></textarea>
+        <button type="button" id="send-btn" disabled>发送</button>
       </div>
     </div>
   </section>
@@ -430,9 +151,9 @@
   <button id="version" title="关于 Mini RTT Viewer"></button>
   <button id="open-browser" hidden title="在系统默认浏览器打开本管理台(壳内窗口无法新开标签)">浏览器打开</button>
 </footer>
-<div id="ctx-menu" popover="auto">
-  <div class="ctx-item" id="ctx-copy">复制选中文本</div>
-  <div class="ctx-item" id="ctx-selectall">全选</div>
+<div id="ctx-menu" popover="auto" aria-label="日志操作">
+  <button type="button" class="ctx-item" id="ctx-copy">复制选中文本</button>
+  <button type="button" class="ctx-item" id="ctx-selectall">全选</button>
 </div>
 <dialog id="about">
   <div class="about-head">
@@ -480,986 +201,6 @@
   <p class="about-line" id="remote-hint" hidden>局域网未开放:以 --listen 0.0.0.0 启动后,其他设备打开局域网地址即可远程操作</p>
   <div class="about-actions"><button id="remote-close">关闭</button></div>
 </dialog>
-<script>
-  const $ = id => document.getElementById(id);
-  const API = location.origin;
-  const log = $('log');
-  const fmt = n => n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB';
-  let connected = false, autoScroll = true;
-  // 数据源后端(阶段二):当前选定是否纯软件(demo)——真机探针列表
-  // (J-Link 下拉)随之禁用;由 fillBackends/syncBackendUi 维护
-  let backendVirtual = false;
-  // S1 速率/S2 时长状态:stats 每 500ms 一拍,lastStats 记上次字节快照差值算 B/s
-  let lastStats = null;
-  // S4 时间戳开关(纯前端显示层;localStorage 记忆,与字号/主题同模式)
-  let tsOn = false;
-  // S7 行数上限:以 stats.cap(服务端 MAX_LOG_ROWS)为准,初始值仅是
-  // 首拍到站前的 trim 兜底(与服务端当前常量一致)
-  let rowCap = 500;
-
-  // 偏好 localStorage(key 前缀 web-):change 写入,加载回填;
-  // /api/prefs(服务端持久化)到达后覆盖其管辖字段,此处为离线/失败兜底
-  function lsGet(k) { return localStorage.getItem('web-' + k); }
-  function lsSet(k, v) { localStorage.setItem('web-' + k, v); }
-  (function restorePrefs() {
-    const g = lsGet;
-    if (g('rx-ending')) $('rx-ending').value = g('rx-ending');
-    if (g('tx-ending')) $('tx-ending').value = g('tx-ending');
-    if (g('encoding')) $('encoding').value = g('encoding');
-    if (g('channel') !== null && g('channel') !== '') $('channel').value = g('channel');
-    if (g('iface')) $('iface').value = g('iface');
-    const sp = g('speed');
-    if (sp !== null && sp !== '') $('speed').selectedIndex = Math.min(+sp, $('speed').length - 1);
-    if (g('hex-rx')) $('hex-rx').checked = g('hex-rx') === '1';
-    if (g('hex-send')) $('hex-send').checked = g('hex-send') === '1';
-    if (g('auto-frame')) $('auto-frame').checked = g('auto-frame') === '1';
-    if (g('auto-scroll')) { $('auto-scroll').checked = g('auto-scroll') === '1'; autoScroll = $('auto-scroll').checked; }
-    if (g('frame-timeout')) $('frame-timeout').value = g('frame-timeout');
-    if (g('timestamps') === '1') { tsOn = true; $('timestamps').checked = true; } // S4
-    if (g('backend')) $('backend').value = g('backend'); // 选项由 /api/backends 异步填充,此处仅断连兜底记忆
-  })();
-
-  function appendRow(row, live) {
-    const div = document.createElement('div');
-    div.className = 'row';
-    // 行记录 = 搜索的文本索引:runs 原文数组 + 行全文;搜索高亮重绘行时按 runs
-    // 重建内联色 → 不破坏行内 ANSI span 结构。ts=本机到达时刻(S4,显示层;
-    // rec.text/导出/搜索都不含它)。**只有 live rows 事件记 ts**:snapshot 回放的
-    // 老行到达时刻不可考 → 不带前缀(已知口径,与任务书一致)
-    const rec = { el: div, runs: row.runs, text: row.runs.map(r => r.text).join(''),
-      ts: live === false ? null : Date.now(), ranges: [], renderedRef: null };
-    div.__rec = rec;
-    renderRow(rec); // 渲染单点:时间戳前缀 + ANSI runs(搜索高亮重绘同一路径)
-    log.appendChild(div);
-    if (searchOpen) { scanRec(rec); updateCount(); } // 新行增量扫描:只更新计数,不滚动
-  }
-  function trim() {
-    const removed = [];
-    // 上限与行数显示同源:stats.cap(服务端 MAX_LOG_ROWS),不另行硬编码
-    while (log.children.length > rowCap) { removed.push(log.firstChild); log.removeChild(log.firstChild); }
-    if (removed.length) onRowsRemoved(removed);
-  }
-  // 自动滚动互斥:搜索条打开期间流式新行不拉回底部;唯一滚动来源是命中导航。
-  // follow-suspend(F4,FR-16 语义):勾选态下用户上滚(wheel 负 delta 或
-  // 拖动滚动条离开贴底)→ 暂停跟随,数据不再拉底;滚回贴底(±4px)→ 自动恢复。
-  // 取消勾选 = 完全手动(现状保持)
-  let follow = true;
-  function atBottom() { return log.scrollTop + log.clientHeight >= log.scrollHeight - 4; }
-  function scrollBottom() { if (searchOpen) return; if (autoScroll && follow) log.scrollTop = log.scrollHeight; }
-  log.addEventListener('wheel', e => { if (autoScroll && e.deltaY < 0) follow = false; }, { passive: true });
-  log.addEventListener('scroll', () => { if (autoScroll) follow = atBottom(); });
-  let clearSeq = 0;
-  function onMsg(ev) {
-    const m = JSON.parse(ev.data);
-    if (m.type === 'snapshot') { resetRows(); m.rows.forEach(r => appendRow(r, false)); scrollBottom(); }
-    else if (m.type === 'cleared') { clearSeq = m.seq; resetRows(); window.__clearedCount = (window.__clearedCount || 0) + 1; }
-    else if (m.type === 'rows') {
-      if (m.seq <= clearSeq) return;
-      if (m.dropped) {
-        const removed = [];
-        for (let i = 0; i < m.dropped && log.firstChild; i++) { removed.push(log.firstChild); log.removeChild(log.firstChild); }
-        onRowsRemoved(removed);
-      }
-      m.rows.forEach(appendRow); trim(); scrollBottom();
-    }
-    else if (m.type === 'state') setState(m.connected, m.status);
-    else if (m.type === 'device') renderDevice(m.info);
-    else if (m.type === 'progress') {
-      const txt = m.text.replace('● ', '');
-      $('status').textContent = txt;
-    }
-    else if (m.type === 'names') fillDatalist(m.names);
-    else if (m.type === 'jlinks') fillJlinks(m.list);
-    else if (m.type === 'stats') {
-      $('tx').textContent = 'TX ' + fmt(m.tx);
-      $('rx').textContent = 'RX ' + fmt(m.rx);
-      $('rows').textContent = m.rows + ' / ' + m.cap + ' 行'; // S7:上限语境,数字来自服务端
-      if (m.cap) rowCap = m.cap;
-      $('session').textContent = fmtUptime(m.sessionSec); // S2:会话时长,断开为 0
-      updateRates(m); // S1:RX/TX 速率
-    }
-  }
-  // ---- S1/S2 底栏格式化(fmtRate 语义同 SerialHub:<1KB/s 整数 B/s → KB/s → MB/s)----
-  function fmtRate(n) {
-    n = Math.max(0, n || 0); // 断开清零后的负差值夹为 0
-    if (n < 1024) return Math.round(n) + ' B/s';
-    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB/s';
-    return (n / 1048576).toFixed(1) + ' MB/s';
-  }
-  function fmtUptime(s) { // 1h23m / 4m56s / 42s(0 = 未连接)
-    s = Math.max(0, Math.floor(s || 0));
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-    return h ? h + 'h' + m + 'm' : m ? m + 'm' + ss + 's' : ss + 's';
-  }
-  function updateRates(m) {
-    // 口径选择:速率恒显示(与 SerialHub fmtRate 一致),无新数据自然归零;
-    // 断开(setState false)显式归零。demo/真机断开时服务端清零字节,差值
-    // 为负由 fmtRate 夹 0,不会出现负速率
-    const now = performance.now();
-    if (lastStats) {
-      const dt = (now - lastStats.t) / 1000;
-      if (dt > 0.05) { // 500ms 一拍,防 0 除与首拍抖动
-        $('rx-rate').textContent = fmtRate((m.rx - lastStats.rx) / dt);
-        $('tx-rate').textContent = fmtRate((m.tx - lastStats.tx) / dt);
-      }
-    }
-    lastStats = { t: now, rx: m.rx, tx: m.tx };
-  }
-  function zeroRates() { $('rx-rate').textContent = '0 B/s'; $('tx-rate').textContent = '0 B/s'; lastStats = null; }
-  // 单只主按钮:「连接」(accent)⇄「断开」(红色系 danger)切换
-  function setState(on, status) {
-    connected = on;
-    $('dot').classList.toggle('on', on);
-    if (status) $('status').textContent = status.replace('● ', '');
-    // S1/S2:断开清零(速率归零显示、时长归 0、字节快照复位)
-    if (!on) { zeroRates(); $('session').textContent = '0s'; }
-    const btn = $('connect-btn');
-    btn.textContent = on ? '断开' : '连接';
-    btn.classList.toggle('danger', on);
-    btn.classList.toggle('primary', !on);
-    $('reset-btn').disabled = !on;
-    $('power').disabled = !on;
-    $('send-btn').disabled = !on;
-    // 断开后设备信息为上次残留数据(F2):置灰示不可信,连接态恢复
-    $('device-details').classList.toggle('off', !on);
-    for (const id of ['backend', 'chip', 'iface', 'speed', 'channel']) $(id).disabled = on;
-    $('jlink').disabled = on || backendVirtual; // demo 等纯软件后端无探针列表,一并禁用
-  }
-  function renderDevice(d) {
-    if (!d) return;
-    // P0-2/V2:不再强制展开——设备信息默认折叠(保面板一屏),点击 summary 可展开;
-    // 断开置灰 .off 语义由 setState 维护,不受折叠影响
-    const g = $('device-info');
-    g.innerHTML = '';
-    const put = (k, v) => {
-      const a = document.createElement('span'); a.className = 'k'; a.textContent = k;
-      const b = document.createElement('span'); b.textContent = v || '—';
-      g.append(a, b);
-    };
-    put('固件版本', d.firmware);
-    put('目标芯片', d.target);
-    put('接口', (d.iface || '—') + ' · ' + (d.speedKhz || '—') + 'kHz');
-    put('序列号', d.serial);
-    // P2-1/V6:分隔符定宽居中 span,消除「·SWD」光学不对称
-    const cl = $('chip-line');
-    const seg = t => { const s = document.createElement('span'); s.textContent = t; return s; };
-    const sep = document.createElement('span');
-    sep.className = 'sep'; sep.textContent = '·';
-    cl.textContent = '';
-    cl.append(seg(d.target || '—'), sep, seg(d.iface || '—'));
-  }
-  // 可编辑下拉:输入即筛选,↑↓ 选择,Enter 确认,Esc 关闭,箭头展开全部
-  // P0-4:浮层默认隐藏,仅聚焦/输入/点箭头展开;失焦/Esc/选中后关闭
-  let chipOptions = [];
-  let chipListOpen = false;
-  function fillDatalist(names) {
-    chipOptions = names;
-    renderChipList($('chip').value); // 只重绘候选,不改开合状态 → names 到达不再自动展开
-  }
-  function renderChipList(filter) {
-    const list = $('chip-list');
-    const f = (filter || '').toUpperCase();
-    // P1-8:与当前 #chip 值一致的候选常驻 accent 底白字(忽略大小写)
-    const cur = ($('chip').value || '').trim().toUpperCase();
-    const opts = chipOptions.filter(o => o.toUpperCase().includes(f));
-    // 候选名来自设备库/磁盘缓存(device_names.txt 本机可篡改),innerHTML 拼接
-    // 是脚本注入面——DOM API 建 + textContent 承载名字(审计 F-2)
-    list.textContent = '';
-    for (const o of opts) {
-      const div = document.createElement('div');
-      div.className = 'opt' + (o.toUpperCase() === cur ? ' current' : '');
-      div.dataset.v = o;
-      div.textContent = o;
-      list.appendChild(div);
-    }
-    list.style.display = (chipListOpen && opts.length) ? 'block' : 'none';
-    list.querySelectorAll('.opt').forEach(el => {
-      el.addEventListener('mousedown', e => { e.preventDefault(); pickChip(el.dataset.v); });
-    });
-  }
-  function openChipList(filter) {
-    chipListOpen = true;
-    renderChipList(filter !== undefined ? filter : $('chip').value);
-  }
-  function closeChipList() {
-    chipListOpen = false;
-    $('chip-list').style.display = 'none';
-  }
-  function pickChip(v) {
-    $('chip').value = v;
-    closeChipList();
-    postPref('chip', { chip: v }); // F1:候选选定同样入库(程序化赋值不触发 change)
-  }
-  (function initChipCombo() {
-    const input = $('chip'), list = $('chip-list');
-    input.addEventListener('input', () => openChipList());
-    input.addEventListener('focus', () => openChipList());
-    input.addEventListener('blur', () => setTimeout(closeChipList, 150));
-    input.addEventListener('keydown', e => {
-      const items = [...list.querySelectorAll('.opt')];
-      let active = items.findIndex(el => el.classList.contains('active'));
-      if (e.key === 'ArrowDown' && items.length) {
-        e.preventDefault();
-        active = Math.min(active + 1, items.length - 1);
-        items.forEach((el, i) => el.classList.toggle('active', i === active));
-        items[active].scrollIntoView({ block: 'nearest' });
-      } else if (e.key === 'ArrowUp' && items.length) {
-        e.preventDefault();
-        active = Math.max(active - 1, 0);
-        items.forEach((el, i) => el.classList.toggle('active', i === active));
-        items[active].scrollIntoView({ block: 'nearest' });
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        if (active >= 0) pickChip(items[active].dataset.v);
-        else if (items.length === 1) pickChip(items[0].dataset.v);
-      } else if (e.key === 'Escape') {
-        closeChipList();
-      }
-    });
-    $('chip-arrow').addEventListener('mousedown', e => e.preventDefault());
-    $('chip-arrow').onclick = () => { chipListOpen ? closeChipList() : openChipList(''); };
-  })();
-  // 选定的 J-Link 序列号(/api/prefs 恢复用):列表到达时若在列则套用一次
-  let pendingJlinkSn = null;
-  function fillJlinks(list) {
-    const sel = $('jlink');
-    const prev = sel.value; // 刷新(插拔/连接时 worker 重发)不清掉用户已选
-    // 产品名来自 DLL acProduct 固件字符串,innerHTML 拼接是注入面(审计 F-2)——
-    // DOM API 建,textContent 承载名字
-    sel.textContent = '';
-    const auto = document.createElement('option');
-    auto.value = '';
-    auto.textContent = '自动';
-    sel.appendChild(auto);
-    for (const j of list) {
-      const o = document.createElement('option');
-      o.value = j.sn;
-      o.textContent = j.name;
-      sel.appendChild(o);
-    }
-    const want = pendingJlinkSn != null ? String(pendingJlinkSn) : prev;
-    if (want && [...sel.options].some(o => o.value === want)) {
-      sel.value = want;
-      pendingJlinkSn = null;
-    }
-  }
-
-  // ---- 数据源后端(阶段二):/api/backends 填充 items,selected 置值 ----
-  // name/description 来自服务端字符串,option 一律 DOM API 构建 + textContent
-  // 承载(注入面纪律,禁止 innerHTML 拼接);isVirtual 记入 dataset 供
-  // change 即时联动 J-Link 下拉禁用
-  function fillBackends(data) {
-    const sel = $('backend');
-    const prev = sel.value;
-    sel.textContent = '';
-    for (const b of (data.items || [])) {
-      const o = document.createElement('option');
-      o.value = b.id;
-      o.textContent = b.name;
-      o.title = b.description || '';
-      o.dataset.virtual = b.isVirtual ? '1' : '0';
-      sel.appendChild(o);
-    }
-    // 服务端 selected 是唯一真源(启动按 CLI/偏好归一化);缺省沿用刷新前的值
-    const want = data.selected || prev;
-    if (want && [...sel.options].some(o => o.value === want)) sel.value = want;
-    syncBackendUi();
-  }
-  function syncBackendUi() {
-    const opt = [...$('backend').options].find(o => o.value === $('backend').value);
-    backendVirtual = !!opt && opt.dataset.virtual === '1';
-    $('jlink').disabled = connected || backendVirtual;
-  }
-
-  function connect() {
-    const body = {
-      chip: $('chip').value,
-      ifaceIndex: +$('iface').value,
-      speedIndex: $('speed').selectedIndex,
-      channel: +$('channel').value,
-    };
-    // J-Link 下拉接线(审计 P1):选定才带 jlinkSn,空 = 服务端自动选首台
-    if ($('jlink').value !== '') body.jlinkSn = +$('jlink').value;
-    fetch(API + '/api/connect', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) })
-      .then(r => { if (!r.ok) r.text().then(t => { $('status').textContent = t; showToast(t); }); });
-  }
-  function disconnect() {
-    fetch(API + '/api/disconnect', { method: 'POST' });
-  }
-  $('connect-btn').onclick = () => { connected ? disconnect() : connect(); };
-  $('reset-btn').onclick = () => fetch(API + '/api/reset', { method: 'POST' });
-  $('power').onchange = e => fetch(API + '/api/power', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ on: e.target.checked }) });
-
-  // 运行时设置:changed → POST settings(worker 原子热切换,动态生效)
-  // 断帧间隔 clamp 1-200(change 时夹取)+ localStorage 持久化
-  $('rx-ending').onchange = e => { postSettings({ rxEnding: +e.target.value }); lsSet('rx-ending', e.target.value); };
-  $('encoding').onchange = e => { postSettings({ encodingIndex: +e.target.value }); lsSet('encoding', e.target.value); };
-  $('hex-rx').onchange = e => { postSettings({ hexRx: e.target.checked }); lsSet('hex-rx', e.target.checked ? '1' : '0'); };
-  $('frame-timeout').addEventListener('change', e => {
-    let v = parseInt(e.target.value, 10);
-    if (isNaN(v)) v = 20;
-    v = Math.min(200, Math.max(1, v));
-    e.target.value = String(v);
-    postSettings({ frameTimeout: v });
-    lsSet('frame-timeout', String(v));
-  });
-  function postSettings(patch) {
-    return fetch(API + '/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) });
-  }
-  // 定时发送:连接态才触发,重发最近一次发送的内容(0.001-999 秒);
-  // 间隔非法自动停,不弹错误
-  $('timer-on').onchange = e => postTimer({ on: e.target.checked });
-  $('timer-interval').addEventListener('change', e => {
-    const v = parseFloat(e.target.value);
-    if (v >= 0.001 && v <= 999) postTimer({ on: $('timer-on').checked, intervalSec: v });
-    else { $('timer-on').checked = false; postTimer({ on: false }); }
-  });
-  function postTimer(body) {
-    const box = $('send-text');
-    if (box.value.trim()) body.text = box.value;  // 可选:显式指定定时内容(默认最近发送)
-    return fetch(API + '/api/timer', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-  }
-  // 导出日志:全部行文本附件下载(rtt_<时间戳>.log,服务端 Content-Disposition)。
-  // S2:改为 fetch→blob 下载(与 SerialHub 导出同形态)——拿到真实成功/失败与
-  // 文件名,成功给中性 toast;导出内容是服务端原始行文本,不含时间戳前缀(S4)
-  $('export-btn').onclick = () => {
-    fetch(API + '/api/export')
-      .then(r => {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const m = (r.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
-        return r.blob().then(b => ({ b, name: m ? m[1] : 'rtt.log' }));
-      })
-      .then(({ b, name }) => {
-        const url = URL.createObjectURL(b);
-        const a = document.createElement('a');
-        a.href = url; a.download = name;
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 5000);
-        showToast('已导出 ' + name, 'ok');
-      })
-      .catch(() => showToast('导出失败:服务未响应'));
-  };
-
-  $('pause-btn').onclick = function () {
-    const paused = this.textContent === '暂停';
-    fetch(API + '/api/pause', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ on: paused }) })
-      .then(() => { this.textContent = paused ? '继续' : '暂停'; });
-  };
-  $('clear-btn').onclick = () => fetch(API + '/api/clear', { method: 'POST' }).then(() => resetRows());
-  $('mark-btn').onclick = () => fetch(API + '/api/mark', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ text: '' }) });
-
-  // 发送 + 会话内历史:↑ 浏览(最新在前)/ ↓ 返回 / ↓ 到底恢复草稿;
-  // IME composing 期间不响应方向键与 Enter
-  const sendBox = $('send-text');
-  const sendHistory = [];
-  let histIdx = -1, draft = '';
-  sendBox.addEventListener('keydown', e => {
-    if (e.isComposing || e.keyCode === 229) return; // IME 组合输入中
-    if (e.key === 'Enter') {
-      if (e.shiftKey) return; // Shift+Enter 换行:交给浏览器默认插入换行(F6)
-      e.preventDefault(); send(); return;
-    }
-    if (e.key === 'ArrowUp') {
-      if (!sendHistory.length || histIdx >= sendHistory.length - 1) return;
-      if (histIdx === -1) draft = sendBox.value;
-      histIdx++;
-      sendBox.value = sendHistory[histIdx];
-      e.preventDefault();
-    } else if (e.key === 'ArrowDown') {
-      if (histIdx === -1) return;
-      histIdx--;
-      sendBox.value = histIdx === -1 ? draft : sendHistory[histIdx];
-      e.preventDefault();
-    }
-  });
-  sendBox.addEventListener('input', () => { histIdx = -1; sendBox.classList.remove('send-err'); }); // 编辑即回到草稿模式 + 清错误红边
-  $('send-btn').onclick = send;
-  // 轻量 toast(F8b):后端错误信息必须用户可见,不许静默;自动消失,复用主题令牌。
-  // kind='ok' 走中性成功变体(S2 导出/S3 复制反馈,--ok 令牌,非红);缺省错误样式不变
-  let toastEl = null, toastT = 0;
-  function showToast(msg, kind) {
-    if (!toastEl) {
-      toastEl = document.createElement('div');
-      toastEl.id = 'toast';
-      toastEl.setAttribute('role', 'alert');
-      document.body.appendChild(toastEl);
-    }
-    toastEl.textContent = msg;
-    toastEl.classList.toggle('ok', kind === 'ok');
-    toastEl.classList.add('show');
-    clearTimeout(toastT);
-    toastT = setTimeout(() => { if (toastEl) toastEl.classList.remove('show'); }, 3000);
-  }
-  function send() {
-    if (!sendBox.value.trim()) return;
-    fetch(API + '/api/send', { method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ text: sendBox.value, hex: $('hex-send').checked }) })
-      .then(r => {
-        if (r.ok) {
-          sendBox.classList.remove('send-err');
-          const v = sendBox.value;
-          const i = sendHistory.indexOf(v);
-          if (i >= 0) sendHistory.splice(i, 1);
-          sendHistory.unshift(v);
-          if (sendHistory.length > 50) sendHistory.pop();
-          histIdx = -1; draft = '';
-          sendBox.value = '';
-        } else {
-          // F8b:HEX 解析失败等(400)把后端错误信息展示出来
-          r.text().then(t => {
-            sendBox.classList.add('send-err');
-            showToast(t || '发送失败 (' + r.status + ')');
-          });
-        }
-      })
-      .catch(() => {
-        sendBox.classList.add('send-err');
-        showToast('发送失败:服务未响应');
-      });
-  }
-  $('auto-scroll').onchange = e => { autoScroll = e.target.checked; lsSet('auto-scroll', autoScroll ? '1' : '0'); if (autoScroll) { follow = true; scrollBottom(); } };
-
-  // 面板偏好(F1 统一真源):change → 服务端 /api/settings(tick 500ms 快照
-  // 落盘,reload 由 /api/prefs 回填);localStorage 仅作断连兜底。
-  // 文本输入(目标设备)按键防抖 400ms;select/checkbox 一次 change 即一值,
-  // 按键分桶合并,互不吞并
-  const prefTimers = {};
-  function postPref(key, patch, delay) {
-    clearTimeout(prefTimers[key]);
-    prefTimers[key] = setTimeout(() => { delete prefTimers[key]; postSettings(patch).catch(() => {}); }, delay || 0);
-  }
-  // FR-11/F8c:文本 ↔ hex 互转(与 worker HEX 接收输出同格式:两位大写、空格分隔)
-  function textToHex(s) {
-    const out = [];
-    for (const b of new TextEncoder().encode(s)) out.push(b.toString(16).toUpperCase().padStart(2, '0'));
-    return out.join(' ');
-  }
-  function hexToText(s) {
-    const cleaned = s.split(/[\s:\-]+/).map(t => t.replace(/^0[xX]/, '')).join('');
-    if (!cleaned.length || cleaned.length % 2 || !/^[0-9a-fA-F]+$/.test(cleaned)) return null;
-    const bytes = new Uint8Array(cleaned.length / 2);
-    for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(cleaned.slice(i * 2, i * 2 + 2), 16);
-    return new TextDecoder().decode(bytes);
-  }
-  // 发送行尾/HEX 发送经 settings 通道记忆(行尾字节由服务端追加,FR-12)
-  $('tx-ending').addEventListener('change', e => { lsSet('tx-ending', e.target.value); postPref('sendEnding', { sendEnding: +e.target.value }); });
-  // ---- 连接设置组五项(F1:此前只写 localStorage,reload 被服务端回填覆盖)----
-  $('channel').addEventListener('change', e => { lsSet('channel', e.target.value); postPref('channel', { channel: +e.target.value }); });
-  $('iface').addEventListener('change', e => { lsSet('iface', e.target.value); postPref('iface', { ifaceIndex: +e.target.value }); });
-  $('speed').addEventListener('change', e => { lsSet('speed', String(e.target.selectedIndex)); postPref('speed', { speedIndex: e.target.selectedIndex }); });
-  $('chip').addEventListener('input', () => postPref('chip', { chip: $('chip').value }, 400));
-  $('chip').addEventListener('change', () => postPref('chip', { chip: $('chip').value }));
-  // 数据源后端(阶段二):切换仅断开态可选(setState 已禁用,服务端 409 兜底);
-  // 切到纯软件后端立即禁用 J-Link 下拉,不等 /api/backends 重拉
-  $('backend').addEventListener('change', e => {
-    lsSet('backend', e.target.value);
-    syncBackendUi();
-    postPref('backend', { backend: e.target.value });
-  });
-  $('auto-frame').addEventListener('change', e => { lsSet('auto-frame', e.target.checked ? '1' : '0'); postPref('autoFrame', { autoFrame: e.target.checked }); });
-  // HEX 发送:开关记忆 + 双向转换(勾选 文本→hex,取消 hex→文本;不可解析保留
-  // 原文;只改输入框,不触发发送/历史)
-  $('hex-send').addEventListener('change', e => {
-    lsSet('hex-send', e.target.checked ? '1' : '0');
-    postPref('hexSend', { hexSend: e.target.checked });
-    const v = sendBox.value;
-    if (!v.trim()) return;
-    sendBox.value = e.target.checked ? textToHex(v) : (hexToText(v) ?? v);
-  });
-  // ---- S4 时间戳开关:显示层装饰,localStorage 记忆(与字号/主题同模式,
-  // 不进服务端 prefs)---- 切换按现有行 runs 全量重绘(SerialHub :2661-2665 同法):
-  // 前缀加在行首、ANSI 着色 runs 不受影响;CSS pre-wrap 换行重排时前缀只落在
-  // 首物理行(与 FR-17 硬换行/按列换行的交互:前缀属行首,续行是纯文本回流)。
-  // 搜索匹配不含前缀(rec.text 只是 runs 原文,偏移不受影响);导出内容来自
-  // 服务端原始行文本,天然无前缀;snapshot 回放的老行无 rec.ts → 无前缀(已知口径)
-  function fmtTs(ts) {
-    const d = new Date(ts);
-    const p = (n, w) => String(n).padStart(w || 2, '0');
-    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + p(d.getMilliseconds(), 3);
-  }
-  $('timestamps').addEventListener('change', e => {
-    tsOn = e.target.checked;
-    lsSet('timestamps', tsOn ? '1' : '0');
-    for (const el of [...log.children]) if (el.__rec) renderRow(el.__rec);
-  });
-
-  // ===== 日志区右键菜单 + 拖选自动复制 =====
-  const ctxMenu = $('ctx-menu');
-  // 复制:navigator.clipboard(127.0.0.1 是规范定义的可信上下文,API 恒在;
-  // 旧 execCommand 回退是死代码——其能兜的"文档失焦 reject"场景同样失败)。
-  // S3:成功给中性 toast(N=选区字符数);失败(失焦 reject)仍静默不打断
-  function copyText(t) {
-    navigator.clipboard.writeText(t)
-      .then(() => showToast('已复制 ' + t.length + ' 字符', 'ok'))
-      .catch(() => {});
-  }
-  // 打开菜单瞬间快照选区文本:Chromium(含壳内 WebView2)在菜单项 mousedown
-  // 默认行为里塌缩文档选区,click 时 selectionInLog() 恒为空 → 复制永远落空
-  // (S6 实测抓到:MD 时 64 字符 → click 时 0)。快照后 click 路径才真正可达
-  let ctxSelText = '';
-  function openCtxMenu(x, y) {
-    // popover 自带 Esc 关/点外关(light-dismiss);重复右键时 showPopover 幂等,
-    // 加 :popover-open 守卫明确"只在关闭态打开"
-    if (!ctxMenu.matches(':popover-open')) ctxMenu.showPopover();
-    ctxSelText = selectionInLog();
-    $('ctx-copy').classList.toggle('disabled', !ctxSelText);
-    const w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
-    ctxMenu.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
-    ctxMenu.style.top = Math.min(y, window.innerHeight - h - 8) + 'px';
-  }
-  log.addEventListener('contextmenu', e => { e.preventDefault(); openCtxMenu(e.clientX, e.clientY); });
-  $('ctx-copy').addEventListener('click', () => {
-    if (ctxSelText) copyText(ctxSelText);
-    ctxMenu.hidePopover();
-  });
-  $('ctx-selectall').addEventListener('click', () => {
-    const range = document.createRange();
-    range.selectNodeContents(log);
-    const sel = window.getSelection();
-    sel.removeAllRanges(); sel.addRange(range);
-    ctxMenu.hidePopover();
-  });
-  // 拖选 mouseup 后自动复制选中文本(需选中非空;仅主键——右键 mouseup 走
-  // 右键菜单路径,不应重复触发复制)
-  log.addEventListener('mouseup', e => {
-    if (e.button !== 0) return;
-    setTimeout(() => {
-      const t = selectionInLog();
-      if (t) copyText(t);
-    }, 0);
-  });
-
-  // 字号 A±(纯前端,localStorage 记忆;默认 14 = VS Code Windows 默认字号,范围 9-30)
-  // 行高随字号重算并同步 CSS 变量,复刻 VS Code 行高算法 round(字号 × 1.5)
-  let logFs = +(lsGet('log-fs') || localStorage.getItem('web-log-fs') || 14);
-  function applyFs() {
-    document.documentElement.style.setProperty('--log-fs', logFs + 'px');
-    document.documentElement.style.setProperty('--log-lh', Math.round(logFs * 1.5) + 'px');
-    lsSet('log-fs', String(logFs));
-  }
-  $('A-minus').onclick = () => { logFs = Math.max(9, logFs - 1); applyFs(); };
-  $('A-plus').onclick = () => { logFs = Math.min(30, logFs + 1); applyFs(); };
-  applyFs();
-
-  // 主题(localStorage 记忆;下拉已迁入左面板接收组底部,与 A± 同区)
-  // 内置 4 套内嵌于上方 <style>;自定义主题 = 服务端 exe 旁 themes/*.css
-  // (SerialHub ADR-18 同构):选中即拉 CSS 注入 <style data-custom-theme>,
-  // 切换不刷新页面;移除 data-theme 让内置 :root 退为兜底,注入的 :root
-  // 令牌覆盖才能生效(同级选择器后者胜)
-  const themeSel = $('theme');
-  const BUILTIN_THEMES = ['dark', 'light', 'oled', 'sepia'];
-  let customThemeStyle = null;
-  function setCustomThemeCss(css) {
-    if (customThemeStyle) customThemeStyle.remove();
-    customThemeStyle = null;
-    if (css != null) {
-      customThemeStyle = document.createElement('style');
-      customThemeStyle.setAttribute('data-custom-theme', '');
-      customThemeStyle.textContent = css;
-      document.head.appendChild(customThemeStyle); // 置于主 <style> 之后,同特异性时后者的覆盖生效
-    }
-  }
-  function applyTheme(id) {
-    if (BUILTIN_THEMES.includes(id)) {
-      document.documentElement.dataset.theme = id;
-      setCustomThemeCss(null);
-      return;
-    }
-    fetch(API + '/api/theme-css/' + encodeURIComponent(id))
-      .then(r => { if (!r.ok) throw new Error(r.status); return r.text(); })
-      .then(css => { document.documentElement.removeAttribute('data-theme'); setCustomThemeCss(css); })
-      .catch(() => { document.documentElement.dataset.theme = 'dark'; setCustomThemeCss(null); }); // 主题文件被删等 → 回落内置深色
-  }
-  themeSel.onchange = () => { localStorage.setItem('web-theme', themeSel.value); applyTheme(themeSel.value); };
-  const savedTheme = localStorage.getItem('web-theme') || 'dark';
-  if (BUILTIN_THEMES.includes(savedTheme)) themeSel.value = savedTheme; // 自定义主题的 option 要等 /api/themes 回来才补齐
-  applyTheme(savedTheme);
-  // 自定义主题选项(exe 旁 themes/*.css,每次进入页面现拉)
-  fetch(API + '/api/themes').then(r => r.json()).then(list => {
-    for (const t of list) {
-      if (BUILTIN_THEMES.includes(t.id)) continue; // 内置项已在 HTML
-      const o = document.createElement('option');
-      o.value = t.id; o.textContent = t.name;
-      themeSel.appendChild(o);
-    }
-    const saved = localStorage.getItem('web-theme') || 'dark';
-    if (!BUILTIN_THEMES.includes(saved)) {
-      themeSel.value = saved;
-      if (themeSel.value !== saved) { // 所存主题已不存在(文件被删)→ 回落深色
-        themeSel.value = 'dark';
-        localStorage.setItem('web-theme', 'dark');
-      }
-    }
-  }).catch(() => {});
-
-  // ===== VS Code 式日志搜索(P0)=====
-  // 数据源:#log 已渲染行文本(≤500,与服务端 MAX_LOG_ROWS 一致;被裁剪即不可搜);按行匹配,不跨行。
-  // 词级高亮按 runs 重建保留 ANSI span;命中上限 2000 封顶;高亮重绘 rAF 批量提交。
-  const sBar = $('search-bar'), sInput = $('s-input'), sCount = $('s-count');
-  const sPrev = $('s-prev'), sNext = $('s-next'), sClose = $('s-close');
-  const sCaseBtn = $('s-case'), sRegexBtn = $('s-regex');
-  let searchOpen = false;
-  let scase = (lsGet('search-case') ?? localStorage.getItem('search.case')) === '1';  // 持久化:开关;query 不持久化
-  let sregex = (lsGet('search-regex') ?? localStorage.getItem('search.regex')) === '1';
-  let sre = null, serrMsg = '';       // 编译后的行匹配正则 / 非法正则原始消息
-  let matches = [];                   // 有序命中 [{rec, rg}](与 DOM 行序一致,裁剪时构成前缀)
-  let sCur = -1;                      // 当前命中下标,-1 = 未定位
-  let capped = false;                 // 命中达 2000 封顶
-  let sDebT = 0, sRaf = 0;
-  let sDebouncing = false;            // debounce 窗口:计数位保持 —,不闪上一轮陈旧计数
-  const sPending = new Set();         // 待重绘行(rAF 批量提交)
-
-  function selectionInLog() {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
-    const node = sel.getRangeAt(0).commonAncestorContainer;
-    if (node !== log && !log.contains(node)) return '';
-    return sel.toString();
-  }
-  function compileQuery() {
-    sre = null; serrMsg = '';
-    const q = sInput.value;
-    if (!q) return;
-    const src = sregex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    try { sre = new RegExp(src, scase ? 'g' : 'gi'); }
-    catch (e) { serrMsg = e.message; }
-  }
-  // 单行扫描:产出命中区间(行内偏移)入全局有序 matches,2000 封顶
-  function scanRec(rec) {
-    const ranges = [];
-    if (sre && !capped) {
-      sre.lastIndex = 0;
-      let m;
-      while ((m = sre.exec(rec.text))) {
-        if (!m[0].length) { // 零宽匹配防御(如 a*):跳过并前进,防死循环
-          sre.lastIndex++;
-          if (sre.lastIndex > rec.text.length) break;
-          continue;
-        }
-        ranges.push({ s: m.index, e: m.index + m[0].length });
-        if (matches.length + ranges.length >= 2000) { capped = true; break; }
-      }
-    }
-    rec.ranges = ranges;
-    for (const rg of ranges) matches.push({ rec, rg });
-    const plain = !ranges.length && (!rec.renderedRef || !rec.renderedRef.length);
-    if (plain) rec.renderedRef = ranges; // DOM 已是无高亮形态,免重绘
-    else queueRender(rec);
-  }
-  function curRgOf(rec) {
-    return (sCur >= 0 && sCur < matches.length && matches[sCur].rec === rec)
-      ? matches[sCur].rg : null;
-  }
-  // 按 runs 重建行内容:命中子串包 mark.s-hit,其余片段还原 span+内联 fg → 内联色可复现。
-  // S4:时间戳前缀也在此单点渲染——appendRow(首次)与搜索重绘共用,开关切换
-  // 全量重绘后 prefix 与高亮状态不互相破坏(前缀是独立 span,不占 rec.text 偏移)
-  function renderRow(rec) {
-    const curRg = curRgOf(rec);
-    const el = rec.el;
-    el.textContent = '';
-    if (tsOn && rec.ts != null) {
-      const t = document.createElement('span');
-      t.className = 'ts';
-      t.textContent = '[' + fmtTs(rec.ts) + '] ';
-      el.appendChild(t);
-    }
-    let off = 0;
-    for (const run of rec.runs) {
-      const s = off, e = off + run.text.length;
-      let pos = s;
-      for (const rg of rec.ranges) {
-        if (rg.e <= s || rg.s >= e) continue;
-        const a = Math.max(rg.s, s), b = Math.min(rg.e, e);
-        if (a > pos) seg(el, run, pos - s, a - s, false, false);
-        seg(el, run, a - s, b - s, true, rg === curRg);
-        pos = b;
-      }
-      if (pos < e) seg(el, run, pos - s, e - s, false, false);
-      off = e;
-    }
-    rec.renderedRef = rec.ranges;
-  }
-  function seg(el, run, from, to, hit, cur) {
-    const n = document.createElement(hit ? 'mark' : 'span');
-    n.textContent = run.text.slice(from, to);
-    if (run.fg) n.style.color = run.fg; // 前景色不变
-    if (hit) n.className = cur ? 's-hit cur' : 's-hit';
-    el.appendChild(n);
-  }
-  function queueRender(rec) {
-    sPending.add(rec);
-    if (!sRaf) sRaf = requestAnimationFrame(() => {
-      sRaf = 0;
-      const list = [...sPending]; sPending.clear();
-      for (const r of list) if (r.el.isConnected) renderRow(r);
-    });
-  }
-  function rebuild() { // 全量重算:重编正则 → 逐行扫描 → 只重绘高亮状态变化的行
-    compileQuery();
-    matches = []; sCur = -1; capped = false;
-    for (const el of [...log.children]) {
-      if (el.__rec) scanRec(el.__rec);
-    }
-    updateCount();
-  }
-  function updateCount() {
-    if (sDebouncing) return; // debounce 窗口(含流式新行的增量计数):维持 —,到期后由 rebuild 显示新结果
-    sInput.classList.toggle('err', !!serrMsg);
-    if (!sInput.value) { sCount.textContent = '—'; sCount.className = ''; sCount.title = ''; }
-    else if (serrMsg) { sCount.textContent = '无效正则'; sCount.className = 'err'; sCount.title = 'RegExp: ' + serrMsg; }
-    else if (!matches.length) { sCount.textContent = '0/0'; sCount.className = 'err'; sCount.title = ''; }
-    else {
-      sCount.textContent = (sCur + 1) + '/' + (capped ? '2000+' : matches.length);
-      sCount.className = ''; sCount.title = '';
-    }
-    const dis = !!serrMsg || !sInput.value || !matches.length; // 错误态/空 query/无命中 → 导航禁用
-    sPrev.disabled = sNext.disabled = dis;
-  }
-  // 导航滚动:当前命中行已整个可见则不动,否则垂直居中;此滚动视为手动滚动
-  function revealHit(el) {
-    const lr = log.getBoundingClientRect(), er = el.getBoundingClientRect();
-    if (er.top >= lr.top && er.bottom <= lr.bottom) return;
-    log.scrollTop += (er.top + er.bottom) / 2 - (lr.top + lr.bottom) / 2;
-  }
-  function setCurrent(i) {
-    const prev = sCur >= 0 && sCur < matches.length ? matches[sCur] : null;
-    sCur = i;
-    const cur = matches[i];
-    if (prev && prev.rec !== cur.rec) renderRow(prev.rec);
-    renderRow(cur.rec);
-    revealHit(cur.rec.el);
-    updateCount();
-  }
-  function navigate(dir) {
-    if (!sre || serrMsg || !sInput.value || !matches.length) return;
-    let i = sCur + dir;
-    if (i >= matches.length) i = 0;             // 循环环绕
-    if (i < 0) i = matches.length - 1;
-    setCurrent(i);
-  }
-  function resetRows() { // 行 DOM 清空(清空/快照重建):高亮回 IDLE,query 与开关保留
-    log.innerHTML = '';
-    matches = []; sCur = -1; capped = false; sPending.clear();
-    updateCount();
-  }
-  // 行被 DOM 裁剪(>500,与服务端 MAX_LOG_ROWS 对齐):摘除其命中(命中序与行序一致 → 被裁行命中构成前缀);
-  // 当前命中所在行被裁 → 推进至下一存活命中(不滚动)
-  function onRowsRemoved(els) {
-    if (!matches.length) return;
-    const set = new Set(els);
-    let cut = 0;
-    while (cut < matches.length && set.has(matches[cut].rec.el)) cut++;
-    if (!cut) return;
-    matches.splice(0, cut);
-    if (sCur >= 0) {
-      sCur = sCur < cut ? (matches.length ? 0 : -1) : sCur - cut;
-      if (sCur >= 0) renderRow(matches[sCur].rec);
-    }
-    updateCount();
-  }
-  function clearHighlights() {
-    matches = []; sCur = -1; capped = false;
-    for (const el of [...log.children]) {
-      const rec = el.__rec;
-      if (rec && rec.ranges.length) { rec.ranges = []; queueRender(rec); }
-    }
-  }
-  function openSearch() {
-    const first = !searchOpen;
-    searchOpen = true;
-    sBar.hidden = false;
-    const sel = selectionInLog();               // 仅当 #log 内有文本选区才带入
-    if (sel) {
-      sInput.value = sel.split('\n')[0].slice(0, 200);
-      rebuild();                                // 带入选区即重算
-    } else if (first) {
-      rebuild();                                // 首次打开:全量重算,不滚动不定位
-    }
-    sInput.focus();
-    sInput.select();                            // query 全选,键入即覆盖
-  }
-  function closeSearch() {
-    if (!searchOpen) return;
-    searchOpen = false;
-    sBar.hidden = true;
-    clearHighlights();                            // 清全部高亮;query 与开关保留内存
-  }
-  function refreshToggles() {
-    sCaseBtn.classList.toggle('on', scase);
-    sRegexBtn.classList.toggle('on', sregex);
-  }
-  sCaseBtn.onclick = () => {                      // 开关切换:立即重算
-    scase = !scase; lsSet('search-case', scase ? '1' : '0');
-    refreshToggles(); if (searchOpen) rebuild();
-  };
-  sRegexBtn.onclick = () => {
-    sregex = !sregex; lsSet('search-regex', sregex ? '1' : '0');
-    refreshToggles(); if (searchOpen) rebuild();
-    // 正则开关同步服务端偏好(重启后面板初值恢复)
-    postSettings({ searchRegex: sregex }).catch(() => {});
-  };
-  sInput.addEventListener('input', () => {        // 输入即搜:150ms debounce 全量重算
-    clearTimeout(sDebT);
-    // 输入即清计数位为 —(含 err 类):debounce 窗口内不显示上一轮陈旧计数
-    sDebouncing = true;
-    sCount.textContent = '—';
-    sCount.className = '';
-    sCount.title = '';
-    sDebT = setTimeout(() => { sDebouncing = false; if (searchOpen) rebuild(); }, 150);
-  });
-  sInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); navigate(e.shiftKey ? -1 : 1); }
-  });
-  sNext.addEventListener('click', () => { navigate(1); sInput.focus(); });
-  sPrev.addEventListener('click', () => { navigate(-1); sInput.focus(); });
-  sClose.addEventListener('click', closeSearch);
-  // document 级接管(capture,先于页内 handler):Ctrl+F 打开、F3/Shift+F3 导航、Esc 关闭
-  document.addEventListener('keydown', e => {
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'f' || e.key === 'F')) {
-      e.preventDefault();
-      openSearch();
-    } else if (e.key === 'F3') {
-      if (searchOpen) { e.preventDefault(); navigate(e.shiftKey ? -1 : 1); }
-    } else if (e.key === 'Escape' && searchOpen) {
-      e.preventDefault();
-      closeSearch();
-    }
-  }, true);
-  refreshToggles();
-
-  function connectWS() {
-    const ws = new WebSocket(API.replace('http', 'ws') + '/ws');
-    ws.onmessage = onMsg;
-    ws.onclose = () => setTimeout(connectWS, 1500);
-  }
-  connectWS();
-  setInterval(() => fetch(API + '/api/status').then(r => r.json()).then(s => {
-    // F3(UX P1-4):轮询同步连接态**与文案**——sessionStatus 由服务端
-    // State/Progress 统一维护,页面中途打开或 WS 漏掉 state 消息时,
-    // 状态栏 2s 内对齐,不再出现「未连接 + 绿点 + 断开按钮」同屏
-    if (connected !== s.connected) setState(s.connected, s.sessionStatus);
-    else if ($('status').textContent !== s.sessionStatus) {
-      $('status').textContent = s.sessionStatus;
-    }
-  }).catch(() => {}), 2000);
-  fetch(API + '/api/devices').then(r => r.json()).then(fillDatalist).catch(() => {});
-  fetch(API + '/api/jlinks').then(r => r.json()).then(fillJlinks).catch(() => {});
-  fetch(API + '/api/backends').then(r => r.json()).then(fillBackends).catch(() => {});
-  fetch(API + '/api/status').then(r => r.json()).then(s => {
-    if (s.device) renderDevice(s.device);
-    if (s.version) $('version').textContent = 'v' + s.version; // T10:低调版本号
-    // 首屏同步连接态:WS snapshot 不带 state 消息,不调 setState 的话
-    // 刷新后 ~2.2s 内红点/「未连接」/禁用按钮与真实连接态矛盾(2s 轮询兜底才纠正)
-    if (connected !== s.connected) setState(s.connected, s.sessionStatus);
-  }).catch(() => {});
-  // ---- S9「浏览器打开」:壳标记 window.__MINI_SHELL 由 gui.rs 初始化脚本注入,
-  // 壳内 window.open 被原生层吞掉(SerialHub Sprint7 同款实测)→ 点按钮走
-  // POST /api/open-browser 让服务端拉起系统默认浏览器。纯浏览器访问无标记,
-  // 按钮保持 hidden(浏览器自带新标签,显示反而冗余) ----
-  if (window.__MINI_SHELL) {
-    const ob = $('open-browser');
-    ob.hidden = false;
-    ob.onclick = () => fetch(API + '/api/open-browser', { method: 'POST' })
-      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); showToast('已在系统浏览器打开', 'ok'); })
-      .catch(() => showToast('打开浏览器失败'));
-  }
-  // ---- 关于框:底栏版本号即按钮,原生 <dialog>(Esc 原生关、点背板关)。
-  // 外链在壳内走 /api/open-browser(服务端仅放行本仓库前缀的 URL),
-  // 纯浏览器直接新标签 ----
-  {
-    const about = $('about');
-    $('version').onclick = () => {
-      $('about-ver').textContent = $('version').textContent;
-      about.showModal();
-    };
-    $('about-close').onclick = () => about.close();
-    about.addEventListener('click', e => { if (e.target === about) about.close(); });
-    about.querySelectorAll('.about-links button').forEach(b => b.onclick = () => {
-      const url = b.dataset.url;
-      if (window.__MINI_SHELL) {
-        fetch(API + '/api/open-browser', { method: 'POST',
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) })
-          .catch(() => {});
-      } else {
-        window.open(url, '_blank', 'noopener');
-      }
-    });
-  }
-  // ---- 远程访问框(FR-28):管理台即网页——本机/局域网地址卡片,整行点击
-  // 即复制(成功短暂「✓ 已复制」);局域网可达需 --listen 0.0.0.0 或具体网卡,
-  // 默认仅回环、如实提示 ----
-  {
-    const dlg = $('remote');
-    const cards = () => [...dlg.querySelectorAll('.remote-card')];
-    const flashCopied = card => {
-      const st = card.querySelector('.remote-copy-state');
-      st.classList.add('done');
-      clearTimeout(card._copyT);
-      card._copyT = setTimeout(() => st.classList.remove('done'), 1400);
-    };
-    $('remote-btn').onclick = () => {
-      fetch(API + '/api/addr').then(r => r.json()).then(a => {
-        const local = 'http://127.0.0.1:' + a.port;
-        $('remote-url-local').textContent = local;
-        $('remote-card-local').dataset.url = local;
-        const lan = a.open && a.lanIp ? 'http://' + a.lanIp + ':' + a.port : '';
-        $('remote-lan-row').hidden = !lan;
-        $('remote-hint').hidden = a.open;
-        if (lan) {
-          $('remote-url-lan').textContent = lan;
-          $('remote-lan-row').dataset.url = lan;
-        }
-        dlg.showModal();
-      }).catch(() => {});
-    };
-    $('remote-close').onclick = () => dlg.close();
-    dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
-    cards().forEach(c => c.onclick = () =>
-      navigator.clipboard.writeText(c.dataset.url).then(() => flashCopied(c)));
-  }
-  // 面板初值恢复:服务端持久化偏好(%APPDATA% prefs.json,500ms 快照)。
-  // 主题/字号仍走 localStorage,不经此通道
-  fetch(API + '/api/prefs').then(r => r.json()).then(p => {
-    if (p.chip) $('chip').value = p.chip;
-    $('iface').value = String(p.ifaceIndex);
-    lsSet('iface', String(p.ifaceIndex));
-    $('speed').selectedIndex = Math.min(p.speedIndex, $('speed').length - 1);
-    lsSet('speed', String($('speed').selectedIndex));
-    $('channel').selectedIndex = Math.min(p.channel, $('channel').length - 1);
-    lsSet('channel', String($('channel').selectedIndex));
-    $('rx-ending').value = String(p.rxEnding);
-    lsSet('rx-ending', String(p.rxEnding));
-    $('frame-timeout').value = p.frameTimeout;
-    lsSet('frame-timeout', String(p.frameTimeout));
-    $('encoding').value = String(p.encodingIndex);
-    lsSet('encoding', String(p.encodingIndex));
-    $('hex-rx').checked = !!p.hexRx;
-    lsSet('hex-rx', p.hexRx ? '1' : '0');
-    $('auto-frame').checked = !!p.autoFrame;
-    lsSet('auto-frame', p.autoFrame ? '1' : '0');
-    if (p.timerIntervalSec != null) $('timer-interval').value = p.timerIntervalSec;
-    $('timer-on').checked = !!p.timerOn;
-    if (p.sendEnding != null) { $('tx-ending').value = String(p.sendEnding); lsSet('tx-ending', String(p.sendEnding)); }
-    if (typeof p.hexSend === 'boolean') { $('hex-send').checked = !!p.hexSend; lsSet('hex-send', p.hexSend ? '1' : '0'); }
-    if (typeof p.searchRegex === 'boolean') {
-      sregex = p.searchRegex;
-      lsSet('search-regex', sregex ? '1' : '0');
-      refreshToggles();
-    }
-    // J-Link 下拉选定恢复(列表由 /api/jlinks 异步填充,这里先记下待套用)
-    if (p.jlinkSerial != null) pendingJlinkSn = p.jlinkSerial;
-    // 数据源后端恢复(阶段二):选项由 /api/backends 异步填充,未到齐时跳过
-    // ——服务端 /api/backends 的 selected 与偏好同源,状态不丢
-    if (p.backend && [...$('backend').options].some(o => o.value === p.backend)) {
-      $('backend').value = p.backend;
-      lsSet('backend', p.backend);
-    }
-  }).catch(() => {});
-  // 发送历史:服务端持久化(prefs.send_history,去重置顶上限 50)——启动拉一次,
-  // 最新在前;本次会话新发送在 send() 里即时并入本地(同规则),↑↓ 浏览共用一份
-  fetch(API + '/api/history').then(r => r.json()).then(h => {
-    if (Array.isArray(h)) for (const t of h) if (!sendHistory.includes(t)) sendHistory.push(t);
-  }).catch(() => {});
-</script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

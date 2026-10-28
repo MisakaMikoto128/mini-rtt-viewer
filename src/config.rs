@@ -251,8 +251,10 @@ mod tests {
         let p = tmp_path("backend");
         std::fs::write(&p, r#"{"chip_name":"STM32F103C8"}"#).unwrap();
         assert_eq!(load_from(&p).backend, "jlink"); // 缺字段回落默认
-        let mut prefs = StoredPrefs::default();
-        prefs.backend = "demo".into();
+        let prefs = StoredPrefs {
+            backend: "demo".into(),
+            ..Default::default()
+        };
         save_to(&p, &prefs).unwrap();
         assert_eq!(load_from(&p).backend, "demo"); // 往返保留
         let _ = std::fs::remove_file(&p);

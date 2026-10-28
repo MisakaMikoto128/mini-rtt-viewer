@@ -143,12 +143,6 @@ impl LogPump {
         self.rows.len()
     }
 
-    /// 测试专用:内部保留行数(裁剪断言用;仅 lib 测试编译)
-    #[cfg(test)]
-    pub fn test_rows_len(&self) -> usize {
-        self.rows.len()
-    }
-
     /// "清空"按钮:缓冲、行、解析器颜色状态全部丢弃
     pub fn clear(&mut self) {
         self.pending.clear();
@@ -259,7 +253,7 @@ mod tests {
             pump.enforce_line_cap();
         }
         assert!(pump.take_new_rows().is_some());
-        assert_eq!(pump.test_rows_len(), MAX_LOG_ROWS);
+        assert_eq!(pump.rows_len(), MAX_LOG_ROWS);
         // 最旧的 line0..line4 被挤出窗口;fresh 行包含全部输入
         let mut pump2 = LogPump::default();
         for i in 0..(MAX_LOG_ROWS + 5) {
@@ -368,7 +362,7 @@ mod tests {
         }
         let rows = pump.take_new_rows().unwrap();
         assert_eq!(rows.len(), MAX_LOG_ROWS + 3); // 新增全部返回
-        assert_eq!(pump.test_rows_len(), MAX_LOG_ROWS); // 保留窗口裁掉最旧
+        assert_eq!(pump.rows_len(), MAX_LOG_ROWS); // 保留窗口裁掉最旧
         assert_eq!(pump.take_dropped(), 3);
     }
 

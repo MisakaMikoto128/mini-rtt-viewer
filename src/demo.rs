@@ -51,10 +51,6 @@ const AUTO_RECONNECT_SECS: u64 = 3;
 /// 重置模拟:State(false) 到 State(true) 的间隔(短暂断开重挂)
 const RESET_GAP_MS: u64 = 800;
 
-pub fn is_enabled(args: &[String]) -> bool {
-    args.iter().any(|a| a == "--demo-log")
-}
-
 /// demo 后端私有连接命令(真机协议 WorkerCmd 已删除 DemoConnect/DemoDisconnect,
 /// 连接面与数据面分离;真机 worker 永远看不到本类型)
 enum DemoCmd {
@@ -273,8 +269,8 @@ fn spawn_singleton(
                         if connected {
                             let _ =
                                 msg_tx.send(WorkerMsg::Log("── 目标已重置 (demo) ──\r\n".into()));
-                            let _ = msg_tx
-                                .send(WorkerMsg::State(false, "● 目标重置中 (demo)".into()));
+                            let _ =
+                                msg_tx.send(WorkerMsg::State(false, "● 目标重置中 (demo)".into()));
                             connected = false;
                             reset_at = Some(Instant::now() + Duration::from_millis(RESET_GAP_MS));
                             disconnect_at = None;
@@ -313,8 +309,7 @@ fn spawn_singleton(
                         reconnect_at = None;
                         reset_at = None;
                         if connected {
-                            let _ =
-                                msg_tx.send(WorkerMsg::State(false, "● 未连接 (demo)".into()));
+                            let _ = msg_tx.send(WorkerMsg::State(false, "● 未连接 (demo)".into()));
                             connected = false;
                         }
                         // 手动断开后不自动重连(忠实模拟真机)
@@ -337,8 +332,7 @@ fn spawn_singleton(
             } else if connected {
                 if let Some(t) = disconnect_at {
                     if now >= t {
-                        let _ =
-                            msg_tx.send(WorkerMsg::State(false, "● 未连接 (demo)".into()));
+                        let _ = msg_tx.send(WorkerMsg::State(false, "● 未连接 (demo)".into()));
                         connected = false;
                         disconnect_at = None;
                         if !manual {

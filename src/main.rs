@@ -49,7 +49,11 @@ fn main() {
         match args[i].as_str() {
             "--demo-log" => demo = true,
             "--backend" => {
-                let Some(v) = args.get(i + 1).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+                let Some(v) = args
+                    .get(i + 1)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                else {
                     eprintln!("mini-rtt-viewer: --backend 需要一个后端 id 参数(如 jlink/demo)");
                     std::process::exit(2);
                 };

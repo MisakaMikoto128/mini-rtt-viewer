@@ -1,6 +1,6 @@
 # Mini RTT Viewer — 项目经验笔记
 
-## 项目现状速览(2026-09-28,v0.4.2 + 后端抽象化)
+## 项目现状速览(2026-10-28,v0.4.2 + 后端抽象化/Web 模块化)
 
 **一句话**:J-Link RTT 日志查看器,单 exe 双形态——桌面壳(tao+wry+tray 内嵌
 WebView)与纯服务(`--no-window`)共用同一套 Rust 数据层 + axum Web 管理台。
@@ -18,16 +18,19 @@ WebView)与纯服务(`--no-window`)共用同一套 Rust 数据层 + axum Web 管
   WorkerHandle/DeviceInfo/APP_SHUTDOWN` + 注册表 `backend_by_id`;
   `backend_jlink.rs`:JLink 后端(worker spawn/枚举桥接/reset reconnect 全在
   这);web 层**禁止**再出现按后端名的 if 分叉
-- `web.rs`(核心):`Shared` 共享状态(实现 Host)+ axum 路由 + `tick_loop`
-  数据泵线程(10ms = `log_model::FLUSH_MS`,消化 worker 消息 → LogPump →
-  broadcast → 各 WS 连接;500ms 统计节流 + 偏好快照落盘 + 定时发送)
+- `web.rs` 是 Web facade(服务装配/固定路由/后端解析);`src/web/` 按职责拆为
+  `state.rs`(`Shared` + Host)、`api.rs`(HTTP)、`pump.rs`(10ms 数据泵)、
+  `ws.rs`(事件线格式/快照/重同步)与 `theme.rs`。数据泵消化 worker 消息 →
+  LogPump → broadcast;500ms 统计节流 + 偏好快照落盘 + 定时发送
 - `rtt.rs`:JLink worker 线程,`connect_target`(连接序列)+ `rtt_read_loop`
   (5ms 轮询 + 断帧判定 + 字符集/HEX 热切换);`jlink_dll.rs`:FFI
 - `log_model.rs`:纯逻辑日志泵(断行/ANSI/512 兜底/500 行上限),可单测
 - `config.rs` 偏好持久化(含 `backend` 字段)/ `device_db.rs` 设备库后台枚举
   (归 jlink 后端驱使)/ `demo.rs` 虚拟后端(懒启动单例 + DemoCmd 私有通道,
   20s/3s 自动周期状态机)
-- 前端 `ui/web/index.html` 经 `include_str!` 内嵌,无独立构建步骤
+- 前端 `ui/web/index.html` + `styles.css` + 原生 ES modules 经 `include_str!`
+  内嵌,无独立构建步骤;`app.js` 只做全局协调,API/日志视图/搜索/显示设置/
+  弹窗分别位于同名模块。业务偏好只由服务端持有,localStorage 仅存显示偏好
 
 **审计(2026-09-25 起的 /goal 长任务,引擎自有)**:报告与进度在
 `docs/audit/`(T1 架构 + T2 逐文件),PROGRESS.md **只允许引擎写**。
@@ -128,8 +131,8 @@ main 只保留抽象接口);`audit/nova-20260925` 为审计引擎分支(本地�
 
 ## API/WS 契约同步三件套
 
-改任何 API/WS 行为必须同步三处:`src/web.rs`(含模块头 API 契约注释)、
-`ui/web/index.html`、`tests/web/`(Python 黑盒)。线格式由单测
+改任何 API/WS 行为必须同步三处:`src/web.rs` 及 `src/web/`(含模块头 API 契约注释)、
+`ui/web/` 对应前端模块、`tests/web/`(Python 黑盒)。线格式由单测
 `ws_event_wire_format_matches_legacy_contract` 逐字节锁定;device 8 字段
 键名由 `device_info_json_keys_match_status_contract` 锁定(单一构造点
 `device_info_json`)。camelCase 坑:serde `rename_all="camelCase"` 只改
@@ -201,8 +204,8 @@ textContent,**禁止 innerHTML 拼接**(即使做了 `"` 转义也不行)。
 ## 验证工具
 
 - `cargo test --lib`(backend/log_model/web/rtt/config/ansi/gui 纯逻辑)
-- `python -m pytest tests/web -q`(34 条黑盒:HTTP 契约/后端可选面/主题/HEX/
-  持久化/Playwright UI;服务固定 18099 端口,组间残留进程会挡下一组)
+- `python -m pytest tests/web -q`(完整 HTTP/后端/主题/HEX/持久化/Playwright
+  黑盒;服务固定 18099 端口,组间残留进程会挡下一组;数量以当前测试收集为准)
 - 冒烟:`mini-rtt-viewer.exe --no-window --demo-log --port 8777`
   (带 `RTT_PREFS_FILE` 隔离!)+ curl 打 API;带 UI 演示用 `--demo-log`
   (`powershell Start-Process` 分离启动)

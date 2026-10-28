@@ -1,4 +1,6 @@
-use crate::backend::{DeviceInfo, WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN};
+use crate::backend::{
+    bytes_to_hex_upper, DeviceInfo, WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN,
+};
 use crate::jlink_dll::{JLinkDll, RTT_CMD_START, RTT_CMD_STOP, TIF_JTAG, TIF_SWD};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc};
@@ -316,11 +318,7 @@ fn rtt_read_loop(
             // HEX 接收模式:原始字节直接转十六进制文本(跳过字符集解码保真),
             // 行语义退化为断帧——一帧一行 hex
             let text = if current_hex {
-                let mut s = String::with_capacity(n as usize * 3);
-                for b in &buf[..n as usize] {
-                    s.push_str(&format!("{b:02X} "));
-                }
-                s
+                bytes_to_hex_upper(&buf[..n as usize])
             } else {
                 decoder.decode(&buf[..n as usize])
             };

@@ -31,9 +31,9 @@ pub(crate) fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) 
     // 因 elapsed 已超时立即发——与桌面版 tick step 6 同语义)
     let mut last_timer = Instant::now();
     loop {
-        // 先消化后睡眠(消化在前):装配阶段入队的消息(强制 demo 的启动
-        // State(true))必须在 axum bind 前落地,保证首个 HTTP 可见时连接态
-        // 已就绪(设计文档确定性论证;旧版 sleep-first 首轮要等 10ms,存在
+        // 先消化后睡眠(消化在前):装配阶段入队的消息(如后端启动状态)
+        // 必须在 axum bind 前落地,保证首个 HTTP 可见时连接态已就绪
+        // (设计文档确定性论证;旧版 sleep-first 首轮要等 10ms,存在
         // bind 后短窗内 connected=false 的竞态)。稳态节奏不变(每轮仍间隔
         // FLUSH_MS),仅首个 tick 提前
         let rx_ending = *shared.rx_ending.lock().unwrap();
@@ -44,9 +44,8 @@ pub(crate) fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) 
                 Ok(WorkerMsg::Block(text)) => {
                     if !pump.paused {
                         // RX 统计按 worker 发出的块长计:HEX 接收的文本→hex
-                        // 转换已统一下沉到各后端 worker 内(真机 rtt.rs、demo
-                        // 线程消费 worker_shared().hex_rx),块到达时已是最终
-                        // 展示文本,demo 与真机 hex 的统计口径由此对齐
+                        // 转换已统一下沉到各后端 worker 内,块到达时已是最终
+                        // 展示文本,各后端的 HEX 统计口径由此对齐
                         shared
                             .rx_bytes
                             .fetch_add(text.len() as u64, Ordering::Relaxed);
@@ -89,7 +88,7 @@ pub(crate) fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) 
                     if !connected {
                         // 断开统一口径(F2):会话统计全清 + 设备信息清空,
                         // 消除「sessionSec 归零而 rxBytes 残留」的口径矛盾
-                        // (demo 周期断开与真机断开走同一分支)
+                        // 自动重连、手动断开与 worker 退出都走同一分支
                         shared.rx_bytes.store(0, Ordering::Relaxed);
                         shared.tx_bytes.store(0, Ordering::Relaxed);
                         *shared.session_start.lock().unwrap() = None;
@@ -128,8 +127,7 @@ pub(crate) fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) 
                 Ok(WorkerMsg::Exited) => {
                     // 只清"确实已停"的登记句柄:reset reconnect 场景下旧 worker
                     // 的 Exited 可能晚于新 worker 登记到达,不能误清新句柄
-                    // (alive=false 由 worker 线程在发出 Exited 前置位);
-                    // demo 后端的进程级单例线程不发 Exited(只因 APP_SHUTDOWN 退出)
+                    // (alive=false 由 worker 线程在发出 Exited 前置位)
                     let mine = {
                         let mut s = shared.session.lock().unwrap();
                         let mine = match s.as_ref() {

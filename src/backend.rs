@@ -1,21 +1,10 @@
-//! 后端抽象缝(设计契约:docs/product/backend-abstraction.md §3,阶段一):
-//! web 层只依赖 `RttBackend` trait,不再感知具体后端;worker 协议类型
-//! (`WorkerMsg`/`WorkerCmd`/`WorkerHandle`/`DeviceInfo`/`APP_SHUTDOWN`)是缝的
-//! 公共契约,统一迁到这里(rtt.rs 保留 worker 内部实现)。
+//! 后端抽象缝:Web 层只依赖 `RttBackend` trait;worker 协议类型统一由本模块
+//! 提供,`rtt.rs` 保留 J-Link worker 内部实现。
 //!
-//! - `SessionHandle`:web 层看到的"一次连接"的统一控制面(jlink = 真 worker
-//!   的 handle+cmd_tx;demo = 单例线程的 cmd_tx + 恒活 handle);
-//! - `Host`:web 层(Shared)暴露给**后端实现**的最窄状态面;后端禁止直接摸
-//!   Shared 其它字段;必须 Send+Sync+'static(reset_reconnect 把 Arc<dyn Host>
-//!   交给重连线程);
-//! - 注册表:两个后端都是 `&'static`(jlink 无内部状态;demo 的内部可变性用
-//!   `Mutex<Option<Sender<DemoCmd>>>` const 构造)。**禁止经 WebOptions/Host
-//!   向后端传通道**,一切状态经 Host;
-//! - Err 统一映射:can_connect/connect/reset_in_place/power 的 Err →
-//!   HTTP 409 + Err 文案(与现状逐字一致,web 层不做第二套文案)。
-//!
-//! 阶段一只有按 id 取注册项;阶段二(后端可选面)再加 available 列表与
-//! on_selected/on_deselected 切换流程。
+//! - `SessionHandle`:一次连接的控制面(handle + cmd_tx)。
+//! - `Host`:Web 层暴露给后端实现的最窄状态面,后端不得直接访问 Shared 其它字段。
+//! - 正式注册表只包含 J-Link;独立 QA 进程可注入自己的测试后端。
+//! - Err 统一映射为 HTTP 409 + 后端错误文案。
 
 use crate::config::StoredPrefs;
 use crate::rtt::SPEEDS_KHZ;
@@ -37,7 +26,7 @@ pub enum WorkerMsg {
     State(bool, String),
     /// 连接过程的中间进度(只更新状态栏文字)
     Progress(String),
-    /// 连接成功后采集的设备信息(DLL 查询,字段对齐原项目;demo 为演示数据)
+    /// 连接成功后采集的设备信息(DLL 查询,字段对齐原项目)
     DeviceInfo(DeviceInfo),
     /// J-Link 设备库候选名(启动时后台枚举/磁盘缓存,用于目标设备下拉)
     DeviceNames(Vec<String>),
@@ -45,7 +34,6 @@ pub enum WorkerMsg {
     JLinks(Vec<(u32, String)>),
     /// worker 线程已完全退出(含 DLL close),UI 收到后才允许再次连接,
     /// 防止上一个 worker 还阻塞在 connect() 时 spawn 新 worker 并发抢 RTT。
-    /// (demo 后端的进程级单例线程不发此消息,只因 APP_SHUTDOWN 退出)
     Exited,
 }
 
@@ -62,10 +50,7 @@ pub struct DeviceInfo {
     pub speed_khz: u32,
 }
 
-/// UI → worker 命令(数据面)。原来只有发数据一种,引入电源输出后升级为
-/// 枚举协议,避免在字符串上做前缀解析(易错且没有类型保障)。
-/// demo 的连接/断开不走此协议(用 demo 后端私有的 DemoCmd 通道,真机 worker
-/// 永远看不到)。
+/// UI → worker 命令(数据面),使用枚举避免在字符串上做前缀解析。
 pub enum WorkerCmd {
     /// 向 RTT 通道写原始字节(行尾已含;文本模式为 UTF-8 编码,HEX 模式为解析后的字节)
     Send(Vec<u8>),
@@ -85,9 +70,7 @@ pub struct WorkerHandle {
     pub alive: AtomicBool,
 }
 
-/// 会话句柄:web 层看到的"一次连接"的统一控制面。
-/// jlink = 真 worker 的 handle+cmd_tx;demo = 单例线程的 cmd_tx + 恒活 handle
-/// (stop 标志永远无人置位,alive 恒 true)。
+/// 会话句柄:Web 层看到的一次连接控制面。
 #[derive(Clone)]
 pub struct SessionHandle {
     pub handle: Arc<WorkerHandle>,
@@ -100,7 +83,7 @@ pub struct SessionHandle {
 pub struct BackendCaps {
     /// 是否有真实调试器列表(J-Link 下拉)
     pub hardware_probes: bool,
-    /// 是否支持 reset reconnect 模式(demo 不支持,web 层回落 in-place)
+    /// 是否支持 reset reconnect 模式
     pub reset_reconnect: bool,
 }
 
@@ -149,8 +132,7 @@ pub struct WorkerShared {
 pub trait Host: Send + Sync + 'static {
     /// msg_tx.send 兜底
     fn send_msg(&self, msg: WorkerMsg);
-    /// owned 发送端:交给 'static 线程(jlink connect 的 worker 线程、
-    /// device_db 桥接线程、demo 单例、reset 重连线程都靠它)
+    /// owned 发送端:交给 worker、设备库桥接和 reset 重连线程。
     fn msg_tx(&self) -> mpsc::Sender<WorkerMsg>;
     /// 读(clone;handle/cmd_tx 均可克隆)
     fn session(&self) -> Option<SessionHandle>;
@@ -167,13 +149,13 @@ pub trait Host: Send + Sync + 'static {
 
 /// 后端 trait:一个数据采集后端 = 一个实现
 pub trait RttBackend: Send + Sync {
-    fn id(&self) -> &'static str; // "jlink" | "demo"
-    fn display_name(&self) -> &'static str; // UI 下拉文案
+    fn id(&self) -> &'static str;
+    fn display_name(&self) -> &'static str; // UI/API 文案
     fn description(&self) -> &'static str;
-    /// 纯软件后端(无硬件依赖)
+    /// 是否为无硬件依赖的后端
     fn is_virtual(&self) -> bool;
     fn caps(&self) -> BackendCaps;
-    /// 选定/启动时的初始设备候选(同步;demo=静态表,jlink=空走异步枚举)
+    /// 选定/启动时的初始设备候选(J-Link 为空,走异步枚举)
     fn initial_devices(&self) -> Vec<String> {
         Vec::new()
     }
@@ -187,30 +169,25 @@ pub trait RttBackend: Send + Sync {
     fn connect(&self, host: &dyn Host, params: &ConnectParams) -> Result<(), String>;
     fn disconnect(&self, host: &dyn Host);
     fn reset_in_place(&self, host: &dyn Host) -> Result<(), String>;
-    /// 不支持时返回 Err(web 层对 demo 回落 in-place,与现状一致)。
+    /// 不支持时返回 Err,Web 层回落到 in-place。
     /// 拿 Arc<dyn Host>:重连线程是 'static,要克隆进去做 wait/respawn/清门闩
     fn reset_reconnect(&self, host: Arc<dyn Host>, params: &ConnectParams) -> Result<(), String>;
     fn power(&self, host: &dyn Host, on: bool) -> Result<(), String>;
-    /// --demo-log 强制形态的启动自动连接(仅 demo 实现;普通形态不调用)
-    fn auto_connect_at_startup(&self, _host: &dyn Host) {}
 }
 
-/// 后端 id(阶段二 /api/backends、偏好持久化共用)
+/// 后端 id(现有 /api/backends 与偏好持久化共用)
 pub const BACKEND_JLINK: &str = "jlink";
-pub const BACKEND_DEMO: &str = "demo";
 
-/// 注册表(阶段一只有按 id 取;阶段二加 available 列表)。
-/// 两个后端都是 &'static 静态实例。
+/// 正式程序只注册 J-Link 后端。
 pub fn backend_by_id(id: &str) -> Option<&'static dyn RttBackend> {
     match id {
         BACKEND_JLINK => Some(&crate::backend_jlink::JLINK_BACKEND),
-        BACKEND_DEMO => Some(&crate::demo::DEMO_BACKEND),
         _ => None,
     }
 }
 
 /// 字节 → 十六进制大写文本(每字节两位、空格分隔，如 "[ de" 的 UTF-8
-/// 字节 → "5B 20 64 65 ")。真机与 Demo 的 HEX 接收共用这一实现。
+/// 字节 → "5B 20 64 65 ")。J-Link 与 QA 数据源的 HEX 接收共用这一实现。
 pub fn bytes_to_hex_upper(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(bytes.len() * 3);
@@ -231,23 +208,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_registry_resolves_both_ids() {
+    fn backend_registry_resolves_only_jlink() {
         let jlink = backend_by_id(BACKEND_JLINK).expect("jlink 后端应已注册");
-        let demo = backend_by_id(BACKEND_DEMO).expect("demo 后端应已注册");
         assert_eq!(jlink.id(), "jlink");
-        assert_eq!(demo.id(), "demo");
-        // 虚拟位:jlink 真机 / demo 纯软件
         assert!(!jlink.is_virtual());
-        assert!(demo.is_virtual());
-        // 能力位:reset reconnect 仅 jlink 支持(web 层据此回落 in-place)
         assert!(jlink.caps().reset_reconnect);
-        assert!(!demo.caps().reset_reconnect);
         assert!(jlink.caps().hardware_probes);
-        assert!(!demo.caps().hardware_probes);
-        // demo 的初始设备候选 = 演示设备库(api/devices 种子来源)
-        assert!(demo.initial_devices().contains(&"STM32F103C8".to_string()));
-        assert_eq!(demo.initial_devices().len(), 6);
-        // jlink 初始候选为空(走 device_db 异步枚举)
         assert!(jlink.initial_devices().is_empty());
     }
 
@@ -289,10 +255,10 @@ mod tests {
             })
         );
         // J-Link 序列号随偏好恢复(reset reconnect 重连同一台)
-        p.jlink_serial = Some(602717758);
+        p.jlink_serial = Some(123456789);
         assert_eq!(
             ConnectParams::from_prefs(&p).unwrap().jlink_sn,
-            Some(602717758)
+            Some(123456789)
         );
     }
 }

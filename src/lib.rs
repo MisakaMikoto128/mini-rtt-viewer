@@ -11,7 +11,6 @@ pub mod ansi;
 pub mod backend;
 pub mod backend_jlink;
 pub mod config;
-pub mod demo;
 pub mod device_db;
 pub mod gui;
 pub mod jlink_dll;

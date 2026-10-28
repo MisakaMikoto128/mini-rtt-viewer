@@ -18,8 +18,7 @@
 //!   桥接线程(原 web.rs:676-691 迁移,线程用 host.msg_tx())。**幂等**:
 //!   serve 装配与 on_selected(切后端回来)都可能调用,AtomicBool 守卫保证
 //!   进程内只启动一次——并发二次枚举会撞 device_db BUSY 门闩/重复拉桥接线程;
-//! - on_selected(阶段二切后端)= 清空 device_names(避免 demo 候选残留)+
-//!   启动设备库枚举(若从未启动),候选随后由异步枚举回填(设计契约 §4.3)。
+//! - on_selected = 清空 device_names 并启动设备库枚举。
 //!
 //! worker 生命周期铁律(AGENTS.md)全部保留:Exited 门闩、connect 阶段
 //! stop 检查(worker 内)、reconnect 门闩、BUSY 门闩。
@@ -91,8 +90,7 @@ impl RttBackend for JLinkBackend {
         });
     }
 
-    /// 被选中为当前后端(阶段二切后端):清空 device_names 避免 demo 候选
-    /// 残留 + 启动设备库枚举(若从未启动,幂等),候选随后由异步枚举回填
+    /// 选中时清空候选并启动设备库枚举(若从未启动,幂等),随后异步回填。
     fn on_selected(&self, host: &dyn Host) {
         host.set_device_names(Vec::new());
         self.start_background_enumeration(host);

@@ -60,6 +60,17 @@ def test_hex_4a_valid_hex_sends_two_bytes(page):
     assert delta == 2, f"合法 hex '61 62' 发送后 TX 计数应 +2:实测 +{delta}({tx0}→{tx1})"
 
 
+def test_successful_send_preserves_input(page):
+    """发送成功后保留输入框原文，便于修改或连续重发。"""
+    with page.expect_response(
+        lambda r: "/api/send" in r.url, timeout=5000
+    ) as response_info:
+        page.fill("#send-text", "41 42")
+        page.click("#send-btn")
+    assert response_info.value.status == 200
+    assert page.input_value("#send-text") == "41 42"
+
+
 def test_hex_4b_invalid_hex_rejected_400(page):
     """勾选 HEX + 非法 hex("zz")发送 → HTTP 400。"""
     with page.expect_response(

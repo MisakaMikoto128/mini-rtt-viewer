@@ -54,7 +54,7 @@ jobs:
           playwright install chromium
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked --bins --examples
 
       - name: Run Playwright suite
         run: python -m pytest tests/web -v

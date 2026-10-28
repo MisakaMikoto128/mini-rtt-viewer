@@ -26,7 +26,7 @@ def browser():
 def page(browser, server):
     pg = browser.new_page(viewport={"width": 1440, "height": 900})
     pg.goto(BASE)
-    pg.wait_for_selector("#backend option", state="attached")
+    pg.wait_for_selector("#jlink", state="visible")
     yield pg
     pg.close()
 
@@ -36,7 +36,7 @@ def test_viewport_has_no_horizontal_overflow(page, width, height):
     page.set_viewport_size({"width": width, "height": height})
     page.wait_for_timeout(150)
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-    for selector in ["#send-opts", "#log-toolbar", "footer"]:
+    for selector in ["#send-opts", ".aside-scroll", "footer"]:
         assert page.evaluate(
             "sel => { const el = document.querySelector(sel); "
             "return el.scrollWidth <= el.clientWidth + 1; }",
@@ -44,24 +44,30 @@ def test_viewport_has_no_horizontal_overflow(page, width, height):
         ), selector
 
 
-def test_log_actions_belong_to_main_content(page):
-    for selector in ["#clear-btn", "#pause-btn", "#mark-btn", "#export-btn", "#theme"]:
+def test_receive_controls_belong_to_original_sidebar(page):
+    selectors = [
+        "#clear-btn", "#pause-btn", "#mark-btn", "#export-btn", "#theme",
+        "#auto-frame", "#rx-ending", "#encoding", "#hex-rx", "#timestamps",
+    ]
+    for selector in selectors:
         assert page.evaluate(
-            "sel => document.querySelector('#content').contains(document.querySelector(sel))",
+            "sel => document.querySelector('aside').contains(document.querySelector(sel))",
             selector,
         ), selector
+    assert page.locator("#log-toolbar").count() == 0
+    assert page.locator("#receive-bar").count() == 0
 
 
-def test_narrow_sidebar_is_keyboard_controllable(page):
+def test_narrow_viewport_keeps_sidebar_and_its_native_scrollbar(page):
     page.set_viewport_size({"width": 800, "height": 600})
-    toggle = page.locator("#sidebar-toggle")
-    page.wait_for_function("document.querySelector('#sidebar-toggle').getAttribute('aria-expanded') === 'false'")
-    assert toggle.get_attribute("aria-expanded") == "false"
-    toggle.click()
-    assert toggle.get_attribute("aria-expanded") == "true"
+    assert page.locator("#sidebar-toggle").count() == 0
     assert page.locator("aside").is_visible()
-    page.keyboard.press("Escape")
-    assert toggle.get_attribute("aria-expanded") == "false"
+    assert page.evaluate(
+        "document.querySelector('.aside-scroll').scrollHeight > "
+        "document.querySelector('.aside-scroll').clientHeight"
+    )
+    page.locator("#theme").scroll_into_view_if_needed()
+    assert page.locator("#theme").is_visible()
 
 
 def test_timer_interval_only_appears_when_timer_is_enabled(page):
@@ -134,7 +140,7 @@ def test_muted_text_meets_contrast_in_every_builtin_theme(page):
         r, g, b = [channel(value) for value in values]
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
-    for theme in ["dark", "light", "oled", "sepia"]:
+    for theme in ["dark", "light", "oled", "sepia", "instrument", "console", "laboratory"]:
         page.select_option("#theme", theme)
         page.wait_for_timeout(50)
         muted, background = page.evaluate(

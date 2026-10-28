@@ -251,8 +251,8 @@ pub(crate) async fn api_prefs(State(shared): State<Arc<Shared>>) -> Json<serde_j
     }))
 }
 
-/// /api/backends(阶段二后端可选面):当前选定 + 本进程可用后端列表。
-/// items 恒非空(普通形态 jlink+demo;--demo-log 强制形态仅 demo)。
+/// /api/backends:当前选定 + 本进程可用后端列表。
+/// 正式程序 items 仅 J-Link;QA 进程为独立测试后端。
 /// 文案来自后端实现的 &'static 字面量,前端仍按注入面纪律用 DOM API 渲染
 pub(crate) async fn api_backends(State(shared): State<Arc<Shared>>) -> Json<serde_json::Value> {
     let items: Vec<serde_json::Value> = shared
@@ -318,8 +318,7 @@ pub(crate) async fn api_history(State(shared): State<Arc<Shared>>) -> Json<Vec<S
 }
 
 pub(crate) async fn api_devices(State(shared): State<Arc<Shared>>) -> Json<Vec<String>> {
-    // 设备候选统一从 shared.device_names 供数:jlink 来自后台枚举回传,
-    // demo 在装配期已由 initial_devices 种子(演示设备库)
+    // 设备候选统一从 shared.device_names 供数,由当前后端初始化或异步回填。
     Json(shared.device_names.lock().unwrap().clone())
 }
 
@@ -331,22 +330,20 @@ pub(crate) async fn api_jlinks(State(shared): State<Arc<Shared>>) -> Json<serde_
         .collect::<Vec<_>>()))
 }
 
-/// 连接:连接前门禁(后端 can_connect,Err→409)→ 芯片名补全(库内子串
-/// 匹配首个全称,与桌面版同规则)→ 连接参数写入偏好快照源 → 后端 connect
-/// (jlink spawn worker;demo 命令进单例线程模拟连接,不加载 DLL)
+/// 连接:连接前门禁 → 芯片名补全(库内子串匹配首个全称)→ 连接参数写入
+/// 偏好快照源 → 当前后端 connect。
 pub(crate) async fn api_connect(
     State(shared): State<Arc<Shared>>,
     Json(req): Json<ConnectReq>,
 ) -> Response {
     let backend = shared.backend();
     // reset reconnect 的 1 秒等待窗口内 session 已被 take 清空,存活检查
-    // 会放行——重连门闩在此堵住双 worker 并发(审计 P1;demo 后端不会
-    // 置位此门闩,通用检查对其恒放行,与现状一致)
+    // 会放行——重连门闩在此堵住双 worker 并发。
     if shared.reconnecting.load(Ordering::Relaxed) {
         return (StatusCode::CONFLICT, "正在自动重连,请稍候").into_response();
     }
     // 后端门禁(存活检查「已有连接」/ BUSY 门闩「设备库枚举中,请稍候几秒
-    // 再连接」;demo 恒 Ok)——文案由后端提供,与现状逐字一致
+    // 再连接」),错误文案由后端提供。
     if let Err(msg) = backend.can_connect(&*shared) {
         return (StatusCode::CONFLICT, msg).into_response();
     }
@@ -354,8 +351,7 @@ pub(crate) async fn api_connect(
     if chip_raw.is_empty() {
         return (StatusCode::BAD_REQUEST, "请先填写目标芯片型号").into_response();
     }
-    // 校验名单与前端看到的候选同源:统一取 shared.device_names(demo 的
-    // 演示设备库已在装配期种子进同一槽)
+    // 校验名单与前端看到的候选同源:统一取 shared.device_names。
     let full: Vec<String> = shared.device_names.lock().unwrap().clone();
     let exact = full.iter().any(|n| n.eq_ignore_ascii_case(&chip_raw));
     let chip = if exact {
@@ -391,7 +387,7 @@ pub(crate) async fn api_connect(
     *shared.speed_index.lock().unwrap() = speed_index as i32;
     *shared.channel.lock().unwrap() = channel;
     *shared.jlink_serial.lock().unwrap() = jlink_sn;
-    // 上次连接参数:reset reconnect 模式的重连来源(demo 也记录,语义一致)
+    // 上次连接参数:reset reconnect 模式的重连来源。
     let params = ConnectParams {
         chip: chip.clone(),
         iface_index,
@@ -407,9 +403,7 @@ pub(crate) async fn api_connect(
     StatusCode::OK.into_response()
 }
 
-/// 断开:走当前后端(jlink = 置停止标志 + 空发送唤醒,Exited 消息回到
-/// 未连接态;demo = 内部 Disconnect 命令,手动断开后不自动重连,由 demo
-/// 状态机保证)
+/// 断开:走当前后端;J-Link 置停止标志并唤醒 worker,Exited 后回到未连接态。
 pub(crate) async fn api_disconnect(State(shared): State<Arc<Shared>>) -> StatusCode {
     shared.backend().disconnect(&*shared);
     StatusCode::OK
@@ -419,8 +413,7 @@ pub(crate) async fn api_power(
     State(shared): State<Arc<Shared>>,
     Json(req): Json<PowerReq>,
 ) -> Response {
-    // demo 与真机同语义:未连接拒绝(前端此时也禁用勾选框;409 文案由
-    // 后端提供,与现状逐字一致)
+    // 未连接拒绝(前端此时也禁用勾选框;409 文案由后端提供)
     match shared.backend().power(&*shared, req.on) {
         Ok(()) => StatusCode::OK.into_response(),
         Err(msg) => (StatusCode::CONFLICT, msg).into_response(),
@@ -438,9 +431,7 @@ pub(crate) struct ResetReq {
 /// 复位两模式:in-place = 现有 Reset 命令(worker 复位目标并重挂 RTT 续收);
 /// reconnect = 先走断开逻辑,1 秒后用上次连接参数重新 spawn worker(重启服务
 /// 且无上次参数 → 409)。mode 解析、last_connect 检查、reconnecting 门闩置位
-/// 留在 web 层;具体执行走当前后端——reset_reconnect 不被支持时(demo,
-/// caps().reset_reconnect == false)一律回落 reset_in_place,与现状「demo
-/// 忽略 mode」逐字等价。
+/// 留在 Web 层;具体执行走当前后端,不支持 reconnect 时回落 in-place。
 pub(crate) async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) -> Response {
     // 兼容旧前端:POST 无请求体 = 缺省 in-place;非空则必须是合法 JSON
     let req: ResetReq = if body.is_empty() {
@@ -455,8 +446,7 @@ pub(crate) async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) ->
         }
     };
     let backend = shared.backend();
-    // 不支持重连式复位的后端(demo):忽略 mode,一律 in-place 模拟
-    // (未连接 409,文案由后端提供与现状逐字一致)
+    // 不支持重连式复位的后端忽略 mode,一律 in-place。
     if !backend.caps().reset_reconnect {
         return match backend.reset_in_place(&*shared) {
             Ok(()) => StatusCode::OK.into_response(),
@@ -553,12 +543,8 @@ pub(crate) async fn api_settings(
     if let Some(v) = req.channel {
         *shared.channel.lock().unwrap() = v.clamp(0, 15);
     }
-    // 后端切换(阶段二):未知/不可用 id → 400;连接态(判据 shared.connected,
-    // 不是 session 槽——demo 的会话槽恒活)→ 409「断开后才能切换后端」;
-    // 成功 = 换 Shared.backend 引用(写偏好走 snapshot_prefs 快照链路)+
-    // 旧后端 on_deselected + 新后端 on_selected(切走 demo 发内部 Disconnect
-    // 清连接态;切回 jlink 清候选 + 枚举回填)。同 id 幂等 no-op:不触发回调,
-    // 防止 demo 的 on_deselected 手动断开永久挂起 20s/3s 自动周期
+    // 后端设置:未知/不可用 id → 400;连接态 → 409。成功时更新 Shared.backend,
+    // 并调用旧/新后端的选择回调;同 id 幂等 no-op。
     if let Some(id) = req.backend.as_deref() {
         let Some(target) = shared
             .backends_available
@@ -666,7 +652,7 @@ pub(crate) fn state_marker_line(connected: bool) -> String {
 }
 
 /// worker 状态文案 → /api/status 展示文案:去横幅圆点前缀
-/// ("● 已连接 (demo)" → "已连接 (demo)")。循环剥离:双 bullet/前导空格
+/// ("● 已连接" → "已连接")。循环剥离:双 bullet/前导空格
 /// 等变体也剥干净(审计 P3)
 pub(crate) fn clean_status_text(s: &str) -> String {
     let mut out = s.trim();

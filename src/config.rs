@@ -66,8 +66,8 @@ pub struct StoredPrefs {
     pub timer_interval: String,
     /// 搜索正则开关(false = 字面量匹配)
     pub search_regex: bool,
-    /// 数据采集后端 id("jlink" | "demo";缺省 "jlink")。归一化(可用列表
-    /// 校验/回落)在 web.rs serve() 拿到 WebOptions 后做——config 不感知可用面
+    /// 数据采集后端 id(当前正式程序仅 "jlink")。可用列表校验/回落在
+    /// web.rs serve() 完成,旧值不会阻止启动。
     pub backend: String,
 }
 
@@ -214,7 +214,7 @@ mod tests {
             timer_send: true,
             timer_interval: "0.5".into(),
             search_regex: true,
-            backend: "demo".into(),
+            backend: "legacy-backend".into(),
         };
         save_to(&p, &prefs).unwrap();
         let back = load_from(&p);
@@ -252,11 +252,11 @@ mod tests {
         std::fs::write(&p, r#"{"chip_name":"STM32F103C8"}"#).unwrap();
         assert_eq!(load_from(&p).backend, "jlink"); // 缺字段回落默认
         let prefs = StoredPrefs {
-            backend: "demo".into(),
+            backend: "legacy-backend".into(),
             ..Default::default()
         };
         save_to(&p, &prefs).unwrap();
-        assert_eq!(load_from(&p).backend, "demo"); // 往返保留
+        assert_eq!(load_from(&p).backend, "legacy-backend"); // 往返保留
         let _ = std::fs::remove_file(&p);
     }
 

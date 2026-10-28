@@ -21,10 +21,14 @@ EXE = Path(
     os.environ.get("RTT_TEST_EXE")
     or ROOT / "target" / "release" / "mini-rtt-viewer.exe"
 )
+QA_EXE = Path(
+    os.environ.get("RTT_QA_EXE")
+    or EXE.parent / "examples" / "qa_server.exe"
+)
 PORT = 18099  # QA 纪律:固定 18099
 BASE = f"http://127.0.0.1:{PORT}"
-# 主题插件目录 = exe 旁 themes/(验收矩阵 1 的落点)
-THEMES_DIR = EXE.parent / "themes"
+# 主题插件目录 = QA exe 旁 themes/(验收矩阵 1 的落点)
+THEMES_DIR = QA_EXE.parent / "themes"
 
 
 class QAServer:
@@ -35,7 +39,7 @@ class QAServer:
         self.prefs_file = tmpdir / "prefs.json"
         self.proc: subprocess.Popen | None = None
 
-    def start(self, demo_log: bool = True) -> None:
+    def start(self, production: bool = False) -> None:
         # 前置:端口必须空闲,否则会连到僵尸进程,污染黑盒断言
         s = socket.socket()
         s.settimeout(0.5)
@@ -55,11 +59,13 @@ class QAServer:
             "RTT_PREFS_FILE": str(self.prefs_file),
             "RTT_WEB_NO_BROWSER": "1",
         }
-        # demo_log=False = 普通形态(jlink+demo 双后端可用,test_backends 用);
-        # 默认 True(--demo-log 强制形态),既有调用方行为不变
-        args = [str(EXE), "--no-window", "--port", str(PORT)]
-        if demo_log:
-            args.insert(1, "--demo-log")
+        # 测试夹具默认带入一个合法芯片名，确保单独运行重连用例也可重复。
+        if not self.prefs_file.exists():
+            self.prefs_file.write_text(
+                json.dumps({"chip_name": "STM32F103C8"}), encoding="utf-8"
+            )
+        executable = EXE if production else QA_EXE
+        args = [str(executable), "--no-window", "--port", str(PORT)]
         self.proc = subprocess.Popen(
             args, cwd=str(ROOT), env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

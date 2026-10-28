@@ -26,11 +26,10 @@
 
 - 连接设置:目标芯片型号(设备库自动补全)/ SWD / JTAG / 速率 (100–12000 kHz) / RTT 通道 0–15 / 多台 J-Link 列表
 - 接收:ANSI 转义序列着色、暂停接收、自动断帧 + 超时可调、接收行尾可选(自动 / CRLF / LF / CR / 无)、HEX 接收、字符集 5 种(连接中切换动态生效)
-- 发送:向所选下行通道发送数据,Enter 快捷发送,行尾可选(CRLF / LF / CR / 无),HEX 发送、定时发送、发送历史 ↑↓
-- 日志:四套主题 + 自定义主题(themes/*.css 拖入即用)、VS Code 式正则搜索(Ctrl+F)、拖选/右键复制、导出 .log、长行自动换行
+- 发送:向所选下行通道发送数据,Enter 快捷发送,成功后保留原文便于修改和连续重发,行尾可选(CRLF / LF / CR / 无),HEX 发送、定时发送、发送历史 ↑↓
+- 日志:七套内置主题(深色/浅色/OLED 纯黑/护眼暖色/精密仪器/终端专注/实验室浅色)+ 自定义主题(themes/*.css 拖入即用),主题选择本机保存并在刷新后恢复;VS Code 式正则搜索(Ctrl+F)、拖选/右键复制、导出 .log、长行自动换行
 - 会话:连接/断开自动标记、手动标记、TX/RX 字节与速率、会话时长、日志时间戳开关
 - 双形态:桌面壳(窗口 + 托盘)与纯服务(`--no-window`)共用同一管理台;单实例互斥(端口)
-- 无设备演示:`mini-rtt-viewer.exe --demo-log` 启动内置演示数据流(中英混排 + emoji),用于体验滚动/断行/渲染
 
 ## 使用前提
 
@@ -43,14 +42,13 @@
 ## 命令行
 
 ```text
-mini-rtt-viewer [--backend jlink|demo] [--listen 127.0.0.1] [--port 8686]
+mini-rtt-viewer [--backend jlink] [--listen 127.0.0.1] [--port 8686]
                 [--no-window] [--no-tray]
-mini-rtt-viewer --demo-log
 ```
 
 默认监听 `127.0.0.1:8686`，桌面窗口与浏览器共用管理台。`--no-window` 仅启动服务；
-`--demo-log` 强制 Demo 后端并自动连接。`--listen 0.0.0.0` 会开放无鉴权控制面，
-仅在可信网络中使用。完整说明运行 `mini-rtt-viewer --help`。
+`--listen 0.0.0.0` 会开放无鉴权控制面，仅在可信网络中使用。完整说明运行
+`mini-rtt-viewer --help`。
 
 ## 构建
 
@@ -70,8 +68,11 @@ cargo test --locked
 python -m pytest tests/web -q
 ```
 
-Web 测试默认使用 `target/release/mini-rtt-viewer.exe`；也可通过 `RTT_TEST_EXE`
-指定当前构建。测试会使用临时偏好文件，不读写真实用户配置。
+Web 测试需要正式程序与独立 QA 示例两个可执行文件，先运行
+`cargo build --release --locked --bins --examples`。默认使用
+`target/release/mini-rtt-viewer.exe` 和 `target/release/examples/qa_server.exe`；
+也可分别通过 `RTT_TEST_EXE`、`RTT_QA_EXE` 指定当前构建。QA 后端只用于无硬件测试，
+不会出现在正式程序中。测试会使用临时偏好文件和临时 APPDATA，不读写真实用户配置。
 
 ## 发布
 
@@ -99,9 +100,9 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 | 文件 | 职责 |
 |---|---|
 | `src/lib.rs` | 模块树唯一入口,bin/examples 一律 `use` 本 crate |
-| `src/main.rs` | CLI 入口(`--demo-log` / `--backend` / `--listen` / `--port` / `--no-window` / `--no-tray`):分派桌面壳 / 纯服务两种形态 |
+| `src/main.rs` | CLI 入口(`--backend` / `--listen` / `--port` / `--no-window` / `--no-tray`):分派桌面壳 / 纯服务两种形态 |
 | `src/gui.rs` | 桌面壳:tao 事件循环 + wry WebView(内嵌管理台)+ 托盘图标与退出序列 |
-| `src/backend.rs` | `RttBackend` 后端抽象、会话协议与注册表；J-Link / Demo 共用同一 Web 层 |
+| `src/backend.rs` | `RttBackend` 后端抽象、会话协议与注册表；正式程序注册 J-Link |
 | `src/backend_jlink.rs` | J-Link 后端：worker 生命周期、探针枚举桥接与复位重连 |
 | `src/web.rs` | Web facade：服务装配、固定路由与后端解析，API 契约见模块头注释 |
 | `src/web/` | 按职责拆分的共享状态、HTTP API、数据泵、WebSocket 与主题扫描 |
@@ -111,10 +112,10 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 | `src/rtt.rs` | worker 线程:`connect_target` 连接序列 + `rtt_read_loop` 读循环(断帧判定/命令消化/字符集增量解码) |
 | `src/jlink_dll.rs` | JLink_x64.dll 最小 FFI 绑定(连接/RTT/设备信息/调试器与设备库枚举选定) |
 | `src/device_db.rs` | 设备库后台枚举 + 磁盘缓存 + 多台调试器列表 |
-| `src/demo.rs` | `--demo-log` 演示数据源(中英混排 + emoji + ANSI 颜色样例,模拟连接/断开/重置循环) |
-| `ui/web/index.html` | 管理台语义结构；连接侧栏、日志工具条、发送区与状态栏 |
-| `ui/web/styles.css` | 四主题令牌、响应式布局、抽屉侧栏与键盘焦点样式 |
+| `ui/web/index.html` | 管理台语义结构；连接/设备/接收侧栏、日志、发送区与状态栏 |
+| `ui/web/styles.css` | 七主题令牌、原左右布局、3px 滚动条与键盘焦点样式 |
 | `ui/web/*.js` | 原生 ES modules：全局协调、API、日志视图、搜索、显示设置与弹窗 |
+| `examples/qa_server.rs` | 仅供 Web 黑盒测试的独立 QA 数据流，不参与正式后端注册 |
 | `examples/emu_check.rs` | 无界面验证:枚举调试器 + 选定/实际打开一致性 |
 | `examples/rtt_check.rs` | 无界面 RTT 直读(连接序列排障用) |
 | `AGENTS.md` | 实际踩坑经验笔记(改代码前先读) |

@@ -7,9 +7,6 @@ import { initDialogs, showToast } from './dialogs.js';
 const log = $('log');
 let connected = false, autoScroll = true;
 let paused = false;
-// 数据源后端(阶段二):当前选定是否纯软件(demo)——真机探针列表
-// (J-Link 下拉)随之禁用;由 fillBackends/syncBackendUi 维护
-let backendVirtual = false;
 // S1 速率/S2 时长状态:stats 每 500ms 一拍,lastStats 记上次字节快照差值算 B/s
 let lastStats = null;
 // S4 时间戳开关(纯前端显示层;localStorage 记忆,与字号/主题同模式)
@@ -93,7 +90,7 @@ function onMsg(ev) {
 // ---- S1/S2 底栏统计 ----
 function updateRates(m) {
   // 口径选择:速率恒显示(与 SerialHub fmtRate 一致),无新数据自然归零;
-  // 断开(setState false)显式归零。demo/真机断开时服务端清零字节,差值
+  // 断开(setState false)显式归零。服务端断开时清零字节,差值
   // 为负由 fmtRate 夹 0,不会出现负速率
   const now = performance.now();
   if (lastStats) {
@@ -122,8 +119,8 @@ function setState(on, status) {
   $('send-btn').disabled = !on;
   // 断开后设备信息为上次残留数据(F2):置灰示不可信,连接态恢复
   $('device-details').classList.toggle('off', !on);
-  for (const id of ['backend', 'chip', 'chip-arrow', 'iface', 'speed', 'channel']) $(id).disabled = on;
-  $('jlink').disabled = on || backendVirtual; // demo 等纯软件后端无探针列表,一并禁用
+  for (const id of ['chip', 'chip-arrow', 'iface', 'speed', 'channel']) $(id).disabled = on;
+  $('jlink').disabled = on;
 }
 function renderDevice(d) {
   if (!d) return;
@@ -262,33 +259,6 @@ function fillJlinks(list) {
   }
 }
 
-// ---- 数据源后端(阶段二):/api/backends 填充 items,selected 置值 ----
-// name/description 来自服务端字符串,option 一律 DOM API 构建 + textContent
-// 承载(注入面纪律,禁止 innerHTML 拼接);isVirtual 记入 dataset 供
-// change 即时联动 J-Link 下拉禁用
-function fillBackends(data) {
-  const sel = $('backend');
-  const prev = sel.value;
-  sel.textContent = '';
-  for (const b of (data.items || [])) {
-    const o = document.createElement('option');
-    o.value = b.id;
-    o.textContent = b.name;
-    o.title = b.description || '';
-    o.dataset.virtual = b.isVirtual ? '1' : '0';
-    sel.appendChild(o);
-  }
-  // 服务端 selected 是唯一真源(启动按 CLI/偏好归一化);缺省沿用刷新前的值
-  const want = data.selected || prev;
-  if (want && [...sel.options].some(o => o.value === want)) sel.value = want;
-  syncBackendUi();
-}
-function syncBackendUi() {
-  const opt = [...$('backend').options].find(o => o.value === $('backend').value);
-  backendVirtual = !!opt && opt.dataset.virtual === '1';
-  $('jlink').disabled = connected || backendVirtual;
-}
-
 function connect() {
   const body = {
     chip: $('chip').value,
@@ -401,7 +371,6 @@ function send() {
       sendHistory.unshift(v);
       if (sendHistory.length > 50) sendHistory.pop();
       histIdx = -1; draft = '';
-      sendBox.value = '';
     })
     .catch(error => {
       sendBox.classList.add('send-err');
@@ -426,12 +395,6 @@ $('iface').addEventListener('change', e => postPref('iface', { ifaceIndex: +e.ta
 $('speed').addEventListener('change', e => postPref('speed', { speedIndex: e.target.selectedIndex }));
 $('chip').addEventListener('input', () => postPref('chip', { chip: $('chip').value }, 400));
 $('chip').addEventListener('change', () => postPref('chip', { chip: $('chip').value }));
-// 数据源后端(阶段二):切换仅断开态可选(setState 已禁用,服务端 409 兜底);
-// 切到纯软件后端立即禁用 J-Link 下拉,不等 /api/backends 重拉
-$('backend').addEventListener('change', e => {
-  syncBackendUi();
-  postPref('backend', { backend: e.target.value });
-});
 $('auto-frame').addEventListener('change', e => postPref('autoFrame', { autoFrame: e.target.checked }));
 // HEX 发送:开关记忆 + 双向转换(勾选 文本→hex,取消 hex→文本;不可解析保留
 // 原文;只改输入框,不触发发送/历史)
@@ -457,30 +420,6 @@ initDisplaySettings();
 
 const search = createSearch({ log, postSettings, timestamps: () => tsOn });
 
-function initSidebar() {
-  const narrow = matchMedia('(max-width: 900px)');
-  const toggle = $('sidebar-toggle');
-  const setOpen = open => {
-    document.body.classList.toggle('sidebar-open', narrow.matches && open);
-    document.body.classList.toggle('sidebar-collapsed', !narrow.matches && !open);
-    toggle.setAttribute('aria-expanded', String(open));
-  };
-  toggle.onclick = () => setOpen(toggle.getAttribute('aria-expanded') !== 'true');
-  $('sidebar-close').onclick = () => {
-    setOpen(false);
-    toggle.focus();
-  };
-  document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && narrow.matches && toggle.getAttribute('aria-expanded') === 'true') {
-      setOpen(false);
-      toggle.focus();
-    }
-  });
-  narrow.addEventListener('change', () => setOpen(!narrow.matches));
-  setOpen(!narrow.matches);
-}
-initSidebar();
-
 function connectWS() {
   const ws = new WebSocket(API.replace('http', 'ws') + '/ws');
   ws.onmessage = onMsg;
@@ -499,7 +438,6 @@ setInterval(() => getJson('/api/status').then(s => {
 }).catch(() => {}), 2000);
 getJson('/api/devices').then(fillDatalist).catch(() => {});
 getJson('/api/jlinks').then(fillJlinks).catch(() => {});
-getJson('/api/backends').then(fillBackends).catch(() => {});
 getJson('/api/status').then(s => {
   if (s.device) renderDevice(s.device);
   if (s.version) $('version').textContent = 'v' + s.version; // T10:低调版本号
@@ -530,9 +468,6 @@ getJson('/api/prefs').then(p => {
   if (typeof p.searchRegex === 'boolean') search.setRegex(p.searchRegex);
   // J-Link 下拉选定恢复(列表由 /api/jlinks 异步填充,这里先记下待套用)
   if (p.jlinkSerial != null) pendingJlinkSn = p.jlinkSerial;
-  if (p.backend && [...$('backend').options].some(o => o.value === p.backend)) {
-    $('backend').value = p.backend;
-  }
 }).catch(() => {});
 // 发送历史:服务端持久化(prefs.send_history,去重置顶上限 50)——启动拉一次,
 // 最新在前;本次会话新发送在 send() 里即时并入本地(同规则),↑↓ 浏览共用一份

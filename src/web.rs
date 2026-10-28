@@ -2,19 +2,16 @@
 //! (内嵌同一管理台的 WebView)并在本机起服务**;也可 `--no-window` 纯服务后用
 //! 浏览器访问 `http://127.0.0.1:8686`(SerialHub 同构——Rust 数据层 + 内嵌
 //! Web UI)。两种形态共用同一套数据层与 worker
-//! (rtt::spawn / LogPump / demo / device_db)。
+//! (rtt::spawn / LogPump / device_db)。
 //!
 //! API 契约(与前端/测试对齐,改这里必同步 ui/web/index.html 与 tests/web):
 //! - GET  /                管理台单页
 //! - GET  /api/status      → {connected, rxBytes, txBytes, rowsTotal, paused,
 //!   uptimeSec, sessionSec, sessionStatus, device, version, backend};device 8 字段
-//!   {firmware,hardware,serial,core,cpu,target,iface,speedKhz}(demo 模式为演示
-//!   数据);sessionSec=连接会话秒(State 连接迁移记起点,断开清零,demo 启动即
-//!   计);sessionStatus=当前状态文案(如「已连接 (demo)」);backend=当前数据
-//!   采集后端 id("jlink"/"demo",阶段二新增)
+//!   {firmware,hardware,serial,core,cpu,target,iface,speedKhz};sessionSec=连接
+//!   会话秒,断开清零;backend=当前数据采集后端 id(正式程序为 jlink)
 //! - GET  /api/backends    → {selected, items:[{id,name,description,isVirtual}]}
-//!   (阶段二后端可选面:selected=当前选定;items=本进程可用后端列表——普通
-//!   形态 jlink+demo,--demo-log 强制形态仅 demo)
+//!   正式程序 items 仅 J-Link,独立 QA 进程可注入测试后端。
 //! - GET  /api/prefs       → 持久化偏好快照(面板初值恢复)
 //! - GET  /api/themes      → [{id, name, custom}];内置 4 套(custom:false)+
 //!   自定义项(exe 旁 themes/*.css,id=文件名去扩展,name=文件名,custom:true)
@@ -24,15 +21,12 @@
 //! - GET  /api/jlinks      → [{sn, name}]
 //! - GET  /api/history     → [text] 发送历史(最新在前,上限 50)
 //! - POST /api/connect     {chip, ifaceIndex, speedIndex, channel, jlinkSn?};
-//!   jlinkSn = 「J-Link」下拉选中的序列号(缺省/无效回落列表首台);连接参数
-//!   写入偏好快照源;demo 模式命令进 demo 线程模拟连接(demo 状态机),不加载 DLL
-//! - POST /api/disconnect  demo 模式命令进 demo 线程(手动断开后不自动重连)
-//! - POST /api/power       {on};demo 未连接 409,连接态日志行反馈(demo 无法真供电)
-//! - POST /api/reset       {mode?: "in-place"|"reconnect"};缺省 in-place(现有
-//!   Reset 命令,复位目标并重挂 RTT 续收);reconnect=先走断开逻辑,1 秒后用
-//!   上次连接参数重新 spawn worker(无上次参数 409;demo 未连接 409,连接态
-//!   由 demo 线程模拟日志行 + 短暂 State(false→true));空请求体容忍为缺省
-//!   in-place(旧前端兼容)
+//!   jlinkSn = 选中的序列号(缺省/无效回落列表首台);连接参数写入偏好快照源
+//! - POST /api/disconnect  停止当前 worker,Exited 后回到未连接态
+//! - POST /api/power       {on};未连接 409
+//! - POST /api/reset       {mode?: "in-place"|"reconnect"};缺省 in-place;
+//!   reconnect=先走断开逻辑,1 秒后用上次连接参数重新 spawn worker(无上次
+//!   参数 409);空请求体容忍为缺省 in-place
 //! - POST /api/settings    逐字段可选(camelCase):rxEnding / frameTimeout /
 //!   encodingIndex / hexRx / autoFrame / searchRegex / sendEnding / hexSend /
 //!   chip / ifaceIndex / speedIndex / channel(连接设置组持久化,F1)/
@@ -144,10 +138,7 @@ const BUILTIN_THEME_IDS: [&str; 4] = ["dark", "light", "oled", "sepia"];
 
 /// 服务启动选项(main 解析命令行后传入)
 pub struct WebOptions {
-    /// --demo-log:内置演示数据源,无设备即可体验/测试。阶段二语义升级为
-    /// 「强制 demo 后端」:后端列表仅 demo + 启动自动连接(向后兼容)
-    pub demo: bool,
-    /// --backend <id>(阶段二):启动时选定数据采集后端;必须命中可用列表
+    /// --backend <id>:启动时选定数据采集后端;必须命中可用列表
     /// 才生效,非法值忽略(回落偏好/缺省)。缺省 None = 按偏好 backend
     pub backend: Option<String>,
     /// HTTP 监听端口(端口即单实例互斥)
@@ -161,19 +152,12 @@ pub struct WebOptions {
     pub open_browser: bool,
 }
 
-impl WebOptions {
-    /// --demo-log 强制形态(demo 后端独占 + 启动自动连接)
-    pub fn is_demo_forced(&self) -> bool {
-        self.demo
-    }
-}
-
 /// 服务 → GUI 的事件(经 `OnEvent` 回调打回主线程,SerialHub service.rs 同构)。
 #[derive(Debug, Clone)]
 pub enum ServiceEvent {
     /// 服务就绪(管理台已绑定该地址)——仅启动时一次,gui 侧走 ready 握手。
     Ready(SocketAddr),
-    /// 连接状态变化(驱动托盘图标刷新)。demo 模式启动即发出 true。
+    /// 连接状态变化(驱动托盘图标刷新)。
     ConnectedChanged(bool),
 }
 
@@ -184,10 +168,24 @@ pub type OnEvent = std::sync::Arc<dyn Fn(ServiceEvent) + Send + Sync>;
 /// 纯服务模式(`--no-window`):调用线程建 tokio runtime 阻塞跑直到进程退出。
 /// bind 失败(端口被占 = 已有实例)返回 Err,由调用方决定退出码。
 pub fn run(opts: WebOptions) -> anyhow::Result<()> {
+    run_internal(opts, None)
+}
+
+/// 用调用方提供的后端运行同一 Web 层，供仓库内 QA 可执行夹具使用。
+/// 正式入口仍只通过 `run` 注册 J-Link。
+#[doc(hidden)]
+pub fn run_with_backend(opts: WebOptions, backend: &'static dyn RttBackend) -> anyhow::Result<()> {
+    run_internal(opts, Some(backend))
+}
+
+fn run_internal(
+    opts: WebOptions,
+    backend_override: Option<&'static dyn RttBackend>,
+) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(serve(opts, None))
+    runtime.block_on(serve(opts, None, backend_override))
 }
 
 /// 桌面壳装配:服务整体搬后台线程(主线程留给 tao 事件循环,见模块头注释)。
@@ -224,7 +222,7 @@ pub fn spawn_gui_service(
                 }
                 other => on_event(other),
             });
-            if let Err(e) = rt.block_on(serve(opts, Some(cb))) {
+            if let Err(e) = rt.block_on(serve(opts, Some(cb), None)) {
                 // 就绪前失败(端口被占)必须立即回传主线程;就绪后失败 ready 端
                 // 已被 gui 丢弃,发送失败无妨
                 let _ = ready_tx.send(Err(format!("{e:#}")));
@@ -253,7 +251,11 @@ fn resolve_backend(
     available[0]
 }
 
-async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()> {
+async fn serve(
+    opts: WebOptions,
+    on_event: Option<OnEvent>,
+    backend_override: Option<&'static dyn RttBackend>,
+) -> anyhow::Result<()> {
     // 启动恢复偏好:文件缺失/损坏/字段缺失一律回落默认,绝不阻塞启动。
     // 前端 localStorage 已有主题/字号,不经此通道(保持不动)。
     let saved = config::load();
@@ -274,16 +276,10 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
 
     let (events_tx, _) = broadcast::channel(512);
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
-    // 可用后端列表(阶段二):--demo-log 强制形态仅 demo(不加载 DLL,保留
-    // 「demo 可与真实实例并存」语义);普通形态 jlink + demo(界面选后端的
-    // 核心价值:无硬件体验全功能)
-    let backends_available: Vec<&'static dyn RttBackend> = if opts.is_demo_forced() {
-        vec![backend::backend_by_id(backend::BACKEND_DEMO).expect("demo 后端未注册")]
-    } else {
-        vec![
-            backend::backend_by_id(backend::BACKEND_JLINK).expect("jlink 后端未注册"),
-            backend::backend_by_id(backend::BACKEND_DEMO).expect("demo 后端未注册"),
-        ]
+    // 正式进程只有 J-Link；QA 夹具可注入独立测试后端，不进入正式 exe。
+    let backends_available: Vec<&'static dyn RttBackend> = match backend_override {
+        Some(backend) => vec![backend],
+        None => vec![backend::backend_by_id(backend::BACKEND_JLINK).expect("jlink 后端未注册")],
     };
     // 选定:CLI --backend → 偏好 backend(serve 内归一化)→ 列表首个
     let backend = resolve_backend(opts.backend.as_deref(), &saved.backend, &backends_available);
@@ -336,13 +332,8 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         listen: opts.listen,
     });
 
-    // 后端装配(阶段二,三入口统一,jlink/demo 各取所需,缺失能力为 trait
-    // default 空实现):① jlink 在可用列表时启动设备库后台枚举(普通形态恒
-    // 启动;强制形态 jlink 不可用,不加载 DLL);② 选定后端 on_selected 种子
-    // 设备候选(demo = 静态演示表;jlink = 清空候选走异步枚举回填,枚举已被
-    // ① 启动,幂等);③ 强制 demo 形态启动自动连接(demo:懒启动单例,线程
-    // 启动即连接,首条 State(true) 消息驱动 tick 完成连接态/标记行/托盘回调
-    // ——web 层不再预置,tick 消化先于 axum bind,首个 HTTP 可见时 connected=true)
+    // 后端装配:J-Link 启动设备库后台枚举,选定后端经 on_selected 初始化候选。
+    // QA 后端不会命中 J-Link 枚举分支,因此测试进程不加载 DLL。
     if let Some(jlink) = backends_available
         .iter()
         .copied()
@@ -351,9 +342,6 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
         jlink.start_background_enumeration(&*shared);
     }
     backend.on_selected(&*shared);
-    if opts.is_demo_forced() {
-        backend.auto_connect_at_startup(&*shared);
-    }
 
     // 数据泵线程:消化 worker 消息 → pump → 事件广播(10ms,与桌面版 tick 同构)
     {
@@ -439,10 +427,7 @@ async fn serve(opts: WebOptions, on_event: Option<OnEvent>) -> anyhow::Result<()
             return Err(anyhow::Error::new(e).context(format!("监听 {addr} 失败")));
         }
     };
-    println!(
-        "[mini-rtt-viewer] 管理台 http://{addr}{}",
-        if opts.demo { "  (demo)" } else { "" }
-    );
+    println!("[mini-rtt-viewer] 管理台 http://{addr}");
     // 就绪握手:gui 壳收到后才创建窗口/WebView(端口被占已在上面报错)
     if let Some(cb) = &on_event {
         cb(ServiceEvent::Ready(addr));
@@ -574,7 +559,7 @@ mod tests {
 
     #[test]
     fn clean_status_text_strips_banner_bullet() {
-        assert_eq!(clean_status_text("● 已连接 (demo)"), "已连接 (demo)");
+        assert_eq!(clean_status_text("● 已连接 (J-Link)"), "已连接 (J-Link)");
         assert_eq!(clean_status_text("● 未连接"), "未连接");
         assert_eq!(clean_status_text("plain"), "plain");
         // 双 bullet / 前导空格变体(审计 P3:单次剥离剥不干净)
@@ -618,9 +603,9 @@ mod tests {
 
     #[test]
     fn settings_req_accepts_backend_key() {
-        // 阶段二:backend 可选键(缺省 None = 不切换请求;命中 = 切数据源)
-        let req: SettingsReq = serde_json::from_str(r#"{"backend":"demo"}"#).unwrap();
-        assert_eq!(req.backend.as_deref(), Some("demo"));
+        // backend 可选键(缺省 None = 不切换请求;命中 = 校验并切换)
+        let req: SettingsReq = serde_json::from_str(r#"{"backend":"jlink"}"#).unwrap();
+        assert_eq!(req.backend.as_deref(), Some("jlink"));
         let req: SettingsReq = serde_json::from_str("{}").unwrap();
         assert_eq!(req.backend, None);
         // 与其它字段共存(逐字段可选语义)
@@ -630,39 +615,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_backend_cli_then_pref_then_first() {
+    fn resolve_backend_cli_then_pref_then_jlink() {
         let jlink = backend::backend_by_id(backend::BACKEND_JLINK).unwrap();
-        let demo = backend::backend_by_id(backend::BACKEND_DEMO).unwrap();
-        let normal = [jlink, demo];
-        let forced = [demo];
+        let available = [jlink];
         let id_of = |b: &'static dyn RttBackend| b.id();
-        // ① CLI 命中可用列表 → 最高优先
         assert_eq!(
-            id_of(resolve_backend(Some("demo"), "jlink", &normal)),
-            "demo"
-        );
-        // ② CLI 非法(未知 id)→ 忽略,偏好生效
-        assert_eq!(
-            id_of(resolve_backend(Some("nope"), "demo", &normal)),
-            "demo"
-        );
-        // ③ CLI 合法但强制形态不含该后端 → 忽略回落(--demo-log 恒 demo)
-        assert_eq!(
-            id_of(resolve_backend(Some("jlink"), "jlink", &forced)),
-            "demo"
-        );
-        // ④ 偏好归一化:不在可用列表(未知/空)→ 回落列表首个(普通形态 = jlink)
-        assert_eq!(id_of(resolve_backend(None, "probe-rs", &normal)), "jlink");
-        assert_eq!(id_of(resolve_backend(None, "", &normal)), "jlink");
-        // ⑤ 强制形态偏好是 jlink 也不可用 → 列表首个 = demo
-        assert_eq!(id_of(resolve_backend(None, "jlink", &forced)), "demo");
-        // ⑥ 偏好 demo + 普通形态 → demo(界面选后端持久化恢复的核心价值)
-        assert_eq!(id_of(resolve_backend(None, "demo", &normal)), "demo");
-        // id 匹配大小写敏感(与 backend_by_id 同口径),不静默归一
-        assert_eq!(
-            id_of(resolve_backend(Some("DEMO"), "jlink", &normal)),
+            id_of(resolve_backend(Some("jlink"), "", &available)),
             "jlink"
         );
+        // 旧偏好或 CLI 中的已删除后端不再可选，统一回落 J-Link。
+        for legacy in ["demo", "probe-rs", "", "JLINK"] {
+            assert_eq!(
+                id_of(resolve_backend(Some(legacy), legacy, &available)),
+                "jlink"
+            );
+            assert_eq!(id_of(resolve_backend(None, legacy, &available)), "jlink");
+        }
     }
 
     #[test]
@@ -755,16 +723,16 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&WsEvent::State {
                 connected: false,
-                status: "● 未连接 (demo)".into(),
+                status: "● 未连接 (J-Link)".into(),
             })
             .unwrap(),
-            r#"{"type":"state","connected":false,"status":"● 未连接 (demo)"}"#
+            r#"{"type":"state","connected":false,"status":"● 未连接 (J-Link)"}"#
         );
         // device:info 载荷与 /api/status 的 device 同源(device_info_json 单点),
         // 断言锁外层包装与历史 format! 逐字节同形;8 字段键名契约由
         // device_info_json_keys_match_status_contract 单独锁定
         let info = serde_json::json!({
-            "firmware": "J-Link V11 demo", "target": "STM32F103C8", "speedKhz": 4000,
+            "firmware": "J-Link V11.0", "target": "STM32F103C8", "speedKhz": 4000,
         });
         assert_eq!(
             serde_json::to_string(&WsEvent::Device { info: info.clone() }).unwrap(),

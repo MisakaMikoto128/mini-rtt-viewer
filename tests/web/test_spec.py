@@ -1,12 +1,12 @@
 """浏览器管理台黑盒测试(pytest + Playwright)。
 
 纪律(参照 docs/team/charter.md):预期只来自 docs/product/spec.md 条目,
-测试名按条目命名(test_fr<N>_<行为>)。服务以 --demo-log 启动(fixture)。
+测试名按条目命名(test_fr<N>_<行为>)。fixture 启动独立 QA 示例服务,不使用正式后端。
 
 运行前置:
     pip install pytest playwright
     playwright install chromium
-    cargo build --release --locked
+    cargo build --release --locked --bins --examples
 """
 
 import json
@@ -23,9 +23,8 @@ from playwright.sync_api import sync_playwright
 
 PORT = 18099  # QA 纪律:固定 18099,避开开发常用端口
 BASE = f"http://127.0.0.1:{PORT}"
-# index.html 经 include_str! 编译期内嵌(2026-09-19 Dev-UI):HTML 改版后旧 exe
-# 不含新 UI。允许 RTT_TEST_EXE 指定待测二进制(如 dev 构建产物);默认路径不变
-EXE = os.environ.get("RTT_TEST_EXE") or r"target\release\mini-rtt-viewer.exe"
+# HTML 经 include_str! 编译期内嵌，测试进程使用独立 QA 后端，不加载 J-Link。
+EXE = os.environ.get("RTT_QA_EXE") or r"target\release\examples\qa_server.exe"
 
 # UX 新色板 accent #2B6E8F(降饱和钢蓝,2026-09 色板重构;
 # getComputedStyle 返回 rgb 形式,2026-09-19 实测确认)
@@ -46,8 +45,10 @@ def server():
         "RTT_PREFS_FILE": os.path.join(tmp_appdata, "prefs.json"),  # 纪律:显式 prefs 隔离
         "RTT_WEB_NO_BROWSER": "1",
     }
+    with open(env["RTT_PREFS_FILE"], "w", encoding="utf-8") as prefs:
+        json.dump({"chip_name": "STM32F103C8"}, prefs)
     proc = subprocess.Popen(
-        [EXE, "--demo-log", "--no-window", "--port", str(PORT)], env=env
+        [EXE, "--no-window", "--port", str(PORT)], env=env
     )
     for _ in range(50):
         try:
@@ -104,31 +105,41 @@ def wait_rows(page, min_rows: int, timeout_ms: int = 15000) -> int:
     return page.evaluate("document.querySelectorAll('#log .row').length")
 
 
-def test_fr22_demo_stream_appends_rows(page):
-    """FR-22:demo 模式产生模拟数据流,页面收到并渲染日志行。
-    首行可能是「── 已连接 ──」标记行(连接/断开自动标记),不能作为 demo
-    数据判定;断言改为:页面存在含 [demo 前缀的数据行。"""
+def ensure_disconnected(page):
+    status = json.load(urllib.request.urlopen(f"{BASE}/api/status"))
+    if status["connected"]:
+        page.click("#connect-btn")
+    page.wait_for_function("!document.querySelector('#chip').disabled")
+
+
+def ensure_connected(page):
+    status = json.load(urllib.request.urlopen(f"{BASE}/api/status"))
+    if not status["connected"]:
+        if not page.input_value("#chip").strip():
+            page.fill("#chip", "STM32F103C8")
+        page.click("#connect-btn")
+    page.wait_for_function("!document.querySelector('#send-btn').disabled")
+
+
+def test_qa_stream_appends_rows(page):
+    """独立 QA 后端产生确定性数据流，页面收到并渲染日志行。"""
     assert wait_rows(page, 5) >= 5
-    has_demo_row = page.evaluate(
+    has_qa_row = page.evaluate(
         "[...document.querySelectorAll('#log .row')]"
-        ".some(r => r.textContent.includes('[demo'))"
+        ".some(r => r.textContent.includes('[qa'))"
     )
-    assert has_demo_row, "页面应存在含 [demo 的数据行"
+    assert has_qa_row, "页面应存在含 [qa 的数据行"
 
 
 def test_api_status_contract(server):
     """/api/status 字段契约:connected/rxBytes/txBytes/rowsTotal/uptimeSec/backend。
-
-    (2026-09-28 清理:前端与测试都不消费的 phase/port 死字段已从契约删除,
-    此前的 port 字段值还是 "jlink"/"demo",与字段名语义相悖。
-    阶段二后端可选面:backend=当前数据采集后端 id;fixture 为 --demo-log
-    强制形态,恒为 "demo"。)"""
+    浏览器套件注入独立 QA 后端，因此 backend 恒为 qa。"""
     data = json.load(urllib.request.urlopen(f"{BASE}/api/status"))
     for key in ("connected", "rxBytes", "txBytes", "rowsTotal", "uptimeSec", "backend"):
         assert key in data, f"缺字段 {key}"
     assert data["connected"] is True
     assert isinstance(data["rowsTotal"], int)
-    assert data["backend"] == "demo", f"强制 demo 形态 backend 应为 demo:实测 {data['backend']}"
+    assert data["backend"] == "qa"
 
 
 def test_fr20_theme_switch_updates_tokens(page):
@@ -150,6 +161,7 @@ def test_fr20_theme_switch_updates_tokens(page):
 
 def test_fr2_device_combo_filters_and_picks(page):
     """FR-2:目标设备可编辑下拉——输入筛选候选,点击候选填充完整型号。"""
+    ensure_disconnected(page)
     page.fill("#chip", "STM32F1")
     opts = page.evaluate(
         "[...document.querySelectorAll('#chip-list .opt')].map(e => e.dataset.v)"
@@ -169,6 +181,7 @@ def test_fr2_combo_visual_p0(page):
     候选项圆角非 0、与当前输入值相同的候选项常驻 accent 高亮。"""
     page.goto(BASE)  # 全新加载,排除前序用例的交互残留
     page.wait_for_selector("#chip", state="visible")
+    ensure_disconnected(page)
     # 浮层默认隐藏(页面加载未交互时不展开)
     assert (
         page.evaluate("getComputedStyle(document.getElementById('chip-list')).display")
@@ -223,14 +236,12 @@ def test_fr2_combo_visual_p0(page):
 
 def test_fr11_send_echoes_line(page):
     """FR-11:发送内容以回显行(» 前缀)出现在日志。"""
-    rows_before = page.evaluate("document.querySelectorAll('#log .row').length")
+    ensure_connected(page)
     page.fill("#send-text", "hello-web")
     page.click("#send-btn")
     page.wait_for_function(
         "document.body.innerText.includes('» hello-web')", timeout=5000
     )
-    rows_after = page.evaluate("document.querySelectorAll('#log .row').length")
-    assert rows_after > rows_before
 
 
 def test_fr14_pause_stops_stream(page):
@@ -241,23 +252,26 @@ def test_fr14_pause_stops_stream(page):
     time.sleep(1.5)
     n2 = page.evaluate("document.querySelectorAll('#log .row').length")
     assert n2 == n1, f"暂停后行数仍在增长:{n1} → {n2}"
+    last_before_resume = page.locator("#log .row").last.inner_text()
     page.click("#pause-btn")  # 恢复
     page.wait_for_function(
-        f"document.querySelectorAll('#log .row').length > {n2}", timeout=10000
+        "last => document.querySelector('#log').lastElementChild.textContent !== last",
+        arg=last_before_resume,
+        timeout=10000,
     )
 
 
 def test_fr14_clear_wipes_log(page):
-    """FR-14(清空):清空按钮清掉全部行,随后 demo 流继续产生新行。"""
+    """FR-14(清空):清空按钮清掉全部行,随后 QA 流继续产生新行。"""
     wait_rows(page, 3)
     before = page.evaluate("window.__clearedCount || 0")
     page.click("#clear-btn")
-    # cleared 消息应用瞬间 DOM 清零(之后 demo 流的新行才继续 append)
+    # cleared 消息应用瞬间 DOM 清零(之后 QA 流的新行才继续 append)
     page.wait_for_function(
         f"(window.__clearedCount || 0) > {before}", timeout=5000
     )
     assert page.evaluate("document.querySelectorAll('#log .row').length") < 10
-    wait_rows(page, 1)  # demo 流继续
+    wait_rows(page, 1)  # QA 流继续
 
 
 def test_fr18_web_search_p0(page):
@@ -453,8 +467,8 @@ def test_ui_layout_p0(page):
     #    VS Code 行距复刻:round(14 × 1.5) = 21)
     lh = page.evaluate("parseFloat(getComputedStyle(document.getElementById('log')).lineHeight)")
     assert 20 <= lh <= 22, f"日志行 line-height 应 21±1:实测 {lh}"
-    # 快照环形缓冲可能只剩长数据行;标记行(「── 已连接 ──」,demo 循环周期产生)
-    # 是稳定的短行来源,等待其出现后量实际高度
+    # 快照环形缓冲可能只剩长数据行;连接/断开标记行是稳定的短行来源,
+    # 等待任一短行出现后量实际高度
     page.wait_for_function(
         "[...document.querySelectorAll('#log .row')]"
         ".some(r => r.textContent.length > 0 && r.textContent.length < 60)",
@@ -529,9 +543,8 @@ def test_ui_layout_p0(page):
         )
 
     assert btn_state_matches_text(), "连接按钮文案与配色应联动(连接=primary/断开=danger)"
-    # 确定性切换断言(F9):先点一次进入手动模式——demo 状态机在手动干预后
-    # 挂起自动连接/断开周期(不再自发翻转);第二次翻转只能来自点击。
-    # 旧断言只等文案翻转,可能撞上 demo 20s 自动周期,并非点击生效。
+    # 确定性切换断言(F9):QA 后端没有自动连接周期,按钮翻变只能来自点击,
+    # 并同时验证文案、danger/primary 配色与服务端状态一致。
     pre = page.evaluate("document.getElementById('connect-btn').textContent.trim()")
     page.click("#connect-btn")
     page.wait_for_function(

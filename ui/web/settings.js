@@ -34,7 +34,10 @@ export function initDisplaySettings() {
   applyFontSize();
 
   const themeSelect = $('theme');
-  const builtinThemes = ['dark', 'light', 'oled', 'sepia'];
+  const builtinThemes = [
+    'dark', 'light', 'oled', 'sepia',
+    'instrument', 'console', 'laboratory',
+  ];
   let customThemeStyle = null;
   const setCustomThemeCss = css => {
     customThemeStyle?.remove();

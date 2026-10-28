@@ -44,7 +44,7 @@ release:opt-level 3 + LTO + strip + panic=abort + UPX(容错);依赖引入需过
 LogView.columns 实时绑定,tick 开头无节流同步给 pump;列宽计算收敛
 `char_width_cols`(emoji 3 列)。禁绝"多来源各自节流"——历史教训见 AGENTS.md。
 
-## ADR-9 demo 模式是一等公民
+## ADR-9 demo 模式是一等公民(已被 ADR-13 推翻)
 
 `--demo-log` 无设备仿真(数据流 + 断连重连 + 假命令消费者):无真板也能跑端到端,
 QA/UX/CI 冒烟全部基于它。真机验证仅在发版前由人工执行。
@@ -52,8 +52,7 @@ QA/UX/CI 冒烟全部基于它。真机验证仅在发版前由人工执行。
 ## ADR-10 标准化模板采 SerialHub
 
 仓库结构、spec 编号、团队回路、CI 门禁纪律、发布产物契约照 SerialHub
-(WorkPlace/serialhub)裁剪;差异点:本项目 Windows-only(CI 单平台)、无内嵌
-Web 管理台(桌面 GUI)。
+模板裁剪;差异点:本项目 Windows-only(CI 单平台)、无内嵌 Web 管理台(桌面 GUI)。
 **2026-09 更新:差异点中的「无内嵌 Web 管理台」已被 ADR-11 推翻**,管理台已内嵌。
 
 ## ADR-11 UI 技术栈迁移(2026-09 定案,补记)
@@ -77,3 +76,13 @@ tao + wry WebView 内嵌同一管理台(SerialHub 同构),不引入 Tauri/egui/i
 **接入新后端(如 probe-rs)= 实现 trait + 注册,web 层零改动**;若 web 层
 出现按后端名的 if,即缝漏,回改 backend.rs。落地证据:cargo test --lib 64 绿、
 tests/web 34 条黑盒绿(含浏览器实测后端下拉切换)。
+**2026-10-28 更新:双后端与界面选择是历史实现,现行产品决策见 ADR-13。**
+
+## ADR-13 正式程序只保留 J-Link,测试数据流独立注入(2026-10-28)
+
+删除 Demo 后端、`--demo-log` 和界面「数据源」选择,正式注册表只保留 J-Link;
+旧偏好中的已删除后端 id 在启动时归一化为 J-Link。无硬件 HTTP/WS/Playwright
+测试仍需要确定性数据流,因此由 `examples/qa_server.rs` 通过 `run_with_backend`
+显式注入 QA 后端;该可执行文件只服务测试,不加载 J-Link DLL,也不注册进正式程序。
+保留可替换后端抽象,但不把测试夹具暴露为产品功能。真机验收仍必须使用正式 exe
+和真实 J-Link,不得以 QA 结果替代。

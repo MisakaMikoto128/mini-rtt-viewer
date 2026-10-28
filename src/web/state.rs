@@ -14,8 +14,7 @@ pub(crate) struct Shared {
     pub(crate) connected: AtomicBool,
     pub(crate) seq: AtomicU64,
     pub(crate) clear_seq: AtomicU64,
-    // ---- 会话槽(后端抽象阶段一:worker/cmd_tx 双槽合并;内容由当前后端
-    // 维护——jlink = 真 worker 句柄+命令通道,demo = 恒活单例句柄)----
+    // ---- 会话槽:由当前后端维护 worker 句柄与命令通道 ----
     pub(crate) session: Mutex<Option<SessionHandle>>,
     pub(crate) msg_tx: mpsc::Sender<WorkerMsg>,
     /// reset reconnect 的 1 秒等待窗口门闩(审计 P1):重连线程已把 session
@@ -34,7 +33,7 @@ pub(crate) struct Shared {
     /// 当前数据采集后端(阶段二起可经 /api/settings 切换)
     pub(crate) backend: Mutex<&'static dyn RttBackend>,
     /// 本进程可用后端列表(/api/backends items 与 settings 校验的单一来源;
-    /// 装配期定死:强制形态仅 demo,普通形态 jlink+demo)
+    /// 装配期定死:正式服务仅 J-Link,独立测试进程可显式注入测试后端)
     pub(crate) backends_available: Vec<&'static dyn RttBackend>,
     /// 连接状态变化回调(gui 壳注入,驱动托盘图标;纯服务模式 None)
     pub(crate) on_state: Option<OnEvent>,
@@ -61,7 +60,7 @@ pub(crate) struct Shared {
     pub(crate) timer_text: Mutex<String>,
     pub(crate) timer_hex: AtomicBool,
     // ---- /api/status 会话扩展 + reset reconnect 模式 ----
-    /// 连接会话计时起点:State 迁移到已连接时记,断开清零;demo 启动即记
+    /// 连接会话计时起点:State 迁移到已连接时记,断开清零
     pub(crate) session_start: Mutex<Option<Instant>>,
     /// 当前状态文案(State 消息携带,去横幅圆点前缀;初始"未连接")
     pub(crate) status_text: Mutex<String>,
@@ -81,8 +80,7 @@ impl Shared {
     }
 
     /// 发送管线(手动 /api/send 与定时发送共用):HEX/文本 → worker;回显 +
-    /// TX 计数 + 记录为定时内容。demo 后端线程忽略 Send,只回显与计数
-    /// (前端连接态才允许发送,语义为虚拟发送)
+    /// TX 计数 + 记录为定时内容。当前后端 worker 消费实际发送字节。
     pub(crate) fn send_payload(&self, text: &str, hex: bool) -> Result<(), String> {
         if text.is_empty() {
             return Err("空输入".into());

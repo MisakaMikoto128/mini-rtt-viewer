@@ -10,17 +10,11 @@
 <body>
 <main>
   <aside id="sidebar" aria-label="连接与设备">
-    <div class="sidebar-head">
-      <strong>连接与设备</strong>
-      <button type="button" id="sidebar-close" aria-label="关闭连接设置">×</button>
-    </div>
     <div class="aside-scroll">
       <div class="group">
         <div class="title">连接设置</div>
         <div class="field"><span class="label">J-Link</span>
           <select id="jlink" aria-label="J-Link 调试器"></select></div>
-        <div class="field"><span class="label">数据源</span>
-          <select id="backend" aria-label="数据源后端"></select></div>
         <div class="field"><span class="label">目标设备</span>
           <div class="combo" id="chip-combo">
             <input id="chip" autocomplete="off" placeholder="STM32F103C8" role="combobox"
@@ -43,10 +37,6 @@
           <button type="button" id="connect-btn" class="primary">连接</button>
           <button type="button" id="reset-btn" disabled>重置目标</button>
         </div>
-        <div class="power-row">
-          <label class="check"><input type="checkbox" id="power" disabled> 电源输出</label>
-          <span class="power-note">J-Link 19 脚供电</span>
-        </div>
       </div>
       <details class="group" id="device-details">
         <summary class="title">设备信息</summary>
@@ -57,50 +47,58 @@
           <span class="k">序列号</span><span>—</span>
         </div>
       </details>
+      <div class="group" id="receive-panel">
+        <div class="title">接收</div>
+        <div class="btn-row">
+          <button type="button" id="clear-btn">清空</button>
+          <button type="button" id="pause-btn" aria-pressed="false">暂停</button>
+          <button type="button" id="mark-btn">标记</button>
+          <button type="button" id="export-btn">导出</button>
+        </div>
+        <div class="aframe-row">
+          <label class="check"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
+          <input type="text" id="frame-timeout" value="20" aria-label="断帧间隔毫秒">
+          <span class="unit">ms</span>
+        </div>
+        <div class="power-row">
+          <label class="check"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
+          <div class="power-group">
+            <label class="check"><input type="checkbox" id="power" disabled> 电源输出</label>
+            <span class="power-note">J-Link 19 脚供电</span>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field"><span class="label">行尾</span>
+            <select id="rx-ending">
+              <option value="0" selected>自动</option><option value="1">CRLF</option>
+              <option value="2">LF</option><option value="3">CR</option><option value="4">无</option>
+            </select></div>
+          <div class="field"><span class="label">字符集</span>
+            <select id="encoding">
+              <option value="0" selected>UTF-8</option><option value="1">GBK</option>
+              <option value="2">UTF-16 LE</option><option value="3">Latin-1</option><option value="4">ASCII</option>
+            </select></div>
+        </div>
+        <div class="row2 receive-toggles">
+          <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收</label>
+          <label class="check" title="行首显示本机到达时刻 [HH:MM:SS.mmm](仅开关打开后到达的行)"><input type="checkbox" id="timestamps"> 时间戳</label>
+        </div>
+        <div class="theme-row">
+          <div class="font-controls" aria-label="日志字号">
+            <button type="button" id="A-minus" title="减小日志字号" aria-label="减小日志字号">A-</button>
+            <button type="button" id="A-plus" title="增大日志字号" aria-label="增大日志字号">A+</button>
+          </div>
+          <select id="theme" aria-label="界面主题">
+            <option value="dark">深色</option><option value="light">浅色</option>
+            <option value="oled">OLED 纯黑</option><option value="sepia">护眼暖色</option>
+            <option value="instrument">精密仪器</option><option value="console">终端专注</option>
+            <option value="laboratory">实验室浅色</option>
+          </select>
+        </div>
+      </div>
     </div>
   </aside>
   <section id="content">
-    <div id="log-toolbar" aria-label="日志工具条">
-      <button type="button" id="sidebar-toggle" aria-controls="sidebar" aria-expanded="true">连接设置</button>
-      <div class="log-actions">
-        <button type="button" id="clear-btn">清空</button>
-        <button type="button" id="pause-btn" aria-pressed="false">暂停</button>
-        <button type="button" id="mark-btn">标记</button>
-        <button type="button" id="export-btn">导出</button>
-      </div>
-      <div class="display-controls">
-        <label class="check"><input type="checkbox" id="auto-scroll" checked> 自动滚动</label>
-        <label class="check" title="行首显示本机到达时刻 [HH:MM:SS.mmm](仅开关打开后到达的行)"><input type="checkbox" id="timestamps"> 时间戳</label>
-        <div class="font-controls" aria-label="日志字号">
-          <button type="button" id="A-minus" title="减小日志字号" aria-label="减小日志字号">A-</button>
-          <button type="button" id="A-plus" title="增大日志字号" aria-label="增大日志字号">A+</button>
-        </div>
-        <select id="theme" aria-label="界面主题">
-          <option value="dark">深色</option><option value="light">浅色</option>
-          <option value="oled">OLED 纯黑</option><option value="sepia">护眼暖色</option>
-        </select>
-      </div>
-    </div>
-    <div id="receive-bar" aria-label="接收设置">
-      <div class="frame-control">
-        <label class="check"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
-        <input type="text" id="frame-timeout" value="20" aria-label="断帧间隔毫秒">
-        <span class="unit">ms</span>
-      </div>
-      <label class="inline-field">行尾
-        <select id="rx-ending">
-          <option value="0" selected>自动</option><option value="1">CRLF</option>
-          <option value="2">LF</option><option value="3">CR</option><option value="4">无</option>
-        </select>
-      </label>
-      <label class="inline-field">字符集
-        <select id="encoding">
-          <option value="0" selected>UTF-8</option><option value="1">GBK</option>
-          <option value="2">UTF-16 LE</option><option value="3">Latin-1</option><option value="4">ASCII</option>
-        </select>
-      </label>
-      <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收</label>
-    </div>
     <div id="log-wrap">
       <div id="log" role="log" aria-label="RTT 日志" aria-live="off" tabindex="0"></div>
       <div id="search-bar" hidden>

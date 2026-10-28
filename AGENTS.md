@@ -4,14 +4,16 @@
 
 **一句话**:J-Link RTT 日志查看器,单 exe 双形态——桌面壳(tao+wry+tray 内嵌
 WebView)与纯服务(`--no-window`)共用同一套 Rust 数据层 + axum Web 管理台。
-**数据源后端已抽象化**(`RttBackend` trait,jlink/demo 双后端,界面可选),
-设计契约在 `docs/product/backend-abstraction.md`;**旧 Slint 前端已退役**,
+**数据采集后端已抽象化**(`RttBackend` trait,正式程序仅注册 J-Link),
+接缝定义在 `src/backend.rs`,历史决策见 `docs/team/decisions.md` ADR-12/13。
+无硬件 Web 测试使用独立 `examples/qa_server.rs` 显式注入 QA 后端,不进入正式
+UI/CLI/注册表。**旧 Slint 前端已退役**,
 凡是描述 Slint/`log_view.slint`/`main.rs Ctx::tick` 的旧笔记(含 git 历史
 里的本文件旧版)只作历史参考,别照着改代码。
 
 **架构与数据流**(模块树唯一真源 `src/lib.rs`,bin/examples 一律
 `use mini_rtt_viewer::…`):
-- `main.rs` 只做 CLI 装配:`--demo-log/--backend/--port/--listen/--no-window/--no-tray`
+- `main.rs` 只做 CLI 装配:`--backend/--port/--listen/--no-window/--no-tray`
   → `web::run`(纯服务)或 `gui::run_gui`(桌面壳)
 - `backend.rs`(缝,2026-09-28 新增):`RttBackend` trait + `Host`(Shared
   实现的最窄状态面)+ `SessionHandle` + 协议类型 `WorkerMsg/WorkerCmd/
@@ -26,19 +28,10 @@ WebView)与纯服务(`--no-window`)共用同一套 Rust 数据层 + axum Web 管
   (5ms 轮询 + 断帧判定 + 字符集/HEX 热切换);`jlink_dll.rs`:FFI
 - `log_model.rs`:纯逻辑日志泵(断行/ANSI/512 兜底/500 行上限),可单测
 - `config.rs` 偏好持久化(含 `backend` 字段)/ `device_db.rs` 设备库后台枚举
-  (归 jlink 后端驱使)/ `demo.rs` 虚拟后端(懒启动单例 + DemoCmd 私有通道,
-  20s/3s 自动周期状态机)
+  (归 jlink 后端驱使);`examples/qa_server.rs` 是仅供黑盒测试的独立数据流
 - 前端 `ui/web/index.html` + `styles.css` + 原生 ES modules 经 `include_str!`
   内嵌,无独立构建步骤;`app.js` 只做全局协调,API/日志视图/搜索/显示设置/
   弹窗分别位于同名模块。业务偏好只由服务端持有,localStorage 仅存显示偏好
-
-**审计(2026-09-25 起的 /goal 长任务,引擎自有)**:报告与进度在
-`docs/audit/`(T1 架构 + T2 逐文件),PROGRESS.md **只允许引擎写**。
-2026-09-28 主会话按用户指示对 T1+T2 发现做了逐条核验并修复属实项
-(P1×8 中修 6、设计项 2 转文档/登记;P2×11 中修 8、其余为声明过的取舍;
-P3 择要修;死代码全删)。3 条经核验为误报/不需修:open-browser"死接口"
-(关于框 index.html:1310 实际在用)、WinSystemTime 字段序(报告自查否定)、
-R3 热切换丢半字节(报告自判"登记不修")。
 
 **分支**:`feat/probe-rs-backend` 旧实验分支在 worktree
 `mini-rtt-viewer-probe-rs`(probe-rs 0.32 后端,卡 Windows Zadig 驱动,
@@ -57,12 +50,11 @@ main 只保留抽象接口);`audit/nova-20260925` 为审计引擎分支(本地�
   pyOCD 的 J-Link 插件底层也是 pylink→DLL)。产品决策:J-Link 永远走 jlink
   后端(默认,零操作);probers 实验整体在 v2 分支,含 tools/winusb 免 Zadig
   附录,**不要再提议给用户换驱动**
-- demo 后端的会话句柄**恒活**(单例线程,断开只是状态翻转):一切"是否已连接"
-  门禁判据用 `Shared.connected`,**严禁用 session 槽判空**(demo 永不空);
-  demo 的连接/断开走其私有 `DemoCmd` 通道,不进共享 `WorkerCmd`
-- 后端选择契约:settings 切后端断开态才允许(connected 判据 409);同 id
-  幂等 no-op;普通形态可用 [jlink,demo],`--demo-log` 强制仅 demo 且启动
-  自动连接(与历史行为逐字节一致,别"顺手"改)
+- 正式后端只有 J-Link;无硬件测试由 `web::run_with_backend` 在独立 QA 示例进程中
+  显式注入,**不得注册到 `backend_by_id` 或增加正式 UI/CLI 入口**。连接门禁判据用
+  `Shared.connected`,不要仅以 session 槽判空推断可连接状态
+- 后端设置契约:settings 切后端断开态才允许(connected 判据 409);同 id 幂等
+  no-op;旧偏好或 CLI 中的未知/已删除后端 id 在 serve 归一化为 J-Link
 - 归一化时机:`StoredPrefs.backend` 在 serve()(拿到 WebOptions 后)才校验
   归位,config.rs 的 load 不感知可用列表
 
@@ -140,7 +132,7 @@ main 只保留抽象接口);`audit/nova-20260925` 为审计引擎分支(本地�
 后端选择面(2026-09-28):GET /api/backends、/api/status 的 `backend` 字段、
 settings 的 `backend` 键、StoredPrefs 的 `backend` 字段同属契约面。
 2026-09-28 已删除前端/测试都不消费的 `/api/status` phase/port 死字段
-(旧 port 字段值还是 "jlink"/"demo",与字段名语义相悖)。
+(旧 port 字段承载过后端 id,与字段名语义相悖)。
 
 **前端注入面纪律(审计 F-2 后)**:设备名/J-Link 产品名等任何来自 DLL
 或磁盘缓存(`device_names.txt` 本机可篡改)的字符串,渲染一律 DOM API +
@@ -205,10 +197,13 @@ textContent,**禁止 innerHTML 拼接**(即使做了 `"` 转义也不行)。
 
 - `cargo test --lib`(backend/log_model/web/rtt/config/ansi/gui 纯逻辑)
 - `python -m pytest tests/web -q`(完整 HTTP/后端/主题/HEX/持久化/Playwright
-  黑盒;服务固定 18099 端口,组间残留进程会挡下一组;数量以当前测试收集为准)
-- 冒烟:`mini-rtt-viewer.exe --no-window --demo-log --port 8777`
-  (带 `RTT_PREFS_FILE` 隔离!)+ curl 打 API;带 UI 演示用 `--demo-log`
-  (`powershell Start-Process` 分离启动)
+  黑盒;服务固定 18099 端口,组间残留进程会挡下一组;数量以当前测试收集为准)。
+  先 `cargo build --release --locked --bins --examples`,默认同时定位正式 exe 与
+  `target/release/examples/qa_server.exe`;自定义构建分别经 `RTT_TEST_EXE`、
+  `RTT_QA_EXE` 指定。QA 进程不加载 J-Link DLL,也不属于正式后端注册表
+- 真机冒烟:`mini-rtt-viewer.exe --no-window --port 8777`(必须带临时
+  `RTT_PREFS_FILE` 与临时 `APPDATA` 隔离!)+ curl 打 API;连接验证需要真实
+  J-Link 与目标板,不得用测试后端冒充真机验收
 - `examples/rtt_check.rs`(无界面 RTT 直读)、`examples/emu_check.rs`
   (无界面枚举)
 

@@ -1,4 +1,4 @@
-//! 无界面 RTT 验证脚本(走 JLinkARM.dll)。
+//! 无界面 RTT 验证脚本(走 JLink_x64.dll)。
 //! 用法: cargo run --example rtt_check -- [芯片型号] [秒数]
 
 use mini_rtt_viewer::jlink_dll::{JLinkDll, RTT_CMD_START, RTT_CMD_STOP, TIF_SWD};

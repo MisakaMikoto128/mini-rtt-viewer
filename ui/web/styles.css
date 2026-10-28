@@ -123,6 +123,7 @@ details[open] > summary.title::before { content: '▾'; }
 .connect-actions > button { width: 100%; }
 .btn-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .btn-row > button { min-width: 0; height: 40px; padding: 0 8px; font-size: 13px; }
+#open-logs { grid-column: 1 / -1; }
 .aframe-row { display: grid; grid-template-columns: 1fr 72px auto; align-items: center; gap: 8px; }
 .power-row { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 8px; }
 .power-group { display: flex; flex-direction: column; gap: 2px; }

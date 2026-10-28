@@ -13,7 +13,7 @@
 //! - GET  /api/backends    → {selected, items:[{id,name,description,isVirtual}]}
 //!   正式程序 items 仅 J-Link,独立 QA 进程可注入测试后端。
 //! - GET  /api/prefs       → 持久化偏好快照(面板初值恢复)
-//! - GET  /api/themes      → [{id, name, custom}];内置 4 套(custom:false)+
+//! - GET  /api/themes      → [{id, name, custom}];内置 7 套(custom:false)+
 //!   自定义项(exe 旁 themes/*.css,id=文件名去扩展,name=文件名,custom:true)
 //! - GET  /api/theme-css/{id} → 自定义主题 CSS 文本(text/css);内置主题与未知
 //!   id 一律 404(内置主题由前端内嵌表覆盖,不落盘)
@@ -39,9 +39,11 @@
 //! - POST /api/mark        {text}  → 插入会话标记行
 //! - POST /api/pause       {on}
 //! - POST /api/clear
-//! - GET  /api/export      → text/plain 附件下载(rtt_<时间戳>.log,全部行文本)
-//! - POST /api/open-browser 在系统默认浏览器打开管理台(壳内前端按钮用;
-//!   URL 由服务端监听端口拼出,不接受客户端传入)
+//! - GET  /api/export      → text/plain 附件下载(rtt_<时间戳>.log,全部行文本,旧客户端兼容)
+//! - POST /api/logs/save   → {name};当前日志保存到应用 logs 目录,排他创建不覆盖同名文件
+//! - POST /api/logs/open   → {opened:true};创建并打开应用 logs 目录
+//! - POST /api/open-browser 在系统默认浏览器打开管理台(底栏按钮与壳内外链用;
+//!   管理台 URL 由服务端监听端口拼出;外链仅放行公开仓库前缀)
 //! - WS   /ws              {type:"rows"/"snapshot"/"cleared"} 与
 //!   {type:"state"/"device"/"progress"/"names"/"jlinks"/"stats"}
 //!
@@ -56,7 +58,7 @@
 //! 启动时读到的原值写回,serde(default) 兼容旧文件;主题/字号仍由前端
 //! localStorage 管理,不经此通道。
 //!
-//! 主题插件化(SerialHub ADR-18 同构):内置 4 套由前端内嵌;exe 旁 themes/
+//! 主题插件化(SerialHub ADR-18 同构):内置 7 套由前端内嵌;exe 旁 themes/
 //! 目录下每个 *.css 即一套自定义主题(只覆盖 :root 设计令牌),`GET /api/themes`
 //! 每次现扫(拖入即生效,零注册),CSS 经 `/api/theme-css/{id}` 服务——路径只
 //! 来自本机扫描列表,不拼用户输入,无穿越面。
@@ -135,7 +137,15 @@ const RESET_MODE_IN_PLACE: &str = "in-place";
 const RESET_MODE_RECONNECT: &str = "reconnect";
 /// 内置主题 id(与前端 index.html 内嵌主题表一一对应;themes/ 里的同名 .css
 /// 不进列表,避免下拉出现两个相同 value)
-const BUILTIN_THEME_IDS: [&str; 4] = ["dark", "light", "oled", "sepia"];
+const BUILTIN_THEME_IDS: [&str; 7] = [
+    "dark",
+    "light",
+    "oled",
+    "sepia",
+    "instrument",
+    "console",
+    "laboratory",
+];
 
 /// 服务启动选项(main 解析命令行后传入)
 pub struct WebOptions {
@@ -404,6 +414,8 @@ async fn serve(
         .route("/api/pause", post(api_pause))
         .route("/api/clear", post(api_clear))
         .route("/api/export", get(api_export))
+        .route("/api/logs/save", post(api_logs_save))
+        .route("/api/logs/open", post(api_logs_open))
         .route("/api/open-browser", post(api_open_browser))
         .route("/api/addr", get(api_addr))
         .route("/ws", get(ws_handler))

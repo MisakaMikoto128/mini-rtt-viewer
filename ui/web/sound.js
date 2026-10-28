@@ -6,6 +6,16 @@ const tones = {
   disconnect: { frequency: 330, duration: 0.070, level: 0.030 },
   send: { frequency: 880, duration: 0.040, level: 0.025 },
   error: { frequency: 220, duration: 0.090, level: 0.030 },
+  clear: { frequency: 440, duration: 0.040, level: 0.025 },
+  pause: { frequency: 390, duration: 0.045, level: 0.025 },
+  resume: { frequency: 590, duration: 0.045, level: 0.025 },
+  mark: { frequency: 740, duration: 0.040, level: 0.025 },
+  reset: { frequency: 500, duration: 0.080, level: 0.030 },
+  export: { frequency: 760, duration: 0.055, level: 0.025 },
+  open: { frequency: 620, duration: 0.045, level: 0.025 },
+  copy: { frequency: 820, duration: 0.030, level: 0.020 },
+  setting: { frequency: 520, duration: 0.035, level: 0.025 },
+  adjust: { frequency: 700, duration: 0.030, level: 0.020 },
   enabled: { frequency: 520, duration: 0.035, level: 0.025 },
 };
 

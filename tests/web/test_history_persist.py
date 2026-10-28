@@ -69,8 +69,8 @@ def test_history_2a_order_dedup_persist_restart(server):
         f"重复发送应去重置顶 [A,C,B]:实测 {_history()}"
     )
 
-    # 等待节流写盘把历史落盘(进程被 terminate 无退出回调,不能依赖
-    # 退出强制补写;磁盘出现 send_history 即持久化已发生)
+    # 等待节流写盘把历史落盘(进程被 terminate 无退出回调,只能依赖
+    # 500ms 快照写盘;磁盘出现 send_history 即持久化已发生)
     def disk_history():
         return server.prefs_on_disk().get("send_history")
 

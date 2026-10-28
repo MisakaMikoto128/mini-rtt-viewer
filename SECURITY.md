@@ -21,8 +21,9 @@
   - HTTP 层无来源校验、无连接数上限;WS 有慢消费者断连保护,但带宽不设限。
 - 通过 `libloading` 加载 SEGGER 官方驱动 DLL(`JLink_x64.dll`,SEGGER 安装包自带)
   ——DLL 本身的安全性由 SEGGER 分发渠道保证,本项目不修改、不捆绑该 DLL
-- 用户偏好与设备库缓存写入 `%APPDATA%/MiniRttViewer/`,不含敏感凭据;
-  `%APPDATA%/MiniRttViewer/device_names.txt` 为本机同权限进程可写文件,
+- 用户偏好、设备库缓存与导出日志写入 `%APPDATA%/MiniRttViewer/`;偏好不含敏感凭据,
+  但 RTT 日志可能包含固件输出的敏感信息。导出文件仅由当前本机用户目录权限保护,
+  分享日志前必须脱敏。`device_names.txt` 为本机同权限进程可写文件,
   其内容会显示进管理台(前端以 textContent 渲染,无脚本执行面)
-- 发布产物未做代码签名(SmartScreen 会提示未知发布者),校验方式以 GitHub
-  Release 页面的构建日志为准
+- 发布产物未做代码签名(SmartScreen 会提示未知发布者);每个 Release 附带 CI 生成的
+  `SHA256SUMS`,下载后应核对 zip 校验值,并只从本仓库 Releases 获取发布包

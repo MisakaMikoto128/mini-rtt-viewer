@@ -1,11 +1,11 @@
 # Mini RTT Viewer — 项目经验笔记
 
-## 项目现状速览(2026-10-28,v0.4.2 + 后端抽象化/Web 模块化)
+## 项目现状速览(2026-10-29,v0.5.0 + 后端抽象化/Web 模块化)
 
 **一句话**:J-Link RTT 日志查看器,单 exe 双形态——桌面壳(tao+wry+tray 内嵌
 WebView)与纯服务(`--no-window`)共用同一套 Rust 数据层 + axum Web 管理台。
 **数据采集后端已抽象化**(`RttBackend` trait,正式程序仅注册 J-Link),
-接缝定义在 `src/backend.rs`,历史决策见 `docs/team/decisions.md` ADR-12/13。
+接缝定义在 `src/backend.rs`,现行决策见 `docs/team/decisions.md` ADR-13。
 无硬件 Web 测试使用独立 `examples/qa_server.rs` 显式注入 QA 后端,不进入正式
 UI/CLI/注册表。**旧 Slint 前端已退役**,
 凡是描述 Slint/`log_view.slint`/`main.rs Ctx::tick` 的旧笔记(含 git 历史
@@ -34,18 +34,11 @@ UI/CLI/注册表。**旧 Slint 前端已退役**,
   弹窗分别位于同名模块;`sound.js` 用 Web Audio 合成短正弦波,只在用户手势后
   解锁。业务偏好只由服务端持有,localStorage 仅存主题/字号/音效等界面偏好
 
-**分支**:`feat/probe-rs-backend` 旧实验分支在 worktree
-`mini-rtt-viewer-probe-rs`(probe-rs 0.32 后端,卡 Windows Zadig 驱动,
-**保留勿动**);`feat/probe-rs-backend-v2` 是 probe-rs 后端新实验(已实现
-probers 后端 + 免 Zadig 驱动附录,2026-09-28 按用户指示从 main 撤回至此,
-main 只保留抽象接口);`audit/nova-20260925` 为审计引擎分支(本地存在,
-未检出)。
-
 ## 后端抽象(2026-09-28,RttBackend 缝的纪律)
 
 - **加新后端 = 新文件实现 `RttBackend` + `backend_by_id` 注册**,web 层零改动;
   若发现 web 层需要为某后端写 if,说明缝漏了——回改 backend.rs,别在 web.rs
-  加分支(设计契约 §8)
+  加分支。
 - **probe-rs 实验结论(勿重走弯路)**:J-Link 探针 × probe-rs 在 Windows 上
   **驱动互斥**(probe-rs 走 nusb 纯 USB 要求 WinUSB,与 SEGGER 驱动不共存;
   pyOCD 的 J-Link 插件底层也是 pylink→DLL)。产品决策:J-Link 永远走 jlink
@@ -184,8 +177,9 @@ textContent,**禁止 innerHTML 拼接**(即使做了 `"` 转义也不行)。
   `CARGO_TARGET_DIR=target2` 绕开;`.gitignore` 已统一 `/target*`
 - **build_release.bat**:UPX 压缩;bat 里不能设名为 `UPX` 的环境变量
   (用 `UPXBIN`);bat 文件写英文注释(中文 GBK 乱码)
-- **发布**:推 tag `vX.Y.Z` → GitHub Actions 构建+UPX → 自动挂 Release 资产;
-  不要随便发版,先本地验证、用户确认
+- **发布**:推 annotated tag `vX.Y.Z` → GitHub Actions 构建+UPX → 自动挂 Release zip
+  与 SHA256SUMS;Release 正文使用对应 CHANGELOG 的详细说明。不要随便发版,
+  先本地验证、用户确认
 - 编译基线:`opt-level = 3 + target-cpu=x86-64-v2`(.cargo/config.toml 随
   仓库生效,含 CI),lto + codegen-units=1 + strip + panic=abort;
   性能优先于体积(RTT 数据路径与 serde/axum 都在 CPU 上);旧 Slint 时代的

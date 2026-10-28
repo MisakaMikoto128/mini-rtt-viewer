@@ -8,6 +8,8 @@ import { initSound, playSound } from './sound.js';
 const log = $('log');
 let connected = false, autoScroll = true;
 let paused = false;
+// 复位会经历断开/重连；窗口内只保留复位反馈，避免一次操作连响三次。
+let resetSoundUntil = 0;
 // S1 速率/S2 时长状态:stats 每 500ms 一拍,lastStats 记上次字节快照差值算 B/s
 let lastStats = null;
 // S4 时间戳开关(纯前端显示层;localStorage 记忆,与字号/主题同模式)
@@ -108,7 +110,7 @@ function zeroRates() { $('rx-rate').textContent = '0 B/s'; $('tx-rate').textCont
 function setState(on, status) {
   const changed = connected !== on;
   connected = on;
-  if (changed) playSound(on ? 'connect' : 'disconnect');
+  if (changed && performance.now() >= resetSoundUntil) playSound(on ? 'connect' : 'disconnect');
   $('dot').classList.toggle('on', on);
   if (status) $('status').textContent = status.replace('● ', '');
   // S1/S2:断开清零(速率归零显示、时长归 0、字节快照复位)
@@ -280,8 +282,18 @@ function disconnect() {
   request('/api/disconnect', { method: 'POST' }).catch(error => showToast(error.message));
 }
 $('connect-btn').onclick = () => { connected ? disconnect() : connect(); };
-$('reset-btn').onclick = () => request('/api/reset', { method: 'POST' }).catch(error => showToast(error.message));
-$('power').onchange = e => postJson('/api/power', { on: e.target.checked }).catch(error => showToast(error.message));
+$('reset-btn').onclick = () => {
+  resetSoundUntil = performance.now() + 1800;
+  request('/api/reset', { method: 'POST' })
+    .then(() => playSound('reset'))
+    .catch(error => {
+      resetSoundUntil = 0;
+      showToast(error.message);
+    });
+};
+$('power').onchange = e => postJson('/api/power', { on: e.target.checked })
+  .then(() => playSound('setting'))
+  .catch(error => showToast(error.message));
 
 // 运行时设置:changed → POST settings(worker 原子热切换,动态生效)
 // 断帧间隔 change 时夹取 1-200,并由服务端偏好持久化。
@@ -296,7 +308,7 @@ $('frame-timeout').addEventListener('change', e => {
   postSettings({ frameTimeout: v });
 });
 function postSettings(patch) {
-  return postJson('/api/settings', patch);
+  return postJson('/api/settings', patch).then(() => playSound('setting'));
 }
 // 定时发送:连接态才触发,重发最近一次发送的内容(0.001-999 秒);
 // 间隔非法自动停,不弹错误
@@ -319,7 +331,7 @@ $('timer-interval').addEventListener('change', e => {
 function postTimer(body) {
   const box = $('send-text');
   if (box.value.trim()) body.text = box.value;  // 可选:显式指定定时内容(默认最近发送)
-  return postJson('/api/timer', body);
+  return postJson('/api/timer', body).then(() => playSound('setting'));
 }
 function setPaused(on) {
   paused = on;
@@ -329,13 +341,21 @@ function setPaused(on) {
 $('pause-btn').onclick = () => {
   const next = !paused;
   postJson('/api/pause', { on: next })
-    .then(() => setPaused(next))
+    .then(() => {
+      setPaused(next);
+      playSound(next ? 'pause' : 'resume');
+    })
     .catch(error => showToast(error.message || '暂停状态更新失败'));
 };
 $('clear-btn').onclick = () => request('/api/clear', { method: 'POST' })
-  .then(() => search.resetRows())
+  .then(() => {
+    search.resetRows();
+    playSound('clear');
+  })
   .catch(error => showToast(error.message));
-$('mark-btn').onclick = () => postJson('/api/mark', { text: '' }).catch(error => showToast(error.message));
+$('mark-btn').onclick = () => postJson('/api/mark', { text: '' })
+  .then(() => playSound('mark'))
+  .catch(error => showToast(error.message));
 
 // 发送 + 会话内历史:↑ 浏览(最新在前)/ ↓ 返回 / ↓ 到底恢复草稿;
 // IME composing 期间不响应方向键与 Enter
@@ -381,7 +401,12 @@ function send() {
       showToast(error.message || '发送失败');
     });
 }
-$('auto-scroll').onchange = e => { autoScroll = e.target.checked; lsSet('auto-scroll', autoScroll ? '1' : '0'); if (autoScroll) { follow = true; scrollBottom(); } };
+$('auto-scroll').onchange = e => {
+  autoScroll = e.target.checked;
+  lsSet('auto-scroll', autoScroll ? '1' : '0');
+  if (autoScroll) { follow = true; scrollBottom(); }
+  playSound('setting');
+};
 
 // 面板业务偏好:change → 服务端 /api/settings,reload 由 /api/prefs 回填。
 // 文本输入(目标设备)按键防抖 400ms;select/checkbox 一次 change 即一值,
@@ -418,6 +443,7 @@ $('timestamps').addEventListener('change', e => {
   tsOn = e.target.checked;
   lsSet('timestamps', tsOn ? '1' : '0');
   for (const el of [...log.children]) if (el.__rec) search.renderRow(el.__rec);
+  playSound('setting');
 });
 
 initDisplaySettings();

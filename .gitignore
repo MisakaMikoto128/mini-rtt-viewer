@@ -2,6 +2,8 @@
 /target*
 /tools
 timing_*.log
+*.stackdump
+*.dmp
 
 # Python
 __pycache__/

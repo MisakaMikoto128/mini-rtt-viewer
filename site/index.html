@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>Mini RTT Viewer — 为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器 | 免费开源 · 免安装</title>
-<meta name="description" content="Mini RTT Viewer 是免费开源(MIT)的轻量级 SEGGER RTT 日志查看器:中文 / emoji 原样显示,ANSI 彩色日志、VS Code 式正则搜索、四套主题,桌面版单程序(内嵌浏览器管理台)。单文件免安装、解压即用,10kHz+ 吞吐不卡 UI,启动不到 1 秒。">
+<meta name="description" content="Mini RTT Viewer 是免费开源(MIT)的轻量级 SEGGER RTT 日志查看器:中文 / emoji 原样显示,ANSI 彩色日志、VS Code 式正则搜索、七套主题与极简操作音效,桌面版单程序(内嵌浏览器管理台)。单文件免安装、解压即用,10kHz+ 吞吐不卡 UI,启动不到 1 秒。">
 <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon.png">
 <link rel="icon" type="image/png" sizes="256x256" href="./assets/icon.png">
 <meta property="og:type" content="website">
@@ -356,7 +356,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
   <div class="container">
     <p class="eyebrow">J-LINK RTT CONSOLE</p>
     <h1>为 UTF-8 / emoji 而生的 SEGGER RTT 日志查看器</h1>
-    <p class="hero-sub">RTT 比串口快得多,官方 J-Link RTT Viewer 对 UTF-8 的支持却是坏的:中文乱码、emoji 直接丢。Mini RTT Viewer 单文件约 3 MB、免安装,中文和 emoji 原样显示,10kHz+ 吞吐不卡 UI,启动不到 1 秒。</p>
+    <p class="hero-sub">RTT 比串口快得多,官方 J-Link RTT Viewer 对 UTF-8 的支持却是坏的:中文乱码、emoji 直接丢。Mini RTT Viewer 单文件约 0.85 MB、免安装,中文和 emoji 原样显示,10kHz+ 吞吐不卡 UI,启动不到 1 秒。</p>
     <div class="hero-cta">
       <a class="btn btn-primary btn-lg" href="#download">下载 Mini RTT Viewer</a>
       <a class="btn btn-secondary btn-lg" href="https://github.com/MisakaMikoto128/mini-rtt-viewer" target="_blank" rel="noopener">
@@ -427,7 +427,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         <a class="shot" href="./images/desktop.png" target="_blank" rel="noopener">
           <img src="./images/desktop.png" alt="Mini RTT Viewer 桌面版" width="1440" height="900" loading="lazy">
         </a>
-        <figcaption>桌面版:左侧连接 / 设备信息 / 接收 / 发送分区配置,右侧 ANSI 彩色日志按显示列换行,滚轮逐行对齐、贴底跟随。</figcaption>
+        <figcaption>桌面版:左侧连接 / 设备信息 / 接收与显示设置,右侧 ANSI 彩色日志和发送区;长行自动换行,滚轮贴底跟随。</figcaption>
       </figure>
       <figure class="shot-main">
         <a class="shot" href="./images/web-console.png" target="_blank" rel="noopener">
@@ -548,12 +548,12 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       <div>
         <ul class="foot-links">
           <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer" target="_blank" rel="noopener">GitHub 仓库</a></li>
-          <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/docs/product/spec.md" target="_blank" rel="noopener">需求规格(FR-1..26)</a></li>
+          <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/docs/product/spec.md" target="_blank" rel="noopener">需求规格(FR-1..30)</a></li>
           <li><a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">贡献指南</a></li>
         </ul>
       </div>
       <div>
-        <p class="foot-warn">安全提示:纯本地工具,无遥测、无联网功能,不收集任何数据;发布包未做代码签名,下载后请核对 SHA256,详见 <a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/SECURITY.md" target="_blank" rel="noopener">安全说明</a>。</p>
+        <p class="foot-warn">安全提示:纯本地工具,无遥测、无外部数据上传,不收集任何数据;发布包未做代码签名,下载后请核对 SHA256,详见 <a href="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/SECURITY.md" target="_blank" rel="noopener">安全说明</a>。</p>
       </div>
     </div>
   </div>

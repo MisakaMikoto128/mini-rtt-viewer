@@ -229,7 +229,7 @@ fn exit_process(tray: Option<&tray_icon::TrayIcon>, webview: Option<wry::WebView
 
 /// `TerminateProcess(GetCurrentProcess(), code)`:自我终局的唯一出口。
 /// 不用 `std::process::exit`(= ExitProcess):它会跑 DLL_PROCESS_DETACH,
-/// WebView2/JLinkARM 等 DLL 在 detach 里与外部进程同步往返,是现场僵尸态的
+/// WebView2/JLink_x64 等 DLL 在 detach 里与外部进程同步往返,是现场僵尸态的
 /// 直接成因;TerminateProcess 无 detach 阶段,内核无条件收尸。
 #[cfg(windows)]
 fn terminate_self(code: u32) -> ! {

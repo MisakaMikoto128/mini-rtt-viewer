@@ -18,7 +18,9 @@ QA_CSS = (
     "--muted:#668866;--ok:#44cc66;--err:#ff6666;--log-bg:#0a120a;--log-fg:#cceecc}"
 )
 PANEL_RGB = "rgb(17, 34, 51)"  # #112233 的 getComputedStyle 形式
-BUILTIN_IDS = {"dark", "light", "oled", "sepia"}
+BUILTIN_IDS = {
+    "dark", "light", "oled", "sepia", "instrument", "console", "laboratory",
+}
 
 
 @pytest.fixture(scope="module")
@@ -115,9 +117,7 @@ def test_theme_1b_builtin_name_not_shadowed(server, page):
     """1b:与内置同名的 css 不出现在列表(防覆盖内置)。
 
     断言分层:列表不含同名 custom 项 + UI 选中内置 dark 时仍是内置色板
-    (前端内置主题不走 /api/theme-css,无覆盖)。
-    注:/api/theme-css/dark 会解析到用户同名文件(200),属 API 层潜在遮蔽,
-    前端未触发,记录于验收报告,不作为本条 FAIL 依据。
+    (前端内置主题不走 /api/theme-css,无覆盖),CSS 端点也拒绝内置 id。
     """
     _write_theme("dark.css", QA_CSS)
     entries = get_json("/api/themes")
@@ -153,3 +153,16 @@ def test_theme_1c_path_traversal_404(server):
     ):
         status, body = http("GET", f"/api/theme-css/{evil}")
         assert status == 404, f"/api/theme-css/{evil} 应 404:实测 {status} {body[:80]!r}"
+
+
+def test_theme_1d_all_seven_builtins_are_advertised_once(server):
+    entries = get_json("/api/themes")
+    assert {t["id"] for t in entries} == BUILTIN_IDS
+    assert len(entries) == len(BUILTIN_IDS)
+    assert all(t["custom"] is False for t in entries)
+
+
+def test_theme_1e_builtin_css_endpoint_cannot_be_shadowed(server):
+    _write_theme("dark.css", QA_CSS)
+    status, body = http("GET", "/api/theme-css/dark")
+    assert status == 404, f"内置主题 CSS 端点不得被同名文件覆盖:{status} {body[:80]!r}"

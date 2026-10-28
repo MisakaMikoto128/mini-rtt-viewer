@@ -47,7 +47,14 @@ window.webkitAudioContext = FakeAudioContext;
 
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
-    srv = QAServer(tmp_path_factory.mktemp("sound-qa"))
+    tmp = tmp_path_factory.mktemp("sound-qa")
+    srv = QAServer(
+        tmp,
+        extra_env={
+            "RTT_LOG_DIR": str(tmp / "logs"),
+            "RTT_DISABLE_SHELL_OPEN": "1",
+        },
+    )
     srv.start()
     yield srv
     srv.stop()
@@ -148,3 +155,87 @@ def test_fr29_send_error_uses_one_low_short_tone(page):
     assert tone["type"] == "sine"
     assert 180 <= tone["frequency"] <= 300
     assert 20 <= tone["durationMs"] <= 120
+
+
+def test_fr29_receive_actions_each_play_exactly_once(page):
+    for index, selector in enumerate(["#clear-btn", "#pause-btn", "#pause-btn", "#mark-btn"], 1):
+        page.click(selector)
+        page.wait_for_function(f"window.__tones.length === {index}")
+    page.wait_for_timeout(300)
+    assert page.evaluate("window.__tones.length") == 4
+    assert page.evaluate("window.__tones.every(t => t.type === 'sine')")
+
+
+def test_fr29_reset_plays_once_without_connection_tone_duplicates(page):
+    page.click("#reset-btn")
+    page.wait_for_timeout(1400)
+    assert page.evaluate("window.__tones.length") == 1
+    assert page.locator("#connect-btn").inner_text() == "断开"
+
+
+def test_fr29_display_and_setting_changes_each_play_once(page):
+    page.click("#A-plus")
+    page.select_option("#theme", "console")
+    page.uncheck("#auto-scroll")
+    page.check("#hex-rx")
+    page.wait_for_function("window.__tones.length === 4")
+    page.wait_for_timeout(300)
+    assert page.evaluate("window.__tones.length") == 4
+
+
+def test_fr29_export_and_open_actions_each_play_once(page):
+    with page.expect_response(lambda r: "/api/logs/save" in r.url, timeout=5000):
+        page.click("#export-btn")
+    page.wait_for_function("window.__tones.length === 1")
+    with page.expect_response(lambda r: "/api/logs/open" in r.url, timeout=5000):
+        page.click("#open-logs")
+    page.wait_for_function("window.__tones.length === 2")
+    page.route("**/api/open-browser", lambda route: route.fulfill(status=200, body=""))
+    page.click("#open-browser")
+    page.wait_for_function("window.__tones.length === 3")
+    page.wait_for_timeout(300)
+    assert page.evaluate("window.__tones.length") == 3
+
+
+def test_fr29_dialog_open_and_clipboard_copy_each_play_once(page):
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    page.click("#version")
+    page.wait_for_function("window.__tones.length === 1")
+    page.click("#about-close")
+    page.click("#remote-btn")
+    page.wait_for_function("window.__tones.length === 2")
+    page.click("#remote-card-local")
+    page.wait_for_function("window.__tones.length === 3")
+    page.wait_for_timeout(300)
+    assert page.evaluate("window.__tones.length") == 3
+
+
+def test_fr29_power_timestamp_and_timer_settings_play_without_timer_send_noise(page):
+    page.check("#timestamps")
+    page.wait_for_function("window.__tones.length === 1")
+    page.check("#power")
+    page.wait_for_function("window.__tones.length === 2")
+    page.fill("#send-text", "ping")
+    page.check("#timer-on")
+    page.wait_for_function("window.__tones.length === 3")
+    page.wait_for_timeout(1200)
+    assert page.evaluate("window.__tones.length") == 3
+    page.uncheck("#timer-on")
+    page.wait_for_function("window.__tones.length === 4")
+
+
+def test_fr29_failed_workspace_actions_each_play_only_one_error_tone(page):
+    for index, (selector, pattern) in enumerate([
+        ("#export-btn", "**/api/logs/save"),
+        ("#open-logs", "**/api/logs/open"),
+        ("#open-browser", "**/api/open-browser"),
+    ], 1):
+        page.route(pattern, lambda route: route.fulfill(status=500, body="测试失败"))
+        page.click(selector)
+        page.wait_for_function(f"window.__tones.length === {index}")
+        page.unroute(pattern)
+    page.wait_for_timeout(300)
+    assert page.evaluate("window.__tones.length") == 3
+    assert page.evaluate(
+        "window.__tones.every(t => t.type === 'sine' && t.frequency.value === 220)"
+    )

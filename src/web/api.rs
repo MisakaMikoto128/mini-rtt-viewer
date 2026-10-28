@@ -281,6 +281,9 @@ pub(crate) async fn api_themes() -> Json<serde_json::Value> {
         {"id": "light", "name": "浅色", "custom": false},
         {"id": "oled", "name": "OLED 纯黑", "custom": false},
         {"id": "sepia", "name": "护眼暖色", "custom": false},
+        {"id": "instrument", "name": "精密仪器", "custom": false},
+        {"id": "console", "name": "终端专注", "custom": false},
+        {"id": "laboratory", "name": "实验室浅色", "custom": false},
     ]);
     let arr = items.as_array_mut().unwrap();
     for t in scan_custom_themes(&themes_dir()) {
@@ -297,6 +300,9 @@ pub(crate) async fn api_themes() -> Json<serde_json::Value> {
 /// 覆盖)。路径安全:只在「本机扫描列表」里按 id 精确匹配,拿到的路径来自
 /// read_dir 而非用户输入,天然无目录穿越面。
 pub(crate) async fn api_theme_css(Path(id): Path<String>) -> Response {
+    if BUILTIN_THEME_IDS.contains(&id.as_str()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let hit = scan_custom_themes(&themes_dir())
         .into_iter()
         .find(|t| t.id == id);
@@ -705,18 +711,120 @@ pub(crate) async fn api_clear(State(shared): State<Arc<Shared>>) -> StatusCode {
     StatusCode::OK
 }
 
-/// 导出当前显示的全部日志(.log 纯文本附件:行文本 + \r\n 行尾,时间戳取
-/// 本地时间)
-pub(crate) async fn api_export(State(shared): State<Arc<Shared>>) -> Response {
-    // 锁内只做快照克隆,拼接放到锁外(审计 P3:缩短泵锁持有时间)
-    let rows = shared.pump.lock().unwrap().snapshot_rows();
+fn export_text(rows: &[Vec<ansi::Run>]) -> String {
     let mut body = String::new();
-    for row in &rows {
+    for row in rows {
         for run in row {
             body.push_str(&run.text);
         }
         body.push_str("\r\n");
     }
+    body
+}
+
+/// 日志目录默认与偏好同级；显式环境变量只用于便携/隔离测试，路径不接受 HTTP 输入。
+fn log_dir() -> std::io::Result<PathBuf> {
+    if let Ok(path) = std::env::var("RTT_LOG_DIR") {
+        if !path.trim().is_empty() {
+            return Ok(PathBuf::from(path));
+        }
+    }
+    dirs::config_dir()
+        .map(|dir| dir.join("MiniRttViewer").join("logs"))
+        .ok_or_else(|| std::io::Error::other("无法解析应用日志目录"))
+}
+
+/// 排他创建保证同秒连续导出及并发请求都不会覆盖已有日志。
+fn save_log(body: &str) -> std::io::Result<String> {
+    use std::io::Write;
+
+    let dir = log_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let stamp = now_stamp();
+    for suffix in 0..1000 {
+        let name = if suffix == 0 {
+            format!("rtt_{stamp}.log")
+        } else {
+            format!("rtt_{stamp}_{suffix}.log")
+        };
+        let path = dir.join(&name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(body.as_bytes()) {
+                    drop(file);
+                    let _ = std::fs::remove_file(path);
+                    return Err(error);
+                }
+                return Ok(name);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "同秒日志文件过多，无法分配新文件名",
+    ))
+}
+
+fn open_log_dir() -> std::io::Result<()> {
+    let dir = log_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    // 无硬件 QA 不拉起真实 Explorer，仍走同一目录创建和 HTTP 成功路径。
+    if std::env::var("RTT_DISABLE_SHELL_OPEN").as_deref() == Ok("1") {
+        return Ok(());
+    }
+    std::process::Command::new("explorer")
+        .arg(dir)
+        .spawn()
+        .map(|_| ())
+}
+
+pub(crate) async fn api_logs_save(State(shared): State<Arc<Shared>>) -> Response {
+    let body = {
+        let rows = shared.pump.lock().unwrap().snapshot_rows();
+        export_text(&rows)
+    };
+    match tokio::task::spawn_blocking(move || save_log(&body)).await {
+        Ok(Ok(name)) => Json(serde_json::json!({ "name": name })).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存日志失败: {error}"),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存日志任务失败: {error}"),
+        )
+            .into_response(),
+    }
+}
+
+pub(crate) async fn api_logs_open() -> Response {
+    match tokio::task::spawn_blocking(open_log_dir).await {
+        Ok(Ok(())) => Json(serde_json::json!({ "opened": true })).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("打开日志文件夹失败: {error}"),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("打开日志文件夹任务失败: {error}"),
+        )
+            .into_response(),
+    }
+}
+
+/// 兼容旧客户端的浏览器下载接口；管理台导出改走 /api/logs/save。
+pub(crate) async fn api_export(State(shared): State<Arc<Shared>>) -> Response {
+    // 锁内只做快照克隆，拼接放到锁外(审计 P3:缩短泵锁持有时间)
+    let rows = shared.pump.lock().unwrap().snapshot_rows();
+    let body = export_text(&rows);
     let disposition = format!("attachment; filename=\"rtt_{}.log\"", now_stamp());
     (
         StatusCode::OK,

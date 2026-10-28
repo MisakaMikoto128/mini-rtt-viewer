@@ -1,0 +1,72 @@
+name: Bug report
+description: 报告可复现的功能、连接或界面问题
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请先搜索已有 issue，并阅读 README 的常见问题。
+        **请脱敏：不要填写真实 J-Link 序列号、私有日志、凭据或本机用户名。**
+  - type: input
+    id: version
+    attributes:
+      label: Mini RTT Viewer 版本
+      description: 例如 v0.5.0；源码构建请附 commit。
+      placeholder: v0.5.0
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows 版本
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+        - 其他（在补充说明中描述）
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: J-Link 与目标环境
+      description: J-Link 软件包版本、目标芯片、SWD/JTAG；无硬件 UI 问题可写“不适用”。
+      placeholder: J-Link V8.xx / STM32F030F4 / SWD
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最小复现步骤
+      placeholder: |
+        1. 启动程序并……
+        2. 点击……
+        3. 出现……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 可附脱敏截图或错误文本。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志或补充说明
+      render: text
+      placeholder: 仅粘贴复现所需的最小内容。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已搜索重复 issue，并移除序列号、私有日志、凭据和个人路径。
+          required: true

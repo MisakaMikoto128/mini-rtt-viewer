@@ -1,88 +1,46 @@
-# 决策记录(ADR)
+# 架构决策记录(ADR)
 
-一个决策一条,新决策追加;被推翻的保留原文并注明后继 ADR。
+只保留仍指导当前实现的决策;被替代方案的历史代码可从对应版本 tag 查阅。
 
 ## ADR-1 Windows-only 定位
 
-RTT 数据路径依赖 SEGGER `JLinkARM.dll`(闭源,无跨平台替代)。不做条件编译的
-假跨平台,CI 与发布只覆盖 windows-x86_64。(PLAT-1)
+RTT 数据路径依赖 SEGGER `JLink_x64.dll`。不做条件编译的假跨平台,CI 与发布只覆盖
+windows-x86_64。(PLAT-1)
 
-## ADR-2 直连 JLinkARM.dll,不用 pylink-square
+## ADR-2 直连 JLink_x64.dll,不用 pylink-square
 
-pylink-square 1.6+ 在本场景验证不可用(RTT 读不稳定);`libloading` + 显式 FFI
-签名,连接序列按 DLL 状态机要求固定(disable_dialog → 枚举选 SN → RTT START →
-TIF/速度 → Device → Connect)。换库类提议一律引用本条。
+pylink-square 1.6+ 在本场景验证不可用(RTT 读不稳定);采用 `libloading` + 显式 FFI。
+连接序列必须保持:disable_dialog → 枚举选 SN → RTT START → TIF/速度 → Device → Connect;
+多探针使用 SelectByUSBSN → SetHostIF → OpenEx。不得要求用户改装 WinUSB/Zadig 驱动。
 
 ## ADR-3 MIT 许可
 
-个人开源工具,MIT 足够;不接受 CLA。
-
-## ADR-4 Slint 作为 UI 技术栈(2026-08)
-
-选型时看中:纯 Rust、声明式 .slint、单二进制、体积可控(femtovg 渲染)。
-**2026-09 起开发体验问题累积**(布局约束反直觉、样式覆盖要 hack 内置文件、
-changed 回调链限制、可视化调试弱),评估迁移中——见 backlog「UI 技术栈评估」,
-结论将出 ADR-11。迁移立项前 Slint 代码继续维护。
+个人开源工具采用 MIT,不接受 CLA。发布物不包含 SEGGER DLL。
 
 ## ADR-5 体积与性能基调
 
-release:opt-level 3 + LTO + strip + panic=abort + UPX(容错);依赖引入需过
-体积审查(regex-lite 替代 regex、零依赖 Win32 FFI 替代 chrono/clipboard crate)。
+release 使用 opt-level 3 + LTO + strip + panic=abort + 可选 UPX。新增依赖需审查体积和
+维护收益;优先使用浏览器原生能力和已有 Rust 生态中的轻量实现。
 
 ## ADR-6 偏好持久化:JSON 快照比对
 
-%APPDATA%/MiniRttViewer/prefs.json;tick 内 500ms 快照比对,变化才原子写,
-退出强制补写。不引入 notify/watch 类依赖。
+业务偏好存于 `%APPDATA%/MiniRttViewer/prefs.json`,500ms 快照比对后原子写。异常强退
+可能丢失最后不超过 500ms 的改动。主题、字号、时间戳、音效等显示偏好由 localStorage 持有。
 
-## ADR-7 数据路径分层:FFI / 纯逻辑 / UI 三层
+## ADR-7 数据路径分层:FFI / 纯逻辑 / UI
 
-`jlink_dll.rs`(FFI)与 `log_model.rs`/`ansi.rs`/`config.rs`(纯逻辑,可单测)
-不依赖 Slint 类型;UI(main.rs 装配层)只做接线。回归测试建立在纯逻辑层。
+`jlink_dll.rs` 负责 FFI;`log_model.rs`、`ansi.rs`、`config.rs` 保持可单测;Web、桌面壳
+和后端只做装配与协议接线。硬件状态机不能依赖界面生命周期。
 
-## ADR-8 换行列数单一真源
+## ADR-11 UI 使用内嵌 Web 管理台
 
-LogView.columns 实时绑定,tick 开头无节流同步给 pump;列宽计算收敛
-`char_width_cols`(emoji 3 列)。禁绝"多来源各自节流"——历史教训见 AGENTS.md。
+Rust 数据层与 worker 保持不变;管理台为 `ui/web/` 原生 HTML/CSS/ES modules,经
+`include_str!` 编译期内嵌,axum 提供 HTTP/WS。桌面形态用 tao + wry + tray-icon 承载同一页面,
+`--no-window` 提供纯服务。不引入 Tauri、npm、React/Vue 或前端打包步骤。
 
-## ADR-9 demo 模式是一等公民(已被 ADR-13 推翻)
+## ADR-13 正式程序只保留 J-Link,测试数据流独立注入
 
-`--demo-log` 无设备仿真(数据流 + 断连重连 + 假命令消费者):无真板也能跑端到端,
-QA/UX/CI 冒烟全部基于它。真机验证仅在发版前由人工执行。
-
-## ADR-10 标准化模板采 SerialHub
-
-仓库结构、spec 编号、团队回路、CI 门禁纪律、发布产物契约照 SerialHub
-模板裁剪;差异点:本项目 Windows-only(CI 单平台)、无内嵌 Web 管理台(桌面 GUI)。
-**2026-09 更新:差异点中的「无内嵌 Web 管理台」已被 ADR-11 推翻**,管理台已内嵌。
-
-## ADR-11 UI 技术栈迁移(2026-09 定案,补记)
-
-ui-stack-eval.md 评估后定案:**UI 全面转 Web 形态**——Rust 数据层与 worker 不动,
-管理台为内嵌单页(`ui/web/index.html`,axum 服务,编译期内嵌);桌面形态采用
-tao + wry WebView 内嵌同一管理台(SerialHub 同构),不引入 Tauri/egui/iced;
-`--no-window` 纯服务为第二形态。0.3.0 起 Slint 退役(ADR-4 的迁移悬案就此关闭)。
-落地证据:`src/web.rs` / `src/gui.rs`、CHANGELOG 0.3.0。
-
-## ADR-12 可替换后端抽象(2026-09-28 定案,已落地)
-
-数据源后端与 web 层解耦:新增 `src/backend.rs` 定义 `RttBackend` trait +
-`Host`(Shared 的最窄状态面)+ `SessionHandle` + 协议类型唯一真源;
-`backend_jlink.rs` 与 `demo.rs` 为前两个实现。web 层原有的 6+2 处
-`demo_mode` 布尔分叉全部收敛为 trait 方法;`WorkerCmd` 剔除 demo 专用变体
-(demo 连接/断开走其私有 DemoCmd 通道)。后端可在界面「数据源」下拉选择
-(断开态才可切,409 拦连接态),选择持久化到 `StoredPrefs.backend`;
-`--demo-log` 强制形态行为与历史逐字节一致。设计契约(含分阶段迁移、
-验证矩阵、probe-rs 接入路径)见 `docs/product/backend-abstraction.md`。
-**接入新后端(如 probe-rs)= 实现 trait + 注册,web 层零改动**;若 web 层
-出现按后端名的 if,即缝漏,回改 backend.rs。落地证据:cargo test --lib 64 绿、
-tests/web 34 条黑盒绿(含浏览器实测后端下拉切换)。
-**2026-10-28 更新:双后端与界面选择是历史实现,现行产品决策见 ADR-13。**
-
-## ADR-13 正式程序只保留 J-Link,测试数据流独立注入(2026-10-28)
-
-删除 Demo 后端、`--demo-log` 和界面「数据源」选择,正式注册表只保留 J-Link;
-旧偏好中的已删除后端 id 在启动时归一化为 J-Link。无硬件 HTTP/WS/Playwright
-测试仍需要确定性数据流,因此由 `examples/qa_server.rs` 通过 `run_with_backend`
-显式注入 QA 后端;该可执行文件只服务测试,不加载 J-Link DLL,也不注册进正式程序。
-保留可替换后端抽象,但不把测试夹具暴露为产品功能。真机验收仍必须使用正式 exe
-和真实 J-Link,不得以 QA 结果替代。
+正式后端注册表仅含 J-Link,不提供 Demo CLI/UI。无硬件 HTTP/WS/Playwright 测试由
+`examples/qa_server.rs` 通过 `run_with_backend` 显式注入确定性 QA 后端;该进程不加载
+J-Link DLL,也不进入正式产品。保留 `RttBackend` 抽象用于隔离数据层,但新后端必须单独评审
+驱动共存和硬件安全影响。发布前仍需使用正式 exe 与真实 J-Link 验证。

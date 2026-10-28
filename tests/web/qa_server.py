@@ -1,6 +1,6 @@
 """QA 验收公共件:被测服务生命周期管理。
 
-纪律(docs/team/charter.md):黑盒验收,预期只来自验收矩阵/spec 条目;
+纪律(docs/product/spec.md):黑盒验收,预期只来自验收矩阵/spec 条目;
 一律临时 RTT_PREFS_FILE(连 APPDATA 一起指向临时目录),不碰真实 %APPDATA%;
 固定 --port 18099;RTT_WEB_NO_BROWSER=1 禁止拉起浏览器。
 """
@@ -34,9 +34,10 @@ THEMES_DIR = QA_EXE.parent / "themes"
 class QAServer:
     """可重启的服务实例:同一 RTT_PREFS_FILE 跨重启,供持久化断言。"""
 
-    def __init__(self, tmpdir: Path):
+    def __init__(self, tmpdir: Path, extra_env: dict | None = None):
         self.tmpdir = tmpdir
         self.prefs_file = tmpdir / "prefs.json"
+        self.extra_env = extra_env or {}
         self.proc: subprocess.Popen | None = None
 
     def start(self, production: bool = False) -> None:
@@ -58,6 +59,7 @@ class QAServer:
             "APPDATA": str(self.tmpdir),  # 隔离:真实 %APPDATA% 不碰
             "RTT_PREFS_FILE": str(self.prefs_file),
             "RTT_WEB_NO_BROWSER": "1",
+            **self.extra_env,
         }
         # 测试夹具默认带入一个合法芯片名，确保单独运行重连用例也可重复。
         if not self.prefs_file.exists():

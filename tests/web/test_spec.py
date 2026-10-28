@@ -1,6 +1,6 @@
 """浏览器管理台黑盒测试(pytest + Playwright)。
 
-纪律(参照 docs/team/charter.md):预期只来自 docs/product/spec.md 条目,
+纪律(参照 docs/product/spec.md):预期只来自 docs/product/spec.md 条目,
 测试名按条目命名(test_fr<N>_<行为>)。fixture 启动独立 QA 示例服务,不使用正式后端。
 
 运行前置:

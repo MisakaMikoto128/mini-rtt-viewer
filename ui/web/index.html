@@ -54,6 +54,7 @@
           <button type="button" id="pause-btn" aria-pressed="false">暂停</button>
           <button type="button" id="mark-btn">标记</button>
           <button type="button" id="export-btn">导出</button>
+          <button type="button" id="open-logs" title="打开保存导出日志的应用目录">日志文件夹</button>
         </div>
         <div class="aframe-row">
           <label class="check"><input type="checkbox" id="auto-frame" checked> 自动断帧</label>
@@ -82,7 +83,7 @@
         <div class="row2 receive-toggles">
           <label class="check"><input type="checkbox" id="hex-rx"> HEX 接收</label>
           <label class="check" title="行首显示本机到达时刻 [HH:MM:SS.mmm](仅开关打开后到达的行)"><input type="checkbox" id="timestamps"> 时间戳</label>
-          <label class="check" title="连接、断开、发送和错误的短促正弦波反馈"><input type="checkbox" id="sound-enabled" checked> 音效</label>
+          <label class="check" title="连接、断开、各项成功操作与错误的短促正弦波反馈"><input type="checkbox" id="sound-enabled" checked> 音效</label>
         </div>
         <div class="theme-row">
           <div class="font-controls" aria-label="日志字号">
@@ -148,7 +149,7 @@
   <span id="rows">0 行</span>
   <button id="remote-btn" title="远程访问地址">远程</button>
   <button id="version" title="关于 Mini RTT Viewer"></button>
-  <button id="open-browser" hidden title="在系统默认浏览器打开本管理台(壳内窗口无法新开标签)">浏览器打开</button>
+  <button id="open-browser" title="在系统默认浏览器打开本管理台">浏览器后台</button>
 </footer>
 <div id="ctx-menu" popover="auto" aria-label="日志操作">
   <button type="button" class="ctx-item" id="ctx-copy">复制选中文本</button>

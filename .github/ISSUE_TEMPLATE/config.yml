@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用与故障排查
+    url: https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/SUPPORT.md
+    about: 先查看安装要求、常见问题和脱敏反馈指引。
+  - name: 私密安全报告
+    url: https://github.com/MisakaMikoto128/mini-rtt-viewer/security/advisories/new
+    about: 安全漏洞请不要发公开 issue。

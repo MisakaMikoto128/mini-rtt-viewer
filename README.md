@@ -9,6 +9,9 @@
 
 项目主页:<https://misakamikoto128.github.io/mini-rtt-viewer/>
 
+**[下载最新版](https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/latest) ·
+[快速开始](#快速开始) · [贡献指南](CONTRIBUTING.md) · [安全说明](SECURITY.md)**
+
 ![screenshot](docs/screenshot.png)
 
 ## 为什么做这个
@@ -27,9 +30,9 @@
 - 连接设置:目标芯片型号(设备库自动补全)/ SWD / JTAG / 速率 (100–12000 kHz) / RTT 通道 0–15 / 多台 J-Link 列表
 - 接收:ANSI 转义序列着色、暂停接收、自动断帧 + 超时可调、接收行尾可选(自动 / CRLF / LF / CR / 无)、HEX 接收、字符集 5 种(连接中切换动态生效)
 - 发送:向所选下行通道发送数据,Enter 快捷发送,成功后保留原文便于修改和连续重发,行尾可选(CRLF / LF / CR / 无),HEX 发送、定时发送、发送历史 ↑↓
-- 日志:七套内置主题(深色/浅色/OLED 纯黑/护眼暖色/精密仪器/终端专注/实验室浅色)+ 自定义主题(themes/*.css 拖入即用),主题选择本机保存并在刷新后恢复;VS Code 式正则搜索(Ctrl+F)、拖选/右键复制、导出 .log、长行自动换行
+- 日志:七套内置主题(深色/浅色/OLED 纯黑/护眼暖色/精密仪器/终端专注/实验室浅色)+ 自定义主题(themes/*.css 拖入即用),主题选择本机保存并在刷新后恢复;VS Code 式正则搜索(Ctrl+F)、拖选/右键复制、导出到应用日志文件夹、长行自动换行
 - 会话:连接/断开自动标记、手动标记、TX/RX 字节与速率、会话时长、日志时间戳开关
-- 音效:连接、断开、发送成功与错误使用低音量短正弦波反馈;不随日志流或定时发送播放,可关闭并经 localStorage 记忆
+- 音效:连接、断开、发送、清空、暂停/恢复、标记、复位、导出、复制、打开操作、主题、字号及设置开关使用低音量短正弦波反馈;失败统一错误音,复位不叠加连接音;不随日志流或定时发送播放,可关闭并经 localStorage 记忆
 - 双形态:桌面壳(窗口 + 托盘)与纯服务(`--no-window`)共用同一管理台;单实例互斥(端口)
 
 ## 使用前提
@@ -39,6 +42,34 @@
 - J-Link 调试器 + 目标板固件已初始化 SEGGER RTT(`SEGGER_RTT` 组件)
 
 芯片型号需填写 J-Link 支持的完整型号名(如 `STM32F030C8`、`STM32H750VB`),与官方 RTT Viewer 中的写法一致。
+
+## 快速开始
+
+1. 从 [GitHub Releases](https://github.com/MisakaMikoto128/mini-rtt-viewer/releases/latest)
+   下载 Windows x86_64 zip 和同页 `SHA256SUMS`,解压后用
+   `certutil -hashfile <zip 文件> SHA256` 核对校验值。
+2. 安装 SEGGER J-Link 软件包,连接调试器和已初始化 RTT 的目标板。
+3. 双击 `mini-rtt-viewer.exe`,在左栏选择 J-Link、填写完整芯片型号、接口和速率,点击「连接」。
+4. 底栏「浏览器后台」可在系统浏览器打开同一管理台;接收区「导出」保存日志,
+   「日志文件夹」直接打开保存位置。
+
+日志默认保存到 `%APPDATA%/MiniRttViewer/logs`,业务偏好保存到
+`%APPDATA%/MiniRttViewer/prefs.json`。主题、字号、时间戳和音效开关保存在当前
+WebView2/浏览器 profile 的 localStorage 中。程序无遥测、无自动更新,不收集日志内容。
+
+## 常见问题
+
+- **提示找不到 JLink_x64.dll**:安装 SEGGER J-Link 软件包后重启程序;本仓库不捆绑该 DLL。
+- **设备库没有目标型号**:确认型号拼写与官方工具一致,并升级 J-Link 软件包。
+- **已连接但没有 RTT 数据**:确认固件已初始化 `SEGGER_RTT`、使用正确的 RTT 通道,
+  目标程序正在运行,且没有其他工具占用调试器。
+- **端口被占用**:已有实例正在运行;也可通过 `--port <其他端口>` 启动独立实例。
+- **浏览器界面无法显示**:安装或修复 Microsoft Edge WebView2 Runtime。
+- **SmartScreen 提示未知发布者**:发布包未做代码签名;先核对 Release 的 SHA256,
+  确认来源后再决定是否运行。更多安全边界见 [SECURITY.md](SECURITY.md)。
+
+仍无法解决时,请按 issue 模板提供版本、Windows/J-Link 环境和复现步骤;不要上传真实
+J-Link 序列号、私有日志或凭据。
 
 ## 命令行
 

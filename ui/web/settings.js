@@ -1,4 +1,5 @@
 import { $, getJson, lsGet, lsSet, request } from './api.js';
+import { playSound } from './sound.js';
 
 export function textToHex(text) {
   const out = [];
@@ -24,12 +25,18 @@ export function initDisplaySettings() {
     lsSet('log-fs', String(logFontSize));
   };
   $('A-minus').onclick = () => {
-    logFontSize = Math.max(9, logFontSize - 1);
+    const next = Math.max(9, logFontSize - 1);
+    if (next === logFontSize) return;
+    logFontSize = next;
     applyFontSize();
+    playSound('adjust');
   };
   $('A-plus').onclick = () => {
-    logFontSize = Math.min(30, logFontSize + 1);
+    const next = Math.min(30, logFontSize + 1);
+    if (next === logFontSize) return;
+    logFontSize = next;
     applyFontSize();
+    playSound('adjust');
   };
   applyFontSize();
 
@@ -68,7 +75,7 @@ export function initDisplaySettings() {
   };
   themeSelect.onchange = () => {
     localStorage.setItem('web-theme', themeSelect.value);
-    applyTheme(themeSelect.value);
+    Promise.resolve(applyTheme(themeSelect.value)).then(() => playSound('setting'));
   };
   const savedTheme = localStorage.getItem('web-theme') || 'dark';
   if (builtinThemes.includes(savedTheme)) themeSelect.value = savedTheme;

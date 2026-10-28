@@ -1,0 +1,36 @@
+name: Feature request
+description: 提议新的调试、日志或界面能力
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景与问题
+      description: 你在做什么任务？现有操作为什么不够？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 描述期望的用户行为和结果，不必预设实现方式。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的替代方案
+      placeholder: 当前 workaround、其他工具的做法，或为什么不适合。
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: 约束确认
+      options:
+        - label: 建议不要求改装 WinUSB/Zadig 驱动，也不依赖正式 Demo 数据源。
+          required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充说明
+      description: 可附界面草图或公开参考链接；请勿上传私有信息。

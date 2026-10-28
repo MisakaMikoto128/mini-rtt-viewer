@@ -19,36 +19,33 @@ export function showToast(message, kind) {
   toastTimer = setTimeout(() => toastEl?.classList.remove('show'), 3000);
 }
 
-function downloadBlob(blob, name) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = name;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
 function initExport() {
   $('export-btn').onclick = () => {
-    request('/api/export')
-      .then(async response => {
-        const match = (response.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
-        return { blob: await response.blob(), name: match ? match[1] : 'rtt.log' };
-      })
-      .then(({ blob, name }) => {
-        downloadBlob(blob, name);
-        showToast('已导出 ' + name, 'ok');
+    request('/api/logs/save', { method: 'POST' })
+      .then(response => response.json())
+      .then(({ name }) => {
+        playSound('export');
+        showToast('已保存到日志文件夹 ' + name, 'ok');
       })
       .catch(() => showToast('导出失败:服务未响应'));
+  };
+  $('open-logs').onclick = () => {
+    request('/api/logs/open', { method: 'POST' })
+      .then(() => {
+        playSound('open');
+        showToast('已打开日志文件夹', 'ok');
+      })
+      .catch(() => showToast('打开日志文件夹失败'));
   };
 }
 
 function initContextMenu(log, selectionInLog) {
   const menu = $('ctx-menu');
   const copyText = text => navigator.clipboard.writeText(text)
-    .then(() => showToast('已复制 ' + text.length + ' 字符', 'ok'))
+    .then(() => {
+      playSound('copy');
+      showToast('已复制 ' + text.length + ' 字符', 'ok');
+    })
     .catch(() => {});
   let selectedText = '';
 
@@ -83,18 +80,18 @@ function initContextMenu(log, selectionInLog) {
 }
 
 function initShellAndAbout() {
-  if (window.__MINI_SHELL) {
-    const button = $('open-browser');
-    button.hidden = false;
-    button.onclick = () => request('/api/open-browser', { method: 'POST' })
-      .then(() => showToast('已在系统浏览器打开', 'ok'))
-      .catch(() => showToast('打开浏览器失败'));
-  }
+  $('open-browser').onclick = () => request('/api/open-browser', { method: 'POST' })
+    .then(() => {
+      playSound('open');
+      showToast('已在系统浏览器打开', 'ok');
+    })
+    .catch(() => showToast('打开浏览器失败'));
 
   const about = $('about');
   $('version').onclick = () => {
     $('about-ver').textContent = $('version').textContent;
     about.showModal();
+    playSound('open');
   };
   $('about-close').onclick = () => about.close();
   about.addEventListener('click', event => {
@@ -103,8 +100,14 @@ function initShellAndAbout() {
   about.querySelectorAll('.about-links button').forEach(button => {
     button.onclick = () => {
       const url = button.dataset.url;
-      if (window.__MINI_SHELL) postJson('/api/open-browser', { url }).catch(() => {});
-      else window.open(url, '_blank', 'noopener');
+      if (window.__MINI_SHELL) {
+        postJson('/api/open-browser', { url })
+          .then(() => playSound('open'))
+          .catch(() => showToast('打开链接失败'));
+      } else {
+        window.open(url, '_blank', 'noopener');
+        playSound('open');
+      }
     };
   });
 }
@@ -125,6 +128,7 @@ function initRemoteDialog() {
         $('remote-lan-row').dataset.url = lan;
       }
       dialog.showModal();
+      playSound('open');
     }).catch(error => showToast(error.message));
   };
   $('remote-close').onclick = () => dialog.close();
@@ -133,6 +137,7 @@ function initRemoteDialog() {
   });
   cards.forEach(card => {
     card.onclick = () => navigator.clipboard.writeText(card.dataset.url).then(() => {
+      playSound('copy');
       const state = card.querySelector('.remote-copy-state');
       state.classList.add('done');
       clearTimeout(card._copyTimer);

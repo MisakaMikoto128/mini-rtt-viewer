@@ -18,12 +18,12 @@ def disconnect():
     assert poll(lambda: get_json("/api/status")["connected"], False, 3.0)
 
 
-def test_ambiguous_partial_chip_is_not_silently_replaced(server):
+def test_family_prefix_is_auto_resolved_without_full_marking(server):
     disconnect()
     code, text = http("POST", "/api/connect", {"chip": "STM32F"})
-    assert code == 400, text
-    assert "多个型号" in text
-    assert get_json("/api/status")["connected"] is False
+    assert code == 200, text
+    assert get_json("/api/prefs")["chip"] == "STM32F103C8"
+    assert poll(lambda: get_json("/api/status")["connected"], True, 3.0)
 
 
 def test_unique_non_f103_partial_chip_uses_full_device_name(server):

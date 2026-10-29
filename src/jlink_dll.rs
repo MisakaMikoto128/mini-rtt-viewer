@@ -166,7 +166,7 @@ impl JLinkDll {
         }
     }
 
-    /// 诊断用目标内存读取;返回 < 0 表示访问失败。
+    /// 读取目标内存,供 RTT 控制块定位使用;返回 < 0 表示访问失败。
     pub fn read_mem(&self, addr: u32, buf: &mut [u8]) -> c_int {
         unsafe {
             let f: Symbol<unsafe extern "C" fn(u32, u32, *mut u8) -> c_int> =

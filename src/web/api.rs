@@ -336,36 +336,22 @@ pub(crate) async fn api_jlinks(State(shared): State<Arc<Shared>>) -> Json<serde_
         .collect::<Vec<_>>()))
 }
 
-/// 完整型号优先；部分输入只有唯一候选时才补全，避免静默连接到错误芯片或内核。
+/// 完整型号优先；家族名或不完整输入自动补全为设备库中的首个匹配候选。
+/// RTT 控制块由 worker 独立扫描定位,封装后缀不作为查看日志的使用门槛。
 fn resolve_chip(chip_raw: &str, devices: &[String]) -> Result<String, String> {
     if devices.iter().any(|n| n.eq_ignore_ascii_case(chip_raw)) {
         return Ok(chip_raw.to_string());
     }
     let needle = chip_raw.to_uppercase();
-    let matches: Vec<&String> = devices
+    devices
         .iter()
-        .filter(|name| name.to_uppercase().contains(&needle))
-        .collect();
-    match matches.as_slice() {
-        [] => Err(format!("设备库无匹配型号:{chip_raw}")),
-        [only] => Ok((*only).clone()),
-        _ => {
-            let candidates = matches
-                .iter()
-                .take(6)
-                .map(|name| name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            Err(format!(
-                "型号 {chip_raw} 匹配多个型号,请选择完整型号:{candidates}(共 {} 个)",
-                matches.len()
-            ))
-        }
-    }
+        .find(|name| name.to_uppercase().contains(&needle))
+        .cloned()
+        .ok_or_else(|| format!("设备库无匹配型号:{chip_raw}"))
 }
 
-/// 连接:连接前门禁 → 芯片名精确匹配或唯一补全 → 连接参数写入
-/// 偏好快照源 → 当前后端 connect。多候选必须让用户选定,不静默替换型号。
+/// 连接:连接前门禁 → 芯片名精确匹配或家族名自动补全 → 连接参数写入
+/// 偏好快照源 → 当前后端 connect。实际补全型号会显示在连接状态和设备信息中。
 pub(crate) async fn api_connect(
     State(shared): State<Arc<Shared>>,
     Json(req): Json<ConnectReq>,
@@ -883,11 +869,15 @@ mod tests {
     }
 
     #[test]
-    fn chip_resolution_rejects_ambiguous_dual_core_device() {
-        let devices = vec!["STM32H745ZI_M4".to_string(), "STM32H745ZI_M7".to_string()];
-        let error = resolve_chip("STM32H745ZI", &devices).unwrap_err();
-        assert!(error.contains("多个型号"), "{error}");
-        assert!(error.contains("STM32H745ZI_M4"), "{error}");
-        assert!(error.contains("STM32H745ZI_M7"), "{error}");
+    fn chip_resolution_accepts_family_prefix_without_package_marking() {
+        let devices = vec![
+            "STM32G070CB".to_string(),
+            "STM32G070KB".to_string(),
+            "STM32G070RB".to_string(),
+        ];
+        assert_eq!(
+            resolve_chip("STM32G070", &devices).as_deref(),
+            Ok("STM32G070CB")
+        );
     }
 }

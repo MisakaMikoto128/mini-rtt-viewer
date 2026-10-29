@@ -164,12 +164,18 @@ fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc:
             }
             while let Ok(command) = cmd_rx.try_recv() {
                 match command {
-                    WorkerCmd::Send(_) => {}
+                    WorkerCmd::Send(data) => {
+                        let _ = msg_tx.send(WorkerMsg::Tx(data.len()));
+                    }
                     WorkerCmd::Power(on) => {
-                        let _ = msg_tx.send(WorkerMsg::Log(format!(
-                            "── J-Link 19 脚供电:{} (qa) ──\r\n",
-                            if on { "开" } else { "关" }
-                        )));
+                        let _ = msg_tx.send(WorkerMsg::PowerResult {
+                            on,
+                            ok: true,
+                            message: format!(
+                                "── J-Link 19 脚供电:{} (qa) ──\r\n",
+                                if on { "开" } else { "关" }
+                            ),
+                        });
                     }
                     WorkerCmd::Reset if connected => {
                         let _ = msg_tx.send(WorkerMsg::Log("── 目标已重置 (qa) ──\r\n".into()));
@@ -221,12 +227,13 @@ fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc:
                 let block = format!(
                     "\x1b[36m[qa {sequence:04}]\x1b[0m Heartbeat: {value} 😊🍟❤ 心跳 中文 English mixed padding text{level}\r\n"
                 );
-                let block = if shared.hex_rx.load(Ordering::Relaxed) {
+                let raw_len = block.len();
+                let text = if shared.hex_rx.load(Ordering::Relaxed) {
                     text_to_hex_upper(&block)
                 } else {
                     block
                 };
-                let _ = msg_tx.send(WorkerMsg::Block(block));
+                let _ = msg_tx.send(WorkerMsg::Block { text, raw_len });
                 sequence += 1;
                 last_rx = now;
                 frame_open = true;

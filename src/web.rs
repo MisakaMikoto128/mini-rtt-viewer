@@ -29,13 +29,17 @@
 //!   参数 409);空请求体容忍为缺省 in-place
 //! - POST /api/settings    逐字段可选(camelCase):rxEnding / frameTimeout /
 //!   encodingIndex / hexRx / autoFrame / searchRegex / sendEnding / hexSend /
+//!   keepAwake(FR-24:连接采集时保持系统与显示器常亮)/
 //!   chip / ifaceIndex / speedIndex / channel(连接设置组持久化,F1)/
 //!   backend(阶段二切数据源:不在可用列表的 id → 400;连接态判据
 //!   shared.connected → 409「断开后才能切换后端」;成功写偏好并切换)
-//! - POST /api/send        {text, hex?} → 回显一行,计数 TX,内容记为定时发送源;
-//!   成功后记入发送历史(prefs.send_history,去重置顶上限 50,与桌面版同规则)
+//! - POST /api/send        {text, hex?} → 成功入队后回显并记历史/定时发送源;
+//!   未连接、无会话或命令通道关闭 → 409 且无副作用;HEX 格式错误 → 400;
+//!   TX 按 worker 回报的实际写入字节计数（最终失败前的短写部分也计入）
+//!   发送历史存 prefs.send_history(去重置顶上限 50,与桌面版同规则)
 //! - POST /api/timer       {on, intervalSec?, text?, hex?};定时重发 0.001-999 秒,
-//!   连接态才触发,复用 /api/send 发送管线,含回显
+//!   连接态才触发,复用 /api/send 发送管线,含回显;内容/HEX 模式随偏好恢复,
+//!   空内容启用会在主日志可见报错且绝不发送,非法 HEX → 400 且不部分更新
 //! - POST /api/mark        {text}  → 插入会话标记行
 //! - POST /api/pause       {on}
 //! - POST /api/clear
@@ -45,11 +49,11 @@
 //! - POST /api/open-browser 在系统默认浏览器打开管理台(底栏按钮与壳内外链用;
 //!   管理台 URL 由服务端监听端口拼出;外链仅放行公开仓库前缀)
 //! - WS   /ws              {type:"rows"/"snapshot"/"cleared"} 与
-//!   {type:"state"/"device"/"progress"/"names"/"jlinks"/"stats"}
+//!   {type:"state"/"device"/"power"/"progress"/"names"/"jlinks"/"stats"}
 //!
 //! /api/prefs 返回:{chip, ifaceIndex, speedIndex, channel, rxEnding, frameTimeout,
 //! encodingIndex, hexRx, autoFrame, searchRegex, timerOn, timerIntervalSec,
-//! sendEnding, hexSend, backend}
+//! timerText, timerHex, sendEnding, hexSend, keepAwake, backend}
 //!
 //! 偏好持久化(与桌面版同模式):`%APPDATA%/MiniRttViewer/prefs.json`(环境变量
 //! `RTT_PREFS_FILE` 显式指定路径时优先,测试/便携场景的 prefs 隔离),数据泵
@@ -332,16 +336,26 @@ async fn serve(
         send_history: Mutex::new(saved.send_history.clone()),
         send_ending: Mutex::new(saved.send_ending.clamp(0, 3)),
         hex_send: AtomicBool::new(saved.hex_send),
-        timer_on: AtomicBool::new(saved.timer_send),
+        keep_awake: AtomicBool::new(saved.keep_awake),
+        // 旧偏好只有 timer_send=true、没有内容时不得恢复成周期空发循环。
+        timer_on: AtomicBool::new(saved.timer_send && !saved.timer_text.is_empty()),
         timer_interval: Mutex::new(timer_interval_init),
-        timer_text: Mutex::new(String::new()),
-        timer_hex: AtomicBool::new(false),
+        timer_text: Mutex::new(saved.timer_text.clone()),
+        timer_hex: AtomicBool::new(saved.timer_hex),
         session_start: Mutex::new(None),
         status_text: Mutex::new("未连接".into()),
         on_state: on_event.clone(),
         port: opts.port,
         listen: opts.listen,
     });
+
+    if shared.timer_on.load(Ordering::Relaxed) && shared.timer_text.lock().unwrap().is_empty() {
+        shared
+            .pump
+            .lock()
+            .unwrap()
+            .push_colored_line("定时发送失败:内容不能为空", MARK_COLOR);
+    }
 
     // 后端装配:J-Link 启动设备库后台枚举,选定后端经 on_selected 初始化候选。
     // QA 后端不会命中 J-Link 枚举分支,因此测试进程不加载 DLL。
@@ -728,10 +742,11 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&WsEvent::Snapshot {
+                clear_seq: 23,
                 rows: &rows_view(&rows),
             })
             .unwrap(),
-            format!(r##"{{"type":"snapshot","rows":{rows_json}}}"##)
+            format!(r##"{{"type":"snapshot","clearSeq":23,"rows":{rows_json}}}"##)
         );
         assert_eq!(
             serde_json::to_string(&WsEvent::Cleared { seq: 9 }).unwrap(),
@@ -757,6 +772,15 @@ mod tests {
                 r#"{{"type":"device","info":{}}}"#,
                 serde_json::to_string(&info).unwrap()
             )
+        );
+        assert_eq!(
+            serde_json::to_string(&WsEvent::Power {
+                on: true,
+                ok: false,
+                message: "denied".into(),
+            })
+            .unwrap(),
+            r#"{"type":"power","on":true,"ok":false,"message":"denied"}"#
         );
         assert_eq!(
             serde_json::to_string(&WsEvent::Progress {

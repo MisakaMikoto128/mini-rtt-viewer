@@ -78,6 +78,9 @@ pub(crate) struct SettingsReq {
     /// HEX 发送模式
     #[serde(default)]
     pub(crate) hex_send: Option<bool>,
+    /// FR-24:连接采集时保持系统与显示器常亮
+    #[serde(default)]
+    pub(crate) keep_awake: Option<bool>,
     // ---- 连接设置组(F1:web→服务端保存链路;此前这五项只写 localStorage,
     // reload 被 /api/prefs 服务端值回填覆盖,改动全部丢失)----
     /// 目标设备名(存原始输入;连接时才做设备库匹配)
@@ -244,8 +247,11 @@ pub(crate) async fn api_prefs(State(shared): State<Arc<Shared>>) -> Json<serde_j
         "searchRegex": shared.search_regex.load(Ordering::Relaxed),
         "timerOn": shared.timer_on.load(Ordering::Relaxed),
         "timerIntervalSec": *shared.timer_interval.lock().unwrap(),
+        "timerText": shared.timer_text.lock().unwrap().clone(),
+        "timerHex": shared.timer_hex.load(Ordering::Relaxed),
         "sendEnding": *shared.send_ending.lock().unwrap(),
         "hexSend": shared.hex_send.load(Ordering::Relaxed),
+        "keepAwake": shared.keep_awake.load(Ordering::Relaxed),
         "jlinkSerial": *shared.jlink_serial.lock().unwrap(),
         "backend": shared.backend().id(),
     }))
@@ -509,6 +515,23 @@ pub(crate) async fn api_settings(
             return (StatusCode::BAD_REQUEST, format!("{name} 不能为负数")).into_response();
         }
     }
+    // 后端及其连接态门禁同属请求校验：必须在写入任何设置前完成。
+    let backend_target = if let Some(id) = req.backend.as_deref() {
+        let Some(target) = shared
+            .backends_available
+            .iter()
+            .copied()
+            .find(|b| b.id() == id)
+        else {
+            return (StatusCode::BAD_REQUEST, format!("未知或不可用的后端:{id}")).into_response();
+        };
+        if shared.connected.load(Ordering::Relaxed) {
+            return (StatusCode::CONFLICT, "断开后才能切换后端").into_response();
+        }
+        Some(target)
+    } else {
+        None
+    };
     if let Some(v) = req.rx_ending {
         *shared.rx_ending.lock().unwrap() = v.clamp(0, 4);
     }
@@ -537,6 +560,9 @@ pub(crate) async fn api_settings(
     if let Some(v) = req.hex_send {
         shared.hex_send.store(v, Ordering::Relaxed);
     }
+    if let Some(v) = req.keep_awake {
+        shared.keep_awake.store(v, Ordering::Relaxed);
+    }
     // 连接设置组(F1):进偏好快照源,与其它设置同一条「tick 500ms 快照比对
     // 落盘 → 重启 /api/prefs 回填」链路;夹取口径与 /api/connect 一致
     if let Some(v) = req.chip {
@@ -551,20 +577,8 @@ pub(crate) async fn api_settings(
     if let Some(v) = req.channel {
         *shared.channel.lock().unwrap() = v.clamp(0, 15);
     }
-    // 后端设置:未知/不可用 id → 400;连接态 → 409。成功时更新 Shared.backend,
-    // 并调用旧/新后端的选择回调;同 id 幂等 no-op。
-    if let Some(id) = req.backend.as_deref() {
-        let Some(target) = shared
-            .backends_available
-            .iter()
-            .copied()
-            .find(|b| b.id() == id)
-        else {
-            return (StatusCode::BAD_REQUEST, format!("未知或不可用的后端:{id}")).into_response();
-        };
-        if shared.connected.load(Ordering::Relaxed) {
-            return (StatusCode::CONFLICT, "断开后才能切换后端").into_response();
-        }
+    // 后端已在入口校验；同 id 幂等 no-op。
+    if let Some(target) = backend_target {
         let old = shared.backend();
         if old.id() != target.id() {
             old.on_deselected(&*shared);
@@ -582,29 +596,53 @@ pub(crate) async fn api_send(
     if req.text.is_empty() {
         return (StatusCode::BAD_REQUEST, "空输入").into_response();
     }
-    // 空输入已在上面拦掉:此处 Err 只可能是 HEX 解析失败
-    if let Err(e) = shared.send_payload(&req.text, req.hex) {
-        return (StatusCode::BAD_REQUEST, format!("HEX 格式错误:{e}")).into_response();
+    match shared.send_payload(&req.text, req.hex) {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(SendError::Invalid(e)) => {
+            let message = if req.hex {
+                format!("HEX 格式错误:{e}")
+            } else {
+                e
+            };
+            (StatusCode::BAD_REQUEST, message).into_response()
+        }
+        Err(SendError::Unavailable(e)) => (StatusCode::CONFLICT, e).into_response(),
     }
-    StatusCode::OK.into_response()
 }
 
 pub(crate) async fn api_timer(
     State(shared): State<Arc<Shared>>,
     Json(req): Json<TimerReq>,
 ) -> Response {
-    if let Some(v) = req.interval_sec {
-        if !TIMER_INTERVAL_RANGE.contains(&v) {
-            return (StatusCode::BAD_REQUEST, "定时间隔需在 0.001-999 秒").into_response();
+    let interval = req
+        .interval_sec
+        .unwrap_or(*shared.timer_interval.lock().unwrap());
+    if !TIMER_INTERVAL_RANGE.contains(&interval) {
+        return (StatusCode::BAD_REQUEST, "定时间隔需在 0.001-999 秒").into_response();
+    }
+    let text = req
+        .text
+        .unwrap_or_else(|| shared.timer_text.lock().unwrap().clone());
+    let hex = req.hex.unwrap_or(shared.timer_hex.load(Ordering::Relaxed));
+    let empty = text.is_empty();
+    if req.on {
+        if empty {
+            return (StatusCode::BAD_REQUEST, "定时发送内容不能为空").into_response();
         }
-        *shared.timer_interval.lock().unwrap() = v;
+        if hex {
+            if let Err(e) = parse_hex_bytes(&text) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("定时发送 HEX 格式错误:{e}"),
+                )
+                    .into_response();
+            }
+        }
     }
-    if let Some(text) = req.text {
-        *shared.timer_text.lock().unwrap() = text;
-    }
-    if let Some(hex) = req.hex {
-        shared.timer_hex.store(hex, Ordering::Relaxed);
-    }
+    // 所有失败条件均先验证，随后一次性提交到定时发送真源。
+    *shared.timer_interval.lock().unwrap() = interval;
+    *shared.timer_text.lock().unwrap() = text;
+    shared.timer_hex.store(hex, Ordering::Relaxed);
     shared.timer_on.store(req.on, Ordering::Relaxed);
     StatusCode::OK.into_response()
 }

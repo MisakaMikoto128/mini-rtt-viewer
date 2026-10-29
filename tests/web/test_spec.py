@@ -442,7 +442,8 @@ def test_ui_layout_p0(page):
     assert not bad, f"控件高应 40±2:越界 {bad}"
 
     # 2b) 发送选项行 #send-opts(「发送」组迁入发送条的紧凑行):控件 32±2
-    #     定时间隔默认隐藏，启用定时发送后再测量。
+    #     定时间隔默认隐藏，使用有效内容启用定时发送后再测量。
+    page.fill("#send-text", "layout-probe")
     page.check("#timer-on")
     try:
         opt_h = page.evaluate(

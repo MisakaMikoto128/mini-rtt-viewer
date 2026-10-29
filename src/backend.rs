@@ -15,8 +15,14 @@ use std::sync::{mpsc, Arc};
 pub enum WorkerMsg {
     /// 独立提示行(横幅等,自带换行)
     Log(String),
-    /// 一次 RTT read 的解码输出(帧边界由 worker 按间隔判定后以 FrameEnd 发出)
-    Block(String),
+    /// 一次 RTT read 的解码输出(帧边界由 worker 按间隔判定后以 FrameEnd 发出)。
+    /// raw_len 始终是 HEX/字符集转换前的目标原始字节数,供 RX 统计使用。
+    Block { text: String, raw_len: usize },
+    /// 一次发送实际写入目标的原始字节数(仅供统计);最终失败前已短写成功的
+    /// 部分也要发出,零字节失败不发。
+    Tx(usize),
+    /// 电源命令的真实执行结果;on 为请求方向,ok 表示 DLL 是否接受命令。
+    PowerResult { on: bool, ok: bool, message: String },
     /// 帧结束标记:相邻数据到达间隔超过断帧超时,worker 判定一帧结束。
     /// 断帧判定在 worker(5ms 轮询的真实时间戳)进行,UI 刷新粒度不影响精度。
     FrameEnd,

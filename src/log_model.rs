@@ -80,21 +80,31 @@ impl LogPump {
         }
     }
 
-    /// 单行长度兜底:超长帧/无换行流按 [`MAX_LINE_CHARS`] 硬切(前 512 字符
-    /// 成行,tail 留作新 pending;按字符切,多字节边界天然安全)
+    /// 单行长度兜底:超长帧/无换行流按 [`MAX_LINE_CHARS`] 硬切(一次切出所有
+    /// 完整 512 字符段,仅不足 512 的 tail 留 pending;按字符切,多字节边界安全)
     pub fn enforce_line_cap(&mut self) {
         self.cap_pending();
     }
 
     fn cap_pending(&mut self) {
-        if self.pending.chars().count() > MAX_LINE_CHARS {
-            let mut chars: Vec<char> = self.pending.chars().collect();
-            let tail: String = chars.split_off(MAX_LINE_CHARS).into_iter().collect();
-            // 行内容 = 前 MAX_LINE_CHARS 个字符;tail 是新的 pending。
-            // (不能把 replace 出来的整个原串当行——尾部会随下一行重复输出)
-            self.new_lines.push(chars.into_iter().collect());
-            self.pending = tail;
+        let pending = std::mem::take(&mut self.pending);
+        let mut start = 0;
+        let mut char_count = 0;
+        // 单次遍历按 UTF-8 边界切片,避免长输入反复全串扫描或移动尾部。
+        for (index, ch) in pending.char_indices() {
+            char_count += 1;
+            if char_count == MAX_LINE_CHARS {
+                let end = index + ch.len_utf8();
+                self.new_lines.push(pending[start..end].to_string());
+                start = end;
+                char_count = 0;
+            }
         }
+        self.pending = if start == 0 {
+            pending
+        } else {
+            pending[start..].to_string()
+        };
     }
 
     /// 插入一条固定颜色的整行(会话标记/发送回显)。绕过 ANSI 解析——
@@ -243,6 +253,56 @@ mod tests {
             .flat_map(|r| r.iter().map(|s| s.text.clone()))
             .collect();
         assert!(joined.ends_with("xxxxxxxxxx"));
+    }
+
+    #[test]
+    fn pump_line_cap_drains_every_complete_segment_at_once() {
+        let mut pump = LogPump::default();
+        pump.absorb_text(&"x".repeat(MAX_LINE_CHARS * 3 + 11), 4);
+        pump.enforce_line_cap();
+        let rows = pump.take_new_rows().unwrap();
+        let lengths: Vec<usize> = rows.iter().map(|r| joined(r).chars().count()).collect();
+        assert_eq!(lengths, vec![MAX_LINE_CHARS; 3]);
+        assert_eq!(pump.pending, "x".repeat(11));
+    }
+
+    #[test]
+    fn pump_line_cap_drains_exact_multiple_without_empty_tail() {
+        let mut pump = LogPump::default();
+        pump.absorb_text(&"x".repeat(MAX_LINE_CHARS * 8), 4);
+        pump.enforce_line_cap();
+        let rows = pump.take_new_rows().unwrap();
+        assert_eq!(rows.len(), 8);
+        assert!(rows
+            .iter()
+            .all(|r| joined(r).chars().count() == MAX_LINE_CHARS));
+        assert!(pump.pending.is_empty());
+        pump.absorb_frame_end(4);
+        assert!(pump.take_new_rows().is_none());
+    }
+
+    #[test]
+    fn pump_line_cap_splits_unicode_by_chars() {
+        let first = format!("{}🙂", "é".repeat(MAX_LINE_CHARS - 1));
+        let second = "界".repeat(MAX_LINE_CHARS);
+        let mut pump = LogPump::default();
+        pump.absorb_text(&(first.clone() + &second + "尾"), 4);
+        pump.enforce_line_cap();
+        let rows = pump.take_new_rows().unwrap();
+        let actual: Vec<String> = rows.iter().map(|r| joined(r)).collect();
+        assert_eq!(actual, vec![first, second]);
+        assert_eq!(pump.pending, "尾");
+    }
+
+    #[test]
+    fn frame_end_flushes_all_capped_segments_and_tail() {
+        let mut pump = LogPump::default();
+        pump.absorb_text(&"z".repeat(MAX_LINE_CHARS * 2 + 7), 4);
+        pump.absorb_frame_end(4);
+        let rows = pump.take_new_rows().unwrap();
+        let lengths: Vec<usize> = rows.iter().map(|r| joined(r).chars().count()).collect();
+        assert_eq!(lengths, vec![MAX_LINE_CHARS, MAX_LINE_CHARS, 7]);
+        assert!(pump.pending.is_empty());
     }
 
     #[test]

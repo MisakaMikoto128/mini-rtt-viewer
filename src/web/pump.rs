@@ -2,6 +2,58 @@
 
 use super::*;
 
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetThreadExecutionState(es_flags: u32) -> u32;
+}
+
+/// FR-24:只在有效状态翻变时调用 Win32；泵退出时由 Drop 撤销仍生效的请求。
+struct ExecutionStateGuard {
+    applied: Option<bool>,
+}
+
+impl ExecutionStateGuard {
+    fn new() -> Self {
+        Self { applied: None }
+    }
+
+    fn sync(&mut self, shared: &Shared) {
+        let active =
+            shared.keep_awake.load(Ordering::Relaxed) && shared.connected.load(Ordering::Relaxed);
+        if self.applied != Some(active) {
+            set_execution_state(active);
+            self.applied = Some(active);
+        }
+    }
+}
+
+impl Drop for ExecutionStateGuard {
+    fn drop(&mut self) {
+        if self.applied == Some(true) {
+            set_execution_state(false);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn set_execution_state(active: bool) {
+    const ES_CONTINUOUS: u32 = 0x8000_0000;
+    const ES_SYSTEM_REQUIRED: u32 = 0x0000_0001;
+    const ES_DISPLAY_REQUIRED: u32 = 0x0000_0002;
+    let flags = if active {
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    } else {
+        ES_CONTINUOUS
+    };
+    if unsafe { SetThreadExecutionState(flags) } == 0 {
+        eprintln!("[mini-rtt-viewer] 更新系统常亮状态失败");
+    }
+}
+
+#[cfg(not(windows))]
+fn set_execution_state(_active: bool) {}
+
 /// WS jlinks 事件的列表项 {sn, name}(与 /api/jlinks 输出同形)
 #[derive(Serialize)]
 pub(crate) struct JLinkEntry {
@@ -24,6 +76,7 @@ pub(crate) fn rows_view(rows: &[Vec<ansi::Run>]) -> Vec<RunsRow<'_>> {
 /// 数据泵:消息消化 → cap → 增量上屏 → 事件广播;状态/设备信息同步进 Shared;
 /// 偏好快照比对落盘;定时发送触发
 pub(crate) fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) {
+    let mut execution_state = ExecutionStateGuard::new();
     let mut last_stats = Instant::now();
     // 上次落盘的偏好快照(不同才写;首 tick 必写一次,与桌面版一致)
     let mut last_prefs: Option<StoredPrefs> = None;
@@ -41,16 +94,24 @@ pub(crate) fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) 
         let mut pump = shared.pump.lock().unwrap();
         loop {
             match msg_rx.try_recv() {
-                Ok(WorkerMsg::Block(text)) => {
+                Ok(WorkerMsg::Block { text, raw_len }) => {
                     if !pump.paused {
-                        // RX 统计按 worker 发出的块长计:HEX 接收的文本→hex
-                        // 转换已统一下沉到各后端 worker 内,块到达时已是最终
-                        // 展示文本,各后端的 HEX 统计口径由此对齐
-                        shared
-                            .rx_bytes
-                            .fetch_add(text.len() as u64, Ordering::Relaxed);
+                        // raw_len 在字符集/HEX 转换前由 worker 记录；展示文本长度不参与统计。
+                        shared.rx_bytes.fetch_add(raw_len as u64, Ordering::Relaxed);
                         pump.absorb_text(&text, rx_ending);
                     }
+                }
+                Ok(WorkerMsg::Tx(n)) => {
+                    shared.tx_bytes.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                Ok(WorkerMsg::PowerResult { on, ok, message }) => {
+                    if !pump.paused && !message.is_empty() {
+                        pump.absorb_text(&message, rx_ending);
+                    }
+                    if !ok {
+                        eprintln!("[mini-rtt-viewer] 电源输出操作失败:{message}");
+                    }
+                    broadcast_event(&shared, WsEvent::Power { on, ok, message });
                 }
                 Ok(WorkerMsg::Log(text)) => {
                     if !pump.paused {
@@ -210,6 +271,7 @@ pub(crate) fn tick_loop(shared: Arc<Shared>, msg_rx: mpsc::Receiver<WorkerMsg>) 
                 }
             }
         }
+        execution_state.sync(&shared);
         // 节流睡眠(本轮收尾):消化在前、睡眠在后,见循环头注释
         std::thread::sleep(Duration::from_millis(FLUSH_MS));
     }

@@ -7,7 +7,7 @@ import { initSound, playSound } from './sound.js';
 
 const log = $('log');
 let connected = false, autoScroll = true;
-let paused = false;
+let paused = false, powerOn = false;
 // 复位会经历断开/重连；窗口内只保留复位反馈，避免一次操作连响三次。
 let resetSoundUntil = 0;
 // S1 速率/S2 时长状态:stats 每 500ms 一拍,lastStats 记上次字节快照差值算 B/s
@@ -62,7 +62,12 @@ log.addEventListener('scroll', () => { if (autoScroll) follow = atBottom(); });
 let clearSeq = 0;
 function onMsg(ev) {
   const m = JSON.parse(ev.data);
-  if (m.type === 'snapshot') { search.resetRows(); m.rows.forEach(r => appendRow(r, false)); scrollBottom(); }
+  if (m.type === 'snapshot') {
+    clearSeq = m.clearSeq ?? 0;
+    search.resetRows();
+    m.rows.forEach(r => appendRow(r, false));
+    scrollBottom();
+  }
   else if (m.type === 'cleared') { clearSeq = m.seq; search.resetRows(); window.__clearedCount = (window.__clearedCount || 0) + 1; }
   else if (m.type === 'rows') {
     if (m.seq <= clearSeq) return;
@@ -74,6 +79,16 @@ function onMsg(ev) {
     m.rows.forEach(appendRow); trim(); scrollBottom();
   }
   else if (m.type === 'state') setState(m.connected, m.status);
+  else if (m.type === 'power') {
+    if (m.ok) {
+      powerOn = !!m.on;
+      $('power').checked = powerOn;
+      playSound('setting');
+    } else {
+      $('power').checked = powerOn;
+      showToast(m.message || '电源切换失败');
+    }
+  }
   else if (m.type === 'device') renderDevice(m.info);
   else if (m.type === 'progress') {
     const txt = m.text.replace('● ', '');
@@ -114,7 +129,12 @@ function setState(on, status) {
   $('dot').classList.toggle('on', on);
   if (status) $('status').textContent = status.replace('● ', '');
   // S1/S2:断开清零(速率归零显示、时长归 0、字节快照复位)
-  if (!on) { zeroRates(); $('session').textContent = '0s'; }
+  if (!on) {
+    zeroRates();
+    $('session').textContent = '0s';
+    powerOn = false;
+    $('power').checked = false;
+  }
   const btn = $('connect-btn');
   btn.textContent = on ? '断开' : '连接';
   btn.classList.toggle('danger', on);
@@ -292,11 +312,15 @@ $('reset-btn').onclick = () => {
     });
 };
 $('power').onchange = e => postJson('/api/power', { on: e.target.checked })
-  .then(() => playSound('setting'))
-  .catch(error => showToast(error.message));
+  .catch(error => {
+    $('power').checked = powerOn;
+    showToast(error.message);
+  });
 
 // 运行时设置:changed → POST settings(worker 原子热切换,动态生效)
 // 断帧间隔 change 时夹取 1-200,并由服务端偏好持久化。
+$('keep-awake').onchange = e => postSettings({ keepAwake: e.target.checked })
+  .catch(error => showToast(error.message));
 $('rx-ending').onchange = e => postSettings({ rxEnding: +e.target.value });
 $('encoding').onchange = e => postSettings({ encodingIndex: +e.target.value });
 $('hex-rx').onchange = e => postSettings({ hexRx: e.target.checked });
@@ -317,7 +341,11 @@ function syncTimerFields() {
 }
 $('timer-on').onchange = e => {
   syncTimerFields();
-  postTimer({ on: e.target.checked }).catch(error => showToast(error.message));
+  postTimer({ on: e.target.checked }).catch(error => {
+    e.target.checked = false;
+    syncTimerFields();
+    showToast(error.message);
+  });
 };
 $('timer-interval').addEventListener('change', e => {
   const v = parseFloat(e.target.value);
@@ -329,8 +357,11 @@ $('timer-interval').addEventListener('change', e => {
   }
 });
 function postTimer(body) {
-  const box = $('send-text');
-  if (box.value.trim()) body.text = box.value;  // 可选:显式指定定时内容(默认最近发送)
+  const text = $('send-text').value;
+  if (text.trim()) {
+    body.text = text;
+    body.hex = $('hex-send').checked;
+  }
   return postJson('/api/timer', body).then(() => playSound('setting'));
 }
 function setPaused(on) {
@@ -491,6 +522,7 @@ getJson('/api/prefs').then(p => {
   $('encoding').value = String(p.encodingIndex);
   $('hex-rx').checked = !!p.hexRx;
   $('auto-frame').checked = !!p.autoFrame;
+  $('keep-awake').checked = !!p.keepAwake;
   if (p.timerIntervalSec != null) $('timer-interval').value = p.timerIntervalSec;
   $('timer-on').checked = !!p.timerOn;
   syncTimerFields();

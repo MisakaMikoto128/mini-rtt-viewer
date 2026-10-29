@@ -52,6 +52,8 @@ pub(crate) struct Shared {
     pub(crate) send_ending: Mutex<i32>,
     /// HEX 发送模式(前端发送框按十六进制字节解析)
     pub(crate) hex_send: AtomicBool,
+    /// FR-24:连接采集期间阻止系统睡眠与关闭显示器
+    pub(crate) keep_awake: AtomicBool,
     // ---- 定时发送(复用 /api/send 发送管线)----
     pub(crate) timer_on: AtomicBool,
     /// 定时发送间隔(秒)
@@ -73,37 +75,55 @@ pub(crate) struct Shared {
     pub(crate) listen: std::net::IpAddr,
 }
 
+#[derive(Debug)]
+pub(crate) enum SendError {
+    Invalid(String),
+    Unavailable(String),
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(message) | Self::Unavailable(message) => f.write_str(message),
+        }
+    }
+}
+
 impl Shared {
     /// 当前数据采集后端(装配期写入;阶段二起可经 /api/settings 切换)
     pub(crate) fn backend(&self) -> &'static dyn RttBackend {
         *self.backend.lock().unwrap()
     }
 
-    /// 发送管线(手动 /api/send 与定时发送共用):HEX/文本 → worker;回显 +
-    /// TX 计数 + 记录为定时内容。当前后端 worker 消费实际发送字节。
-    pub(crate) fn send_payload(&self, text: &str, hex: bool) -> Result<(), String> {
+    /// 发送管线(手动 /api/send 与定时发送共用):先确认 worker 可接收，
+    /// 命令入队成功后才产生回显、定时内容与历史副作用；TX 由 worker 的 Tx 回报计数。
+    pub(crate) fn send_payload(&self, text: &str, hex: bool) -> Result<(), SendError> {
         if text.is_empty() {
-            return Err("空输入".into());
+            return Err(SendError::Invalid("空输入".into()));
         }
         let payload = if hex {
-            parse_hex_bytes(text)?
+            parse_hex_bytes(text).map_err(SendError::Invalid)?
         } else {
             text.as_bytes().to_vec()
         };
         // 发送行尾(FR-12/F7):按 UI 选择追加行尾字节,文本/HEX 同规则
         let payload = append_send_ending(payload, *self.send_ending.lock().unwrap());
-        // TX 计数按实际发送字节数(HEX 模式 = 解析后字节 + 行尾,非原文长度)
-        let n = payload.len();
-        if let Some(tx) = self
-            .session
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|s| s.cmd_tx.clone())
-        {
-            let _ = tx.send(WorkerCmd::Send(payload));
+        if !self.connected.load(Ordering::Relaxed) {
+            return Err(SendError::Unavailable("未连接,无法发送".into()));
         }
-        self.tx_bytes.fetch_add(n as u64, Ordering::Relaxed);
+        let tx = {
+            let session = self.session.lock().unwrap();
+            let Some(session) = session.as_ref() else {
+                return Err(SendError::Unavailable("无活动会话,无法发送".into()));
+            };
+            if !session.handle.alive.load(Ordering::Relaxed) {
+                return Err(SendError::Unavailable("采集线程已退出,无法发送".into()));
+            }
+            session.cmd_tx.clone()
+        };
+        tx.send(WorkerCmd::Send(payload))
+            .map_err(|_| SendError::Unavailable("发送通道已关闭".into()))?;
+
         self.pump
             .lock()
             .unwrap()
@@ -190,10 +210,13 @@ pub(crate) fn snapshot_prefs(s: &Shared) -> StoredPrefs {
     p.search_regex = s.search_regex.load(Ordering::Relaxed);
     p.timer_send = s.timer_on.load(Ordering::Relaxed);
     p.timer_interval = format!("{}", *s.timer_interval.lock().unwrap());
+    p.timer_text = s.timer_text.lock().unwrap().clone();
+    p.timer_hex = s.timer_hex.load(Ordering::Relaxed);
     p.send_history = s.send_history.lock().unwrap().clone();
     p.jlink_serial = *s.jlink_serial.lock().unwrap();
     p.send_ending = *s.send_ending.lock().unwrap();
     p.hex_send = s.hex_send.load(Ordering::Relaxed);
+    p.keep_awake = s.keep_awake.load(Ordering::Relaxed);
     // 后端 id(阶段二):随快照落盘,重启恢复上次选定(serve 内已归一化)
     p.backend = s.backend().id().to_string();
     p

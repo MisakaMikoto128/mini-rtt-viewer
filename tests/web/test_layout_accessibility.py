@@ -72,6 +72,7 @@ def test_narrow_viewport_keeps_sidebar_and_its_native_scrollbar(page):
 
 def test_timer_interval_only_appears_when_timer_is_enabled(page):
     assert page.locator("#timer-fields").is_hidden()
+    page.fill("#send-text", "layout-probe")
     page.check("#timer-on")
     assert page.locator("#timer-fields").is_visible()
     page.uncheck("#timer-on")

@@ -182,6 +182,175 @@ fn check_rtt_start(rc: i32) -> anyhow::Result<()> {
     Ok(())
 }
 
+const RTT_WRITE_MAX_STALLS: usize = 100;
+const RESET_DISCOVERY_ATTEMPTS: usize = 20;
+const RESET_DISCOVERY_DELAY: Duration = Duration::from_millis(100);
+
+/// Tx 只统计真实写入的字节;零进展有界重试,负返回码或异常长度明确失败。
+fn send_rtt_payload<F, W>(data: &[u8], tx: &mpsc::Sender<WorkerMsg>, mut write: F, mut wait: W)
+where
+    F: FnMut(&[u8]) -> i32,
+    W: FnMut(),
+{
+    let mut written = 0usize;
+    let mut stalls = 0usize;
+    let mut failure = None;
+    while written < data.len() {
+        let rc = write(&data[written..]);
+        if rc < 0 {
+            failure = Some(format!("错误码 {rc}"));
+            break;
+        }
+        if rc == 0 {
+            stalls += 1;
+            if stalls >= RTT_WRITE_MAX_STALLS {
+                failure = Some("RTT 写入持续无进展".into());
+                break;
+            }
+            wait();
+            continue;
+        }
+
+        let n = rc as usize;
+        if n > data.len() - written {
+            failure = Some(format!("DLL 返回异常写入长度 {n}"));
+            break;
+        }
+        written += n;
+        stalls = 0;
+    }
+
+    if let Some(error) = failure {
+        if written > 0 {
+            let _ = tx.send(WorkerMsg::Tx(written));
+        }
+        let _ = tx.send(WorkerMsg::Log(format!(
+            "[发送失败: {error},已写入 {written}/{} 字节]\r\n",
+            data.len()
+        )));
+    } else {
+        let _ = tx.send(WorkerMsg::Tx(written));
+    }
+}
+
+fn rx_block(bytes: &[u8], hex: bool, decoder: &mut CharsetDecoder) -> WorkerMsg {
+    let text = if hex {
+        bytes_to_hex_upper(bytes)
+    } else {
+        decoder.decode(bytes)
+    };
+    WorkerMsg::Block {
+        text,
+        raw_len: bytes.len(),
+    }
+}
+
+/// 固件复位后需要一段时间重建控制块;只在有限窗口内重试,并响应退出。
+fn discover_rtt_after_reset<F, W>(
+    stop: &AtomicBool,
+    mut discover: F,
+    mut wait: W,
+) -> anyhow::Result<Option<u32>>
+where
+    F: FnMut() -> Option<u32>,
+    W: FnMut(),
+{
+    for _ in 0..RESET_DISCOVERY_ATTEMPTS {
+        if stop_requested(stop) {
+            anyhow::bail!("退出中,已取消复位后 RTT 重挂");
+        }
+        // Go 后先给固件覆盖旧控制块的时间,避免立即扫到复位前的陈旧签名。
+        wait();
+        if stop_requested(stop) {
+            anyhow::bail!("退出中,已取消复位后 RTT 重挂");
+        }
+        if let Some(addr) = discover() {
+            return Ok(Some(addr));
+        }
+    }
+    Ok(None)
+}
+
+fn restart_rtt<F>(mut control: F) -> anyhow::Result<()>
+where
+    F: FnMut(i32) -> i32,
+{
+    let rc = control(RTT_CMD_STOP);
+    if rc < 0 {
+        anyhow::bail!("RTT 停止失败(错误码 {rc})");
+    }
+    check_rtt_start(control(RTT_CMD_START))
+}
+
+/// 初始连接与原地复位共用的显式控制块设置/RTT 重挂路径。
+fn restart_rtt_at<S, C>(addr: u32, mut set_addr: S, control: C) -> anyhow::Result<String>
+where
+    S: FnMut(u32) -> (i32, String),
+    C: FnMut(i32) -> i32,
+{
+    let (rc, response) = set_addr(addr);
+    if rc < 0 {
+        anyhow::bail!("设置 RTT 控制块地址 0x{addr:08X} 失败(错误码 {rc})");
+    }
+    restart_rtt(control)?;
+    Ok(response)
+}
+
+fn reset_target<R, G, A>(tx: &mpsc::Sender<WorkerMsg>, reset: R, go: G, reattach: A)
+where
+    R: FnOnce() -> i32,
+    G: FnOnce() -> i32,
+    A: FnOnce() -> anyhow::Result<()>,
+{
+    let result = (|| {
+        let rc = reset();
+        if rc < 0 {
+            anyhow::bail!("目标复位返回错误码 {rc}");
+        }
+        let go_rc = go();
+        if go_rc < 0 {
+            anyhow::bail!("Go 失败 rc={go_rc}");
+        }
+        reattach()
+    })();
+    match result {
+        Ok(()) => {
+            let _ = tx.send(WorkerMsg::Log("[目标已复位,RTT 已重挂]\r\n".into()));
+        }
+        Err(error) => {
+            let _ = tx.send(WorkerMsg::Log(format!("[复位失败: {error}]\r\n")));
+        }
+    }
+}
+
+fn power_target<E>(on: bool, tx: &mpsc::Sender<WorkerMsg>, exec: E)
+where
+    E: FnOnce(&str) -> (i32, String),
+{
+    let (rc, response) = exec(if on {
+        "SupplyPower = 1"
+    } else {
+        "SupplyPower = 0"
+    });
+    let response = response.trim();
+    let suffix = if response.is_empty() {
+        String::new()
+    } else {
+        format!("({response})")
+    };
+    let action = if on { "开" } else { "关" };
+    let message = if rc < 0 {
+        format!("[J-Link] 电源输出 {action}失败(错误码 {rc}) {suffix}\r\n")
+    } else {
+        format!("[J-Link] 电源输出 {action} {suffix}\r\n")
+    };
+    let _ = tx.send(WorkerMsg::PowerResult {
+        on,
+        ok: rc >= 0,
+        message,
+    });
+}
+
 /// 连接序列:加载 DLL → 抑制弹窗 → 选定调试器 → OpenEx → RTT START →
 /// TIF/速度/设备名 → Connect(带重试)→ 设备 RAM 显式定位 RTT 控制块 →
 /// State(true) + DeviceInfo。
@@ -304,15 +473,14 @@ fn connect_target(
         jlink.read_mem(addr, buf) >= 0
     });
     if let Some(addr) = control_block {
-        let (rc, response) = jlink.exec_command_with_status(&format!("SetRTTAddr 0x{addr:08X}"));
-        if rc < 0 {
-            anyhow::bail!("设置 RTT 控制块地址 0x{addr:08X} 失败(错误码 {rc})");
-        }
+        let response = restart_rtt_at(
+            addr,
+            |addr| jlink.exec_command_with_status(&format!("SetRTTAddr 0x{addr:08X}")),
+            |cmd| jlink.rtt_control(cmd),
+        )?;
         if !response.trim().is_empty() {
             let _ = tx.send(WorkerMsg::Log(format!("[J-Link] {response}\r\n")));
         }
-        jlink.rtt_control(RTT_CMD_STOP);
-        check_rtt_start(jlink.rtt_control(RTT_CMD_START))?;
         let _ = tx.send(WorkerMsg::Log(format!(
             "[RTT] 已定位控制块 0x{addr:08X}\r\n"
         )));
@@ -399,14 +567,8 @@ fn rtt_read_loop(
                 )));
             }
             // ANSI 转义序列原样透传,由 UI 端 vte 解析着色(本层不再剥掉);
-            // HEX 接收模式:原始字节直接转十六进制文本(跳过字符集解码保真),
-            // 行语义退化为断帧——一帧一行 hex
-            let text = if current_hex {
-                bytes_to_hex_upper(&buf[..n as usize])
-            } else {
-                decoder.decode(&buf[..n as usize])
-            };
-            let _ = tx.send(WorkerMsg::Block(text));
+            // raw_len 在 HEX/字符集转换前固定,RX 统计不受展示文本膨胀影响。
+            let _ = tx.send(rx_block(&buf[..n as usize], current_hex, &mut decoder));
             frame_open = true;
             last_rx = now;
         } else if frame_open && now.duration_since(last_rx) > to {
@@ -425,47 +587,62 @@ fn rtt_read_loop(
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 WorkerCmd::Send(data) => {
-                    let w = jlink.rtt_write(*channel as i32, &data);
-                    if w < 0 {
-                        let _ = tx.send(WorkerMsg::Log("[发送失败]\r\n".into()));
-                    }
+                    send_rtt_payload(
+                        &data,
+                        tx,
+                        |remaining| jlink.rtt_write(*channel as i32, remaining),
+                        || thread::sleep(Duration::from_millis(1)),
+                    );
                 }
                 WorkerCmd::Reset => {
-                    // 复位并运行:JLINKARM_Reset 后 CPU 处于 halted,调 Go 才跑起来
-                    // (pylink reset(halt=false) 的两步);< 0 视为失败只报告不打断读循环
-                    let rc = jlink.reset();
-                    if rc < 0 {
-                        let _ = tx.send(WorkerMsg::Log(format!("[复位失败 rc={rc}]\r\n")));
-                    } else {
-                        // go() 返回码不再静默丢弃(审计 R5):失败时 RTT 重挂成功
-                        // 也读不到运行中的固件,明确报出来
-                        let go_rc = jlink.go();
-                        if go_rc < 0 {
-                            let _ = tx.send(WorkerMsg::Log(format!("[Go 失败 rc={go_rc}]\r\n")));
-                        }
-                        // 复位后固件重新初始化 RTT 控制块,重挂 RTT 保证继续可读
-                        jlink.rtt_control(RTT_CMD_STOP);
-                        jlink.rtt_control(RTT_CMD_START);
-                        let _ = tx.send(WorkerMsg::Log("[目标已复位,RTT 已重挂]\r\n".into()));
-                    }
+                    reset_target(
+                        tx,
+                        || jlink.reset(),
+                        || jlink.go(),
+                        || {
+                            // 固件可能在复位后重建或移动控制块;重走连接路径的 RAM
+                            // 发现 → SetRTTAddr → STOP/START。有限等待后仍找不到
+                            // 则重挂自动发现,保持旧设备兼容。
+                            let regions = jlink.ram_regions_for_device(&config.chip);
+                            let control_block = discover_rtt_after_reset(
+                                stop,
+                                || {
+                                    find_rtt_control_block(&regions, *channel, |addr, buf| {
+                                        jlink.read_mem(addr, buf) >= 0
+                                    })
+                                },
+                                || thread::sleep(RESET_DISCOVERY_DELAY),
+                            )?;
+                            if let Some(addr) = control_block {
+                                let response = restart_rtt_at(
+                                    addr,
+                                    |addr| {
+                                        jlink.exec_command_with_status(&format!(
+                                            "SetRTTAddr 0x{addr:08X}"
+                                        ))
+                                    },
+                                    |cmd| jlink.rtt_control(cmd),
+                                )?;
+                                if !response.trim().is_empty() {
+                                    let _ =
+                                        tx.send(WorkerMsg::Log(format!("[J-Link] {response}\r\n")));
+                                }
+                                let _ = tx.send(WorkerMsg::Log(format!(
+                                    "[RTT] 复位后已定位控制块 0x{addr:08X}\r\n"
+                                )));
+                            } else {
+                                restart_rtt(|cmd| jlink.rtt_control(cmd))?;
+                                let _ = tx.send(WorkerMsg::Log(
+                                    "[RTT] 复位后未定位控制块,使用自动发现\r\n".into(),
+                                ));
+                            }
+                            Ok(())
+                        },
+                    );
                 }
                 WorkerCmd::Power(on) => {
-                    // SupplyPower:J-Link 19 脚给目标供电(与原项目 pylink power_on/off 一致)
-                    let resp = jlink.exec_command(if on {
-                        "SupplyPower = 1"
-                    } else {
-                        "SupplyPower = 0"
-                    });
-                    let resp = resp.trim();
-                    let suffix = if resp.is_empty() {
-                        String::new()
-                    } else {
-                        format!("({resp})")
-                    };
-                    let _ = tx.send(WorkerMsg::Log(format!(
-                        "[J-Link] 电源输出 {} {suffix}\r\n",
-                        if on { "开" } else { "关" }
-                    )));
+                    // SupplyPower:J-Link 19 脚给目标供电;返回码决定真实成败。
+                    power_target(on, tx, |command| jlink.exec_command_with_status(command));
                 }
             }
         }
@@ -583,5 +760,345 @@ mod tests {
                 "{label}"
             );
         }
+    }
+
+    #[test]
+    fn send_short_writes_continue_with_remaining_bytes() {
+        use std::collections::VecDeque;
+
+        let (tx, rx) = mpsc::channel();
+        let mut results = VecDeque::from([2, 1, 3]);
+        let mut calls = Vec::new();
+        send_rtt_payload(
+            b"abcdef",
+            &tx,
+            |remaining| {
+                calls.push(remaining.to_vec());
+                results.pop_front().unwrap()
+            },
+            || {},
+        );
+
+        assert_eq!(
+            calls,
+            vec![b"abcdef".to_vec(), b"cdef".to_vec(), b"def".to_vec()]
+        );
+        assert!(matches!(rx.try_recv(), Ok(WorkerMsg::Tx(6))));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn send_zero_progress_is_bounded_and_reports_failure() {
+        let (tx, rx) = mpsc::channel();
+        let mut calls = 0;
+        send_rtt_payload(
+            b"abc",
+            &tx,
+            |_| {
+                calls += 1;
+                assert!(calls <= 1_000, "零进展写入必须有界");
+                0
+            },
+            || {},
+        );
+
+        assert!(calls > 1 && calls <= 1_000);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(WorkerMsg::Log(text)) if text.contains("发送失败")
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn send_negative_write_does_not_report_tx() {
+        let (tx, rx) = mpsc::channel();
+        send_rtt_payload(b"abc", &tx, |_| -9, || {});
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(WorkerMsg::Log(text)) if text.contains("发送失败") && text.contains("-9")
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn send_partial_progress_is_counted_before_failure() {
+        let (tx, rx) = mpsc::channel();
+        let mut calls = 0;
+        send_rtt_payload(
+            b"abcde",
+            &tx,
+            |_| {
+                calls += 1;
+                if calls == 1 {
+                    2
+                } else {
+                    -5
+                }
+            },
+            || {},
+        );
+
+        assert!(matches!(rx.try_recv(), Ok(WorkerMsg::Tx(2))));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(WorkerMsg::Log(text)) if text.contains("发送失败") && text.contains("2/5")
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn reset_go_failure_skips_reattach_and_success_message() {
+        let (tx, rx) = mpsc::channel();
+        let mut reattached = false;
+        reset_target(
+            &tx,
+            || 0,
+            || -7,
+            || {
+                reattached = true;
+                Ok(())
+            },
+        );
+
+        assert!(!reattached);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(WorkerMsg::Log(text)) if text.contains("Go 失败") && !text.contains("已重挂")
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn reset_reattach_failure_is_not_reported_as_success() {
+        let (tx, rx) = mpsc::channel();
+        reset_target(&tx, || 0, || 0, || anyhow::bail!("RTT 启动失败(错误码 -3)"));
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(WorkerMsg::Log(text)) if text.contains("复位失败") && text.contains("-3") && !text.contains("已重挂")
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn reset_discovery_waits_before_each_stale_ram_scan() {
+        let stop = AtomicBool::new(false);
+        let events = std::cell::RefCell::new(Vec::new());
+        let mut calls = 0;
+        let found = discover_rtt_after_reset(
+            &stop,
+            || {
+                calls += 1;
+                events.borrow_mut().push("scan");
+                (calls == 3).then_some(0x2000_0100)
+            },
+            || events.borrow_mut().push("wait"),
+        )
+        .unwrap();
+
+        assert_eq!(found, Some(0x2000_0100));
+        assert_eq!(calls, 3);
+        assert_eq!(
+            events.into_inner(),
+            ["wait", "scan", "wait", "scan", "wait", "scan"]
+        );
+    }
+
+    #[test]
+    fn reset_discovery_without_control_block_is_bounded() {
+        let stop = AtomicBool::new(false);
+        let mut calls = 0;
+        let found = discover_rtt_after_reset(
+            &stop,
+            || {
+                calls += 1;
+                assert!(calls <= 100, "控制块发现必须有界");
+                None
+            },
+            || {},
+        )
+        .unwrap();
+
+        assert_eq!(found, None);
+        assert!(calls > 1 && calls <= 100);
+    }
+
+    #[test]
+    fn reset_discovery_honors_stop_before_hardware_access() {
+        let stop = AtomicBool::new(true);
+        let mut called = false;
+        let result = discover_rtt_after_reset(
+            &stop,
+            || {
+                called = true;
+                Some(0x2000_0000)
+            },
+            || {},
+        );
+
+        assert!(result.is_err());
+        assert!(!called);
+    }
+
+    #[test]
+    fn restart_rtt_sets_address_before_stop_and_start() {
+        let events = std::cell::RefCell::new(Vec::new());
+        let response = restart_rtt_at(
+            0x2000_0100,
+            |addr| {
+                events.borrow_mut().push(format!("addr:{addr:08X}"));
+                (0, "ok".into())
+            },
+            |cmd| {
+                events.borrow_mut().push(format!("control:{cmd}"));
+                0
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response, "ok");
+        assert_eq!(
+            events.into_inner(),
+            ["addr:20000100", "control:1", "control:0"]
+        );
+    }
+
+    #[test]
+    fn restart_rtt_start_failure_is_returned() {
+        let result = restart_rtt_at(
+            0x2000_0100,
+            |_| (0, String::new()),
+            |cmd| if cmd == RTT_CMD_START { -4 } else { 0 },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn power_result_reflects_exec_command_status() {
+        let (tx, rx) = mpsc::channel();
+        power_target(true, &tx, |command| {
+            assert_eq!(command, "SupplyPower = 1");
+            (-6, "denied".into())
+        });
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(WorkerMsg::PowerResult { on: true, ok: false, message })
+                if message.contains("-6") && message.contains("denied")
+        ));
+
+        let (tx, rx) = mpsc::channel();
+        power_target(false, &tx, |command| {
+            assert_eq!(command, "SupplyPower = 0");
+            (0, "ok".into())
+        });
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(WorkerMsg::PowerResult { on: false, ok: true, message })
+                if message.contains("ok")
+        ));
+    }
+
+    #[test]
+    fn rx_block_counts_raw_bytes_before_text_conversion() {
+        let mut decoder = CharsetDecoder::for_label("utf-8");
+        assert!(matches!(
+            rx_block("你".as_bytes(), false, &mut decoder),
+            WorkerMsg::Block { text, raw_len: 3 } if text == "你"
+        ));
+
+        let mut decoder = CharsetDecoder::for_label("utf-8");
+        assert!(matches!(
+            rx_block(&[0x00, 0xFF], true, &mut decoder),
+            WorkerMsg::Block { text, raw_len: 2 } if text == "00 FF "
+        ));
+    }
+
+    fn assert_split_decode_counts_each_input_byte_once(
+        label: &str,
+        chunks: &[&[u8]],
+        expected_raw_len: usize,
+        expected_text: &str,
+    ) {
+        let mut decoder = CharsetDecoder::for_label(label);
+        let mut decoded_text = String::new();
+        let mut raw_total = 0;
+        for (index, chunk) in chunks.iter().enumerate() {
+            match rx_block(chunk, false, &mut decoder) {
+                WorkerMsg::Block { text, raw_len } => {
+                    if index == 0 {
+                        assert!(text.is_empty(), "{label} 首块应只有半字符");
+                    }
+                    assert_eq!(raw_len, chunk.len(), "{label} 第 {index} 块");
+                    raw_total += raw_len;
+                    decoded_text.push_str(&text);
+                }
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(raw_total, expected_raw_len, "{label} 原始字节总量");
+        assert_eq!(decoded_text, expected_text, "{label} 跨块解码文本");
+    }
+
+    #[test]
+    fn rx_block_counts_empty_incremental_decode_chunks_without_duplication() {
+        assert_split_decode_counts_each_input_byte_once(
+            "utf-8",
+            &[&[0xE4, 0xBD][..], &[0xA0][..]],
+            3,
+            "你",
+        );
+        assert_split_decode_counts_each_input_byte_once(
+            "gbk",
+            &[&[0xC4][..], &[0xE3][..]],
+            2,
+            "你",
+        );
+        assert_split_decode_counts_each_input_byte_once(
+            "utf-16le",
+            &[&[0x3D, 0xD8][..], &[0x00, 0xDE][..]],
+            4,
+            "😀",
+        );
+    }
+
+    #[test]
+    fn rx_block_text_and_hex_have_same_cross_chunk_raw_total() {
+        let chunks: [&[u8]; 3] = [&[0xE4, 0xBD], &[0xA0, 0xF0, 0x9F], &[0x98, 0x80]];
+        let mut text_decoder = CharsetDecoder::for_label("utf-8");
+        let mut hex_decoder = CharsetDecoder::for_label("utf-8");
+        let mut text = String::new();
+        let mut hex = String::new();
+        let mut text_raw_total = 0;
+        let mut hex_raw_total = 0;
+
+        for chunk in chunks {
+            match rx_block(chunk, false, &mut text_decoder) {
+                WorkerMsg::Block {
+                    text: decoded,
+                    raw_len,
+                } => {
+                    text.push_str(&decoded);
+                    text_raw_total += raw_len;
+                }
+                _ => unreachable!(),
+            }
+            match rx_block(chunk, true, &mut hex_decoder) {
+                WorkerMsg::Block {
+                    text: encoded,
+                    raw_len,
+                } => {
+                    hex.push_str(&encoded);
+                    hex_raw_total += raw_len;
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        assert_eq!(text, "你😀");
+        assert_eq!(hex, "E4 BD A0 F0 9F 98 80 ");
+        assert_eq!(text_raw_total, 7);
+        assert_eq!(hex_raw_total, 7);
     }
 }

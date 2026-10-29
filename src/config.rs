@@ -64,6 +64,9 @@ pub struct StoredPrefs {
     pub timer_send: bool,
     /// 定时发送间隔文本(秒,保持用户输入原样)
     pub timer_interval: String,
+    /// 定时发送内容与 HEX 模式(独立于发送框,重启后完整恢复)
+    pub timer_text: String,
+    pub timer_hex: bool,
     /// 搜索正则开关(false = 字面量匹配)
     pub search_regex: bool,
     /// 数据采集后端 id(当前正式程序仅 "jlink")。可用列表校验/回落在
@@ -99,6 +102,8 @@ impl Default for StoredPrefs {
             keep_awake: false,
             timer_send: false,
             timer_interval: "1".into(),
+            timer_text: String::new(),
+            timer_hex: false,
             search_regex: false,
             backend: crate::backend::BACKEND_JLINK.into(),
         }
@@ -213,6 +218,8 @@ mod tests {
             keep_awake: true,
             timer_send: true,
             timer_interval: "0.5".into(),
+            timer_text: "41 42".into(),
+            timer_hex: true,
             search_regex: true,
             backend: "legacy-backend".into(),
         };

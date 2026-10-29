@@ -12,8 +12,13 @@ pub(crate) enum WsEvent<'a> {
         dropped: usize,
         rows: &'a [RunsRow<'a>],
     },
-    /// 重同步全量快照 {"type":"snapshot","rows":[…]}
-    Snapshot { rows: &'a [RunsRow<'a>] },
+    /// 重同步全量快照 {"type":"snapshot","clearSeq":N,"rows":[…]}。
+    /// clearSeq 让重连后的新服务能重置旧水位，同时保留同服务清空前的过滤语义。
+    Snapshot {
+        #[serde(rename = "clearSeq")]
+        clear_seq: u64,
+        rows: &'a [RunsRow<'a>],
+    },
     /// 清空水位 {"type":"cleared","seq":N}(水位之后的 rows 才有效)
     Cleared { seq: u64 },
     /// 连接状态 {"type":"state","connected":B,"status":"…"}
@@ -21,6 +26,8 @@ pub(crate) enum WsEvent<'a> {
     /// 设备信息 {"type":"device","info":{8 字段}}——info 与 /api/status 的 device
     /// 同形,继续由 serde_json::json! 构造(与 device_info_json 单点同源)
     Device { info: serde_json::Value },
+    /// 电源命令执行结果 {"type":"power","on":B,"ok":B,"message":"…"}
+    Power { on: bool, ok: bool, message: String },
     /// 进度文案 {"type":"progress","text":"…"}
     Progress { text: String },
     /// 芯片型号名单 {"type":"names","names":[…]}
@@ -76,6 +83,7 @@ pub(crate) async fn ws_loop(mut socket: WebSocket, shared: Arc<Shared>) {
     {
         let snapshot = shared.pump.lock().unwrap().snapshot_rows();
         let msg = serde_json::to_string(&WsEvent::Snapshot {
+            clear_seq: shared.clear_seq.load(Ordering::Relaxed),
             rows: &rows_view(&snapshot),
         })
         .unwrap();
@@ -107,6 +115,7 @@ pub(crate) async fn ws_loop(mut socket: WebSocket, shared: Arc<Shared>) {
                         // 订阅滞后:丢弃的行不可恢复,重发全量快照让前端重同步
                         let snapshot = shared.pump.lock().unwrap().snapshot_rows();
                         let msg = serde_json::to_string(&WsEvent::Snapshot {
+                            clear_seq: shared.clear_seq.load(Ordering::Relaxed),
                             rows: &rows_view(&snapshot),
                         })
                         .unwrap();

@@ -56,7 +56,11 @@ export function initDisplaySettings() {
       document.head.appendChild(customThemeStyle);
     }
   };
+  let themeGeneration = 0;
+  let currentTheme = themeSelect.value;
   const applyTheme = id => {
+    currentTheme = id;
+    const generation = ++themeGeneration;
     if (builtinThemes.includes(id)) {
       document.documentElement.dataset.theme = id;
       setCustomThemeCss(null);
@@ -65,10 +69,12 @@ export function initDisplaySettings() {
     request('/api/theme-css/' + encodeURIComponent(id))
       .then(response => response.text())
       .then(css => {
+        if (generation !== themeGeneration || currentTheme !== id) return;
         document.documentElement.removeAttribute('data-theme');
         setCustomThemeCss(css);
       })
       .catch(() => {
+        if (generation !== themeGeneration || currentTheme !== id) return;
         document.documentElement.dataset.theme = 'dark';
         setCustomThemeCss(null);
       });

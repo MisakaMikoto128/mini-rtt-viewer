@@ -336,8 +336,36 @@ pub(crate) async fn api_jlinks(State(shared): State<Arc<Shared>>) -> Json<serde_
         .collect::<Vec<_>>()))
 }
 
-/// 连接:连接前门禁 → 芯片名补全(库内子串匹配首个全称)→ 连接参数写入
-/// 偏好快照源 → 当前后端 connect。
+/// 完整型号优先；部分输入只有唯一候选时才补全，避免静默连接到错误芯片或内核。
+fn resolve_chip(chip_raw: &str, devices: &[String]) -> Result<String, String> {
+    if devices.iter().any(|n| n.eq_ignore_ascii_case(chip_raw)) {
+        return Ok(chip_raw.to_string());
+    }
+    let needle = chip_raw.to_uppercase();
+    let matches: Vec<&String> = devices
+        .iter()
+        .filter(|name| name.to_uppercase().contains(&needle))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(format!("设备库无匹配型号:{chip_raw}")),
+        [only] => Ok((*only).clone()),
+        _ => {
+            let candidates = matches
+                .iter()
+                .take(6)
+                .map(|name| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "型号 {chip_raw} 匹配多个型号,请选择完整型号:{candidates}(共 {} 个)",
+                matches.len()
+            ))
+        }
+    }
+}
+
+/// 连接:连接前门禁 → 芯片名精确匹配或唯一补全 → 连接参数写入
+/// 偏好快照源 → 当前后端 connect。多候选必须让用户选定,不静默替换型号。
 pub(crate) async fn api_connect(
     State(shared): State<Arc<Shared>>,
     Json(req): Json<ConnectReq>,
@@ -359,21 +387,9 @@ pub(crate) async fn api_connect(
     }
     // 校验名单与前端看到的候选同源:统一取 shared.device_names。
     let full: Vec<String> = shared.device_names.lock().unwrap().clone();
-    let exact = full.iter().any(|n| n.eq_ignore_ascii_case(&chip_raw));
-    let chip = if exact {
-        chip_raw
-    } else {
-        let needle = chip_raw.to_uppercase();
-        match full.iter().find(|s| s.to_uppercase().contains(&needle)) {
-            Some(c) => c.clone(),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("设备库无匹配型号:{chip_raw}"),
-                )
-                    .into_response()
-            }
-        }
+    let chip = match resolve_chip(&chip_raw, &full) {
+        Ok(chip) => chip,
+        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
     };
     drop(full);
 
@@ -838,4 +854,40 @@ pub(crate) async fn api_export(State(shared): State<Arc<Shared>>) -> Response {
         body,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_chip;
+
+    #[test]
+    fn chip_resolution_preserves_exact_non_f103_device() {
+        let devices = vec![
+            "STM32F103C8".to_string(),
+            "STM32H745ZI_M4".to_string(),
+            "STM32H745ZI_M7".to_string(),
+        ];
+        assert_eq!(
+            resolve_chip("STM32H745ZI_M7", &devices).as_deref(),
+            Ok("STM32H745ZI_M7")
+        );
+    }
+
+    #[test]
+    fn chip_resolution_completes_only_a_unique_partial_match() {
+        let devices = vec!["STM32F103C8".to_string(), "STM32F030F4".to_string()];
+        assert_eq!(
+            resolve_chip("stm32f030f", &devices).as_deref(),
+            Ok("STM32F030F4")
+        );
+    }
+
+    #[test]
+    fn chip_resolution_rejects_ambiguous_dual_core_device() {
+        let devices = vec!["STM32H745ZI_M4".to_string(), "STM32H745ZI_M7".to_string()];
+        let error = resolve_chip("STM32H745ZI", &devices).unwrap_err();
+        assert!(error.contains("多个型号"), "{error}");
+        assert!(error.contains("STM32H745ZI_M4"), "{error}");
+        assert!(error.contains("STM32H745ZI_M7"), "{error}");
+    }
 }

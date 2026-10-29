@@ -122,8 +122,69 @@ fn stop_requested(stop: &AtomicBool) -> bool {
     stop.load(Ordering::Relaxed) || APP_SHUTDOWN.load(Ordering::Relaxed)
 }
 
+/// 在设备 RAM 中定位 RTT 控制块。读取按 4KB 分块并保留签名长度减一字节的重叠,
+/// 签名跨块时也不会漏掉;命中后再读完整头部,用缓冲区数量和所选通道排除假签名。
+fn find_rtt_control_block<F>(regions: &[(u32, u32)], channel: u32, mut read: F) -> Option<u32>
+where
+    F: FnMut(u32, &mut [u8]) -> bool,
+{
+    const CHUNK_SIZE: u32 = 4096;
+    const SIGNATURE: &[u8] = b"SEGGER RTT";
+
+    for &(region_addr, region_size) in regions {
+        let mut offset = 0u32;
+        let mut carry = Vec::new();
+        while offset < region_size {
+            let read_len = (region_size - offset).min(CHUNK_SIZE) as usize;
+            let Some(chunk_addr) = region_addr.checked_add(offset) else {
+                break;
+            };
+            let mut chunk = vec![0u8; read_len];
+            if !read(chunk_addr, &mut chunk) {
+                carry.clear();
+                offset += read_len as u32;
+                continue;
+            }
+
+            let mut scan = carry.clone();
+            scan.extend_from_slice(&chunk);
+            let scan_addr = chunk_addr - carry.len() as u32;
+            for (position, _) in scan
+                .windows(SIGNATURE.len())
+                .enumerate()
+                .filter(|(_, window)| *window == SIGNATURE)
+            {
+                let Some(candidate) = scan_addr.checked_add(position as u32) else {
+                    continue;
+                };
+                let mut header = [0u8; 24];
+                if !read(candidate, &mut header) {
+                    continue;
+                }
+                let up_buffers = u32::from_le_bytes(header[16..20].try_into().unwrap());
+                let down_buffers = u32::from_le_bytes(header[20..24].try_into().unwrap());
+                if up_buffers > channel && up_buffers <= 64 && down_buffers <= 64 {
+                    return Some(candidate);
+                }
+            }
+
+            carry = chunk[chunk.len().saturating_sub(SIGNATURE.len() - 1)..].to_vec();
+            offset += read_len as u32;
+        }
+    }
+    None
+}
+
+fn check_rtt_start(rc: i32) -> anyhow::Result<()> {
+    if rc < 0 {
+        anyhow::bail!("RTT 启动失败(错误码 {rc}):请检查 J-Link 连接及目标固件的 SEGGER RTT 初始化");
+    }
+    Ok(())
+}
+
 /// 连接序列:加载 DLL → 抑制弹窗 → 选定调试器 → OpenEx → RTT START →
-/// TIF/速度/设备名 → Connect(带重试)→ State(true) + DeviceInfo。
+/// TIF/速度/设备名 → Connect(带重试)→ 设备 RAM 显式定位 RTT 控制块 →
+/// State(true) + DeviceInfo。
 /// 成功返回已打开的 JLinkDll;失败路径自行 close 后返回 Err
 /// (JLinkDll 有 Drop 兜底,中途 return 也不会漏 close)。
 fn connect_target(
@@ -135,6 +196,7 @@ fn connect_target(
         chip,
         iface_index,
         speed_khz,
+        channel,
         selected_sn,
         ..
     } = config;
@@ -195,7 +257,7 @@ fn connect_target(
 
     // 序列遵循原项目验证过的 DLL 状态机要求:RTT START 必须在 connect 之前
     let tif = if *iface_index == 0 { TIF_SWD } else { TIF_JTAG };
-    jlink.rtt_control(RTT_CMD_START);
+    check_rtt_start(jlink.rtt_control(RTT_CMD_START))?;
     let rc = jlink.select_tif(tif);
     if rc < 0 {
         anyhow::bail!("选择接口失败(错误码 {rc})");
@@ -232,6 +294,28 @@ fn connect_target(
         anyhow::bail!(
             "J-Link 连接目标失败(错误码 {rc}):请检查芯片型号/接线/供电,或尝试降低速率(高速率在 Cortex-M0 上可能不稳定)"
         );
+    }
+
+    // 部分设备(实测 STM32G070)的 J-Link 自动发现会漏掉有效 RTT 控制块。
+    // 用设备数据库的 RAM 区域显式定位并设置地址;找不到时保留原有自动发现,
+    // 不把固件尚未初始化 RTT 误判成连接失败。初始 RTT START 仍严格早于 Connect。
+    let regions = jlink.ram_regions_for_device(chip);
+    let control_block = find_rtt_control_block(&regions, *channel, |addr, buf| {
+        jlink.read_mem(addr, buf) >= 0
+    });
+    if let Some(addr) = control_block {
+        let (rc, response) = jlink.exec_command_with_status(&format!("SetRTTAddr 0x{addr:08X}"));
+        if rc < 0 {
+            anyhow::bail!("设置 RTT 控制块地址 0x{addr:08X} 失败(错误码 {rc})");
+        }
+        if !response.trim().is_empty() {
+            let _ = tx.send(WorkerMsg::Log(format!("[J-Link] {response}\r\n")));
+        }
+        jlink.rtt_control(RTT_CMD_STOP);
+        check_rtt_start(jlink.rtt_control(RTT_CMD_START))?;
+        let _ = tx.send(WorkerMsg::Log(format!(
+            "[RTT] 已定位控制块 0x{addr:08X}\r\n"
+        )));
     }
 
     let iface_name = if tif == TIF_SWD { "SWD" } else { "JTAG" };
@@ -398,6 +482,62 @@ fn rtt_read_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rtt_control_block_scan_finds_signature_across_read_chunks() {
+        let mut ram = vec![0u8; 0x3000];
+        let offset = 0x0ffc;
+        ram[offset..offset + 10].copy_from_slice(b"SEGGER RTT");
+        ram[offset + 16..offset + 20].copy_from_slice(&3u32.to_le_bytes());
+        ram[offset + 20..offset + 24].copy_from_slice(&2u32.to_le_bytes());
+        let found = find_rtt_control_block(&[(0x2000_0000, ram.len() as u32)], 0, |addr, buf| {
+            let start = (addr - 0x2000_0000) as usize;
+            buf.copy_from_slice(&ram[start..start + buf.len()]);
+            true
+        });
+        assert_eq!(found, Some(0x2000_0000 + offset as u32));
+    }
+
+    #[test]
+    fn rtt_control_block_scan_rejects_invalid_channel_counts() {
+        let mut ram = vec![0u8; 0x1000];
+        ram[..10].copy_from_slice(b"SEGGER RTT");
+        ram[16..20].copy_from_slice(&1u32.to_le_bytes());
+        ram[20..24].copy_from_slice(&1u32.to_le_bytes());
+        let found = find_rtt_control_block(&[(0x2000_0000, ram.len() as u32)], 1, |addr, buf| {
+            let start = (addr - 0x2000_0000) as usize;
+            buf.copy_from_slice(&ram[start..start + buf.len()]);
+            true
+        });
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn rtt_control_block_scan_continues_after_unreadable_region() {
+        let mut second = vec![0u8; 0x1000];
+        second[0x100..0x10a].copy_from_slice(b"SEGGER RTT");
+        second[0x110..0x114].copy_from_slice(&1u32.to_le_bytes());
+        second[0x114..0x118].copy_from_slice(&1u32.to_le_bytes());
+        let found = find_rtt_control_block(
+            &[(0x1000_0000, 0x1000), (0x2000_0000, 0x1000)],
+            0,
+            |addr, buf| {
+                if addr < 0x2000_0000 {
+                    return false;
+                }
+                let start = (addr - 0x2000_0000) as usize;
+                buf.copy_from_slice(&second[start..start + buf.len()]);
+                true
+            },
+        );
+        assert_eq!(found, Some(0x2000_0100));
+    }
+
+    #[test]
+    fn rtt_start_failure_is_not_silently_accepted() {
+        assert!(check_rtt_start(-1).is_err());
+        assert!(check_rtt_start(0).is_ok());
+    }
 
     #[test]
     fn gbk_two_byte_chars_split_across_chunks() {

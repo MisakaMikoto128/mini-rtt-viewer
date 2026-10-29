@@ -11,7 +11,10 @@ windows-x86_64。(PLAT-1)
 
 pylink-square 1.6+ 在本场景验证不可用(RTT 读不稳定);采用 `libloading` + 显式 FFI。
 连接序列必须保持:disable_dialog → 枚举选 SN → RTT START → TIF/速度 → Device → Connect;
-多探针使用 SelectByUSBSN → SetHostIF → OpenEx。不得要求用户改装 WinUSB/Zadig 驱动。
+多探针使用 SelectByUSBSN → SetHostIF → OpenEx。Connect 成功后按设备数据库的 RAM 区域
+分块扫描 `SEGGER RTT` 签名并校验缓冲区头部,找到则 SetRTTAddr 后重挂 RTT;找不到保留
+J-Link 自动发现。STM32G070 真机证实仅依赖自动发现会连接成功但读不到已有日志。
+不得要求用户改装 WinUSB/Zadig 驱动。
 
 ## ADR-3 MIT 许可
 

@@ -71,6 +71,10 @@ UI/CLI/注册表。**旧 Slint 前端已退役**,
 4. `open_ex`/`select_tif`/`set_speed` 的返回码必须检查(审计 R2 后已加)——
    否则 Open 失败时 GetSN=0 的误导日志会顶掉真实失败环节;
 5. 首次 connect 失败 worker 内自动重试 3 次(间隔 400ms),不回退 UI 状态。
+6. Connect 成功后按设备数据库 RAM 区域分块定位 `SEGGER RTT` 控制块,校验缓冲区
+   数量和通道后用 `SetRTTAddr` 显式设置并重挂 RTT;找不到才保留 J-Link 自动发现。
+   STM32G070 实测自动发现连接成功但 RX=0,显式定位后立即恢复;这不改变第 1 条
+   初始 START 早于 Connect 的硬约束。
 
 ## worker 生命周期(铁律 + 2026-09 补强)
 

@@ -140,16 +140,22 @@ impl JLinkDll {
 
     /// 执行命令(如 "Device = STM32F030F4"),返回响应文本。
     pub fn exec_command(&self, cmd: &str) -> String {
+        self.exec_command_with_status(cmd).1
+    }
+
+    /// 执行命令并保留 DLL 返回码,供设置 RTT 地址等不能静默失败的路径使用。
+    pub fn exec_command_with_status(&self, cmd: &str) -> (c_int, String) {
         let c = CString::new(cmd).unwrap();
         let mut buf = [0i8; 1024];
-        unsafe {
+        let rc = unsafe {
             let f: Symbol<unsafe extern "C" fn(*const c_char, *mut c_char, c_int) -> c_int> =
                 self.lib.get(b"JLINKARM_ExecCommand").unwrap();
-            f(c.as_ptr(), buf.as_mut_ptr(), buf.len() as c_int);
-        }
+            f(c.as_ptr(), buf.as_mut_ptr(), buf.len() as c_int)
+        };
         // i8 数组按 ASCII 收尾
         let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-        buf[..end].iter().map(|&b| b as u8 as char).collect()
+        let response = buf[..end].iter().map(|&b| b as u8 as char).collect();
+        (rc, response)
     }
 
     pub fn connect(&self) -> c_int {
@@ -157,6 +163,15 @@ impl JLinkDll {
             let f: Symbol<unsafe extern "C" fn() -> c_int> =
                 self.lib.get(b"JLINKARM_Connect").unwrap();
             f()
+        }
+    }
+
+    /// 诊断用目标内存读取;返回 < 0 表示访问失败。
+    pub fn read_mem(&self, addr: u32, buf: &mut [u8]) -> c_int {
+        unsafe {
+            let f: Symbol<unsafe extern "C" fn(u32, u32, *mut u8) -> c_int> =
+                self.lib.get(b"JLINKARM_ReadMem").unwrap();
+            f(addr, buf.len() as u32, buf.as_mut_ptr())
         }
     }
 
@@ -318,20 +333,7 @@ impl JLinkDll {
         let count = self.device_count().max(0);
         let mut out = Vec::with_capacity(count as usize);
         for i in 0..count {
-            let mut raw = DeviceInfoRaw {
-                size_of_struct: std::mem::size_of::<DeviceInfoRaw>() as u32,
-                s_name: std::ptr::null(),
-                core_id: 0,
-                flash_addr: 0,
-                ram_addr: 0,
-                endian_mode: 0,
-                flash_size: 0,
-                ram_size: 0,
-                s_manu: std::ptr::null(),
-                flash_areas: [FlashAreaRaw { addr: 0, size: 0 }; 32],
-                ram_areas: [FlashAreaRaw { addr: 0, size: 0 }; 32],
-                core: 0,
-            };
+            let mut raw = DeviceInfoRaw::new();
             let rc = unsafe { get_info(i, &mut raw as *mut DeviceInfoRaw as *mut c_void) };
             if rc < 0 || raw.s_name.is_null() {
                 break;
@@ -343,6 +345,46 @@ impl JLinkDll {
             out.push(name.into_owned());
         }
         out
+    }
+
+    /// 查询指定设备的 RAM 区域(地址,字节数),供 RTT 控制块显式定位使用。
+    /// 设备名比较与连接 API 一样忽略 ASCII 大小写;只读设备数据库,不接触目标。
+    pub fn ram_regions_for_device(&self, device_name: &str) -> Vec<(u32, u32)> {
+        let get_info = unsafe {
+            match self
+                .lib
+                .get::<unsafe extern "C" fn(c_int, *mut c_void) -> c_int>(
+                    b"JLINKARM_DEVICE_GetInfo",
+                ) {
+                Ok(f) => f,
+                Err(_) => return Vec::new(),
+            }
+        };
+        for i in 0..self.device_count().max(0) {
+            let mut raw = DeviceInfoRaw::new();
+            let rc = unsafe { get_info(i, &mut raw as *mut DeviceInfoRaw as *mut c_void) };
+            if rc < 0 || raw.s_name.is_null() {
+                break;
+            }
+            let name = unsafe { std::ffi::CStr::from_ptr(raw.s_name).to_string_lossy() };
+            if !name.eq_ignore_ascii_case(device_name) {
+                continue;
+            }
+            let mut regions = Vec::new();
+            if raw.ram_size > 0 {
+                regions.push((raw.ram_addr, raw.ram_size));
+            }
+            regions.extend(
+                raw.ram_areas
+                    .iter()
+                    .filter(|area| area.size > 0)
+                    .map(|area| (area.addr, area.size)),
+            );
+            regions.sort_unstable();
+            regions.dedup();
+            return regions;
+        }
+        Vec::new()
     }
 
     // ============ 调试器枚举/选定(多台 J-Link 时选择用哪一台) ============
@@ -483,4 +525,23 @@ struct DeviceInfoRaw {
     flash_areas: [FlashAreaRaw; 32],
     ram_areas: [FlashAreaRaw; 32],
     core: u32,
+}
+
+impl DeviceInfoRaw {
+    fn new() -> Self {
+        Self {
+            size_of_struct: std::mem::size_of::<Self>() as u32,
+            s_name: std::ptr::null(),
+            core_id: 0,
+            flash_addr: 0,
+            ram_addr: 0,
+            endian_mode: 0,
+            flash_size: 0,
+            ram_size: 0,
+            s_manu: std::ptr::null(),
+            flash_areas: [FlashAreaRaw { addr: 0, size: 0 }; 32],
+            ram_areas: [FlashAreaRaw { addr: 0, size: 0 }; 32],
+            core: 0,
+        }
+    }
 }

@@ -41,7 +41,7 @@
 - 已安装 [SEGGER J-Link 软件包](https://www.segger.com/downloads/jlink/)(程序运行时加载 `JLink_x64.dll`)
 - J-Link 调试器 + 目标板固件已初始化 SEGGER RTT(`SEGGER_RTT` 组件)
 
-芯片型号需填写 J-Link 支持的完整型号名(如 `STM32F030C8`、`STM32H750VB`),与官方 RTT Viewer 中的写法一致。
+芯片型号需填写 J-Link 支持的完整型号名(如 `STM32F030C8`、`STM32H750VB`),与官方 RTT Viewer 中的写法一致。不完整输入仅在唯一匹配时自动补全;存在多个候选(尤其双核型号)时会拒绝连接并要求选定完整型号,不会静默换成另一款芯片或内核。
 
 ## 快速开始
 
@@ -125,7 +125,7 @@ CI 配置见 [.github/workflows/release.yml](.github/workflows/release.yml)。
 | J-Link 访问 | FFI 直调 `JLink_x64.dll` | 与官方工具/驱动共存,不抢 USB(纯 USB 协议实现需要 Zadig 换驱动,会破坏 SEGGER 工具链) |
 | 并发模型 | std::thread + mpsc + 10ms 消息泵 | worker 读线程不碰 UI,泵做断行与事件广播;停止/退出经原子标志轮询,阻塞等待均有界 |
 
-连接时序沿用了经过验证的 J-Link DLL 状态机要求(RTT START 在 connect 之前建立)。
+连接时序沿用了经过验证的 J-Link DLL 状态机要求(RTT START 在 connect 之前建立)。Connect 后还会按设备数据库的 RAM 区域分块定位并校验 RTT 控制块,找到后显式设置地址并重挂 RTT,覆盖部分 MCU 自动发现失败但能正常收发 RTT 的情况;找不到时保留 J-Link 自动发现。
 
 ## 代码结构
 

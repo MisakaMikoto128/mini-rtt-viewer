@@ -12,8 +12,8 @@ body:
     id: version
     attributes:
       label: Mini RTT Viewer 版本
-      description: 例如 v0.5.1；源码构建请附 commit。
-      placeholder: v0.5.1
+      description: 例如 v0.5.2；源码构建请附 commit。
+      placeholder: v0.5.2
     validations:
       required: true
   - type: dropdown

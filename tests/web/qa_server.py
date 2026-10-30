@@ -131,8 +131,7 @@ class QAServer:
 
     def prefs_on_disk(self) -> dict:
         """直接读 RTT_PREFS_FILE 磁盘文件(落盘验收用)。
-        服务端 500ms tick 原子写存在 remove→rename 的微小窗口(Windows 语义),
-        读操作恰好撞上会 FileNotFoundError/PermissionError,短暂重试消除抖动。"""
+        Windows 读取与替换仍可能出现短暂共享冲突,短暂重试消除抖动。"""
         deadline = time.time() + 2.0
         while True:
             try:

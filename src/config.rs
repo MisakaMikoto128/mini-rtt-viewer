@@ -2,8 +2,7 @@
 //!
 //! - 字段全部 `serde(default)`:旧版本配置缺新字段、JSON 损坏、文件丢失一律回落
 //!   默认值,绝不阻塞启动
-//! - 原子写:先写 `.tmp` 再替换,崩溃不留半截文件(Windows 的 rename 不覆盖,
-//!   先移除旧文件再改名)
+//! - 原子写:先写 `.tmp` 再用 `rename` 替换,崩溃不留半截文件或缺失窗口
 //! - 保存时机由 web.rs 数据泵线程 tick_loop 节流(500ms 快照比对,不变不落盘);
 //!   进程退出(关窗强退 / Ctrl-C)不做退出补写,最后 ≤500ms 的改动可能不落盘
 //!   (web.rs 与 gui.rs 模块头「跳过的清理与副作用」均有说明)
@@ -171,7 +170,7 @@ pub(crate) fn load_from(path: &std::path::Path) -> StoredPrefs {
     }
 }
 
-/// 写指定路径(测试与 save 共用):建目录 → 写 .tmp → 移除旧文件 → 原子改名
+/// 写指定路径(测试与 save 共用):建目录 → 写 .tmp → 原子替换
 pub(crate) fn save_to(path: &std::path::Path, prefs: &StoredPrefs) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -179,8 +178,6 @@ pub(crate) fn save_to(path: &std::path::Path, prefs: &StoredPrefs) -> std::io::R
     let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(prefs).map_err(std::io::Error::other)?;
     std::fs::write(&tmp, body)?;
-    // Windows 的 rename 不覆盖已存在文件:先移除旧的再改名(窗口极小)
-    let _ = std::fs::remove_file(path);
     std::fs::rename(&tmp, path)
 }
 
@@ -295,6 +292,29 @@ mod tests {
         // .tmp 不残留
         assert!(!p.with_extension("json.tmp").exists());
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn concurrent_reader_never_observes_missing_file_during_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        save_to(&path, &StoredPrefs::default()).unwrap();
+
+        let writer_path = path.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..200 {
+                save_to(&writer_path, &StoredPrefs::default()).unwrap();
+            }
+            done_tx.send(()).unwrap();
+        });
+        while done_rx.try_recv().is_err() {
+            match std::fs::read_to_string(&path) {
+                Ok(_) => {}
+                Err(e) => panic!("保存期间偏好文件必须始终可读: {e}"),
+            }
+        }
+        writer.join().unwrap();
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Mini RTT Viewer — 项目经验笔记
 
-## 项目现状速览(2026-10-29,v0.5.2 + RTT 收发与状态可靠性修复)
+## 项目现状速览(2026-10-31,v0.5.2 + GitHub Release 更新)
 
 **一句话**:J-Link RTT 日志查看器,单 exe 双形态——桌面壳(tao+wry+tray 内嵌
 WebView)与纯服务(`--no-window`)共用同一套 Rust 数据层 + axum Web 管理台。
@@ -27,7 +27,9 @@ UI/CLI/注册表。**旧 Slint 前端已退役**,
 - `rtt.rs`:JLink worker 线程,`connect_target`(连接序列)+ `rtt_read_loop`
   (5ms 轮询 + 断帧判定 + 字符集/HEX 热切换);`jlink_dll.rs`:FFI
 - `log_model.rs`:纯逻辑日志泵(断行/ANSI/512 兜底/500 行上限),可单测
-- `config.rs` 偏好持久化(含 `backend` 字段)/ `device_db.rs` 设备库后台枚举
+- `update.rs`:固定 GitHub Release 配置、版本/资产选择、更新状态机、校验安装与
+  24 小时自动检查节流;Web API 在 `web/api.rs`,关于窗口交互在 `ui/web/dialogs.js`
+- `config.rs` 偏好持久化(含 `backend` 与自动检查时间戳)/ `device_db.rs` 设备库后台枚举
   (归 jlink 后端驱使);`examples/qa_server.rs` 是仅供黑盒测试的独立数据流
 - 前端 `ui/web/index.html` + `styles.css` + 原生 ES modules 经 `include_str!`
   内嵌,无独立构建步骤;`app.js` 只做全局协调,API/日志视图/搜索/显示设置/
@@ -174,6 +176,26 @@ textContent,**禁止 innerHTML 拼接**(即使做了 `"` 转义也不行)。
 - 慢 WS 消费者保护:Lagged 重同步 1 秒内 >3 次即断开(防快照重同步风暴);
   api_mark 标签 200 字符上限;api_settings 负数一律 400(不静默夹 0);
   api_addr 的 UDP 探测放 spawn_blocking(不冻结 tokio worker)
+
+## 更新系统与测试隔离
+
+- `src/update.rs` 是唯一 Release 选择/状态机真源:固定 owner/repo/target,semver 排除
+  草稿、预发布和不高于当前版本的项;zip 必须唯一且匹配
+  `mini-rtt-viewer-<版本>-windows-x86_64.zip`,包内路径为同名目录下
+  `mini-rtt-viewer.exe`,摘要来自同 Release `SHA256SUMS`。发布 workflow 改名时必须先改
+  单一契约并同步静态测试,不能放宽资产匹配去迁就错误产物。
+- 自动检查仅查元数据,距上次发起不足 24 小时跳过;手动检查忽略节流也不下载。
+  安装只从 `available` 进入,目标连接中返回 409;桌面重启要再次显式请求,
+  纯服务安装后只报告 `readyToRestart`,API restart 返回 409。
+- install/restart 按直接请求对端 IP 限定回环,不是鉴权;status/check 在开放监听时
+  仍可远程访问。同 Release zip 与 sums 只保证完整性/匹配,不保证独立真实性。
+- 更新黑盒只用 `RTT_QA_UPDATE_API_BASE` 指向本地 fixture,并用
+  `RTT_QA_UPDATE_INSTALL_PATH` 指向临时目录中的复制 exe;**禁止**让常规测试访问真实
+  GitHub、安装/替换开发或发布 exe。每个进程同时设置临时 `RTT_PREFS_FILE`、APPDATA
+  和日志目录,不读写真实用户偏好、序列号或日志。
+- 全量 Web 验证先重建当前 release bins/examples,再把 `RTT_TEST_EXE`、`RTT_QA_EXE`
+  显式指向这次产物;结束检查无 QA 进程残留。真实 Release 只做一次独立只读元数据/
+  sums 兼容性核验,不写成依赖公网的常规测试,不调用 install/restart。
 
 ## 构建工程
 

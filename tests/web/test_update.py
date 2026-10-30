@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import re
 import socket
 import threading
 import time
@@ -10,10 +11,69 @@ import urllib.error
 import urllib.request
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from qa_server import QAServer, get_json, http, poll
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def repo_text(relative_path):
+    return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def test_release_workflow_asset_layout_matches_updater():
+    """Naming drift would make a published Release impossible to install."""
+    updater = repo_text("src/update.rs")
+    workflow = repo_text(".github/workflows/release.yml")
+
+    assert 'format!("mini-rtt-viewer-{version}-windows-x86_64.zip")' in updater
+    assert (
+        'format!("mini-rtt-viewer-{version}-windows-x86_64/mini-rtt-viewer.exe")'
+        in updater
+    )
+    checksum_name = re.search(
+        r'const CHECKSUM_ASSET_NAME: &str = "([^"]+)";', updater
+    )
+    assert checksum_name is not None
+    assert checksum_name.group(1) == "SHA256SUMS"
+    assert '.checksum_from_asset(CHECKSUM_ASSET_NAME)' in updater
+
+    assert '$name = "mini-rtt-viewer-$ver-windows-x86_64"' in workflow
+    assert 'New-Item -ItemType Directory -Force -Path "pack/$name"' in workflow
+    assert 'Copy-Item target/release/mini-rtt-viewer.exe "pack/$name/"' in workflow
+    assert (
+        'Compress-Archive -Force -Path "pack/$name" '
+        '-DestinationPath "pack/$name.zip"' in workflow
+    )
+    assert (
+        '"$sha  $name.zip" | Out-File -FilePath "pack/SHA256SUMS" '
+        '-Encoding ascii' in workflow
+    )
+    assert "pack/*.zip" in workflow
+    assert "pack/SHA256SUMS" in workflow
+
+
+def test_public_documents_describe_the_explicit_update_contract():
+    """Old no-update wording or missing safety limits misstates the public API."""
+    required = {
+        "README.md": ("24 小时", "下载并安装", "SHA-256", "断开"),
+        "CHANGELOG.md": ("## Unreleased", "GitHub Release"),
+        "AGENTS.md": ("src/update.rs", "RTT_QA_UPDATE_INSTALL_PATH", "RTT_PREFS_FILE"),
+        "docs/product/spec.md": ("FR-31", "readyToRestart", "24 小时"),
+        "SECURITY.md": ("同一个 GitHub Release", "真实性", "回环"),
+    }
+    documents = {path: repo_text(path) for path in required}
+    for path, phrases in required.items():
+        for phrase in phrases:
+            assert phrase in documents[path], f"{path} 缺少更新契约说明: {phrase}"
+
+    public_text = "\n".join(documents.values())
+    for obsolete_or_unsafe in ("无自动更新", "静默更新", "自动重启纯服务", "任意 URL 更新"):
+        assert obsolete_or_unsafe not in public_text
 
 
 class ReleaseFixture:

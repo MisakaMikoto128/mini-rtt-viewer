@@ -1,9 +1,9 @@
 //! GitHub Release 更新规划与自动检查节流。
 
 use anyhow::{anyhow, bail, Context, Result};
-use self_update::{ReleaseAsset, UpdateStrategy};
+use self_update::ReleaseAsset;
 use semver::Version;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -44,6 +44,39 @@ pub struct ReleasePlan {
     pub info: ReleaseInfo,
     pub asset_name: String,
     pub bin_path: String,
+}
+
+#[derive(Clone, Debug)]
+struct SelectedRelease {
+    tag_name: String,
+    plan: ReleasePlan,
+    assets: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+    html_url: String,
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Deserialize)]
+struct GitHubAsset {
+    name: String,
+}
+
+impl From<GitHubRelease> for Release {
+    fn from(release: GitHubRelease) -> Self {
+        Self {
+            tag_name: release.tag_name,
+            draft: release.draft,
+            prerelease: release.prerelease,
+            html_url: release.html_url,
+            assets: release.assets.into_iter().map(|asset| asset.name).collect(),
+        }
+    }
 }
 
 /// 更新操作当前所处阶段。
@@ -113,16 +146,12 @@ impl UpdateManager {
     pub fn check_now(&self) -> Result<UpdateStatus> {
         self.begin(UpdatePhase::Checking)?;
         let result = (|| {
-            let release = self.updater()?.is_update_available()?;
+            let selected = self.selected_release()?;
             let mut status = self.status();
-            if let Some(release) = release {
-                let info = ReleaseInfo {
-                    version: release.version().to_owned(),
-                    notes_url: release.release_notes_url().unwrap_or_default().to_owned(),
-                };
+            if let Some(selected) = selected {
                 status.phase = UpdatePhase::Available;
-                status.latest_version = Some(info.version);
-                status.notes_url = Some(info.notes_url).filter(|url| !url.is_empty());
+                status.latest_version = Some(selected.plan.info.version);
+                status.notes_url = Some(selected.plan.info.notes_url).filter(|url| !url.is_empty());
             } else {
                 status.phase = UpdatePhase::UpToDate;
                 status.latest_version = None;
@@ -136,40 +165,58 @@ impl UpdateManager {
     pub fn install(&self) -> Result<UpdateStatus> {
         self.begin(UpdatePhase::Installing)?;
         let result = (|| {
-            let installed = self.updater()?.update()?;
-            if !installed.is_updated() {
-                bail!("Release 未返回已更新结果");
+            let Some(selected) = self.selected_release()? else {
+                bail!("没有可安装的新版正式 Release");
+            };
+            validate_release_assets(&selected)?;
+            let expected_version = selected.plan.info.version.clone();
+            let installed = self.updater(&selected)?.update()?;
+            if !installed.is_updated() || installed.version() != expected_version {
+                bail!("Release 未返回预期的已更新结果");
             }
             let mut status = self.status();
-            if status.latest_version.as_deref() != Some(installed.version()) {
-                status.notes_url = None;
-            }
             status.phase = UpdatePhase::ReadyToRestart;
-            status.latest_version = Some(installed.version().to_owned());
+            status.latest_version = Some(expected_version);
+            status.notes_url = Some(selected.plan.info.notes_url).filter(|url| !url.is_empty());
             Ok(status)
         })();
         self.finish(result)
     }
 
-    fn updater(&self) -> Result<self_update::backends::github::Update> {
-        let client = reqwest::blocking::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
-            .user_agent(concat!("mini-rtt-viewer/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+    fn selected_release(&self) -> Result<Option<SelectedRelease>> {
+        let url = format!(
+            "{}/repos/{}/{}/releases?per_page=100",
+            self.config.api_base_url.trim_end_matches('/'),
+            self.config.owner,
+            self.config.repo
+        );
+        let releases = http_client()?
+            .get(url)
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .send()?
+            .error_for_status()?
+            .json::<Vec<GitHubRelease>>()?
+            .into_iter()
+            .map(Release::from)
+            .collect::<Vec<_>>();
+        select_release(&self.config.current_version, &releases)
+    }
+
+    fn updater(&self, selected: &SelectedRelease) -> Result<self_update::backends::github::Update> {
+        let asset_name = selected.plan.asset_name.clone();
         let updater = self_update::backends::github::Update::configure()
             .repo_owner(&self.config.owner)
             .repo_name(&self.config.repo)
             .bin_name("mini-rtt-viewer")
             .target("windows-x86_64")
             .current_version(&self.config.current_version)
+            .release_tag(&selected.tag_name)
             .bin_install_path(&self.config.install_path)
-            .bin_path_in_archive("mini-rtt-viewer-{{ version }}-windows-x86_64/mini-rtt-viewer.exe")
-            .asset_matcher(select_unique_release_asset)
+            .bin_path_in_archive(selected.plan.bin_path.clone())
+            .asset_matcher(move |assets| select_unique_release_asset(assets, &asset_name))
             .checksum_from_asset(CHECKSUM_ASSET_NAME)
             .api_base_url(&self.config.api_base_url)
-            .reqwest_client(client)
-            .update_strategy(UpdateStrategy::Latest)
+            .reqwest_client(http_client()?)
             .show_output(false)
             .no_confirm(true)
             .build()?;
@@ -217,15 +264,21 @@ impl UpdateManager {
     }
 }
 
-fn select_unique_release_asset(assets: &[ReleaseAsset]) -> Option<ReleaseAsset> {
-    let mut matching = assets.iter().filter(|asset| {
-        asset
-            .name()
-            .strip_prefix("mini-rtt-viewer-")
-            .and_then(|name| name.strip_suffix("-windows-x86_64.zip"))
-            .and_then(|version| Version::parse(version).ok())
-            .is_some_and(|version| version.pre.is_empty())
-    });
+fn http_client() -> Result<reqwest::blocking::Client> {
+    Ok(reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .user_agent(concat!("mini-rtt-viewer/", env!("CARGO_PKG_VERSION")))
+        .build()?)
+}
+
+fn select_unique_release_asset(
+    assets: &[ReleaseAsset],
+    expected_asset_name: &str,
+) -> Option<ReleaseAsset> {
+    let mut matching = assets
+        .iter()
+        .filter(|asset| asset.name() == expected_asset_name);
     let selected = matching.next()?.clone();
     if matching.next().is_some() {
         None
@@ -267,6 +320,14 @@ fn sanitize_error_message(message: &str) -> String {
 
 /// 选择版本最高的新版正式 Release，并锁定唯一 zip 与同 Release 校验文件。
 pub fn plan_release(current_version: &str, releases: &[Release]) -> Result<Option<ReleasePlan>> {
+    let Some(selected) = select_release(current_version, releases)? else {
+        return Ok(None);
+    };
+    validate_release_assets(&selected)?;
+    Ok(Some(selected.plan))
+}
+
+fn select_release(current_version: &str, releases: &[Release]) -> Result<Option<SelectedRelease>> {
     let current = parse_version(current_version)?;
     let mut candidates = Vec::new();
     for release in releases {
@@ -285,29 +346,38 @@ pub fn plan_release(current_version: &str, releases: &[Release]) -> Result<Optio
     };
     let version = version.to_string();
     let asset_name = format!("mini-rtt-viewer-{version}-windows-x86_64.zip");
-    let mut matching_assets = release.assets.iter().filter(|asset| **asset == asset_name);
+    Ok(Some(SelectedRelease {
+        tag_name: release.tag_name.clone(),
+        plan: ReleasePlan {
+            info: ReleaseInfo {
+                notes_url: release.html_url.clone(),
+                version: version.clone(),
+            },
+            asset_name,
+            bin_path: format!("mini-rtt-viewer-{version}-windows-x86_64/mini-rtt-viewer.exe"),
+        },
+        assets: release.assets.clone(),
+    }))
+}
+
+fn validate_release_assets(selected: &SelectedRelease) -> Result<()> {
+    let version = &selected.plan.info.version;
+    let asset_name = &selected.plan.asset_name;
+    let mut matching_assets = selected.assets.iter().filter(|asset| *asset == asset_name);
     if matching_assets.next().is_none() {
         bail!("Release {version} 缺少资产 {asset_name}");
     }
     if matching_assets.next().is_some() {
         bail!("Release {version} 包含重复资产 {asset_name}");
     }
-    if !release
+    if !selected
         .assets
         .iter()
         .any(|asset| asset == CHECKSUM_ASSET_NAME)
     {
         bail!("Release {version} 缺少资产 {CHECKSUM_ASSET_NAME}");
     }
-
-    Ok(Some(ReleasePlan {
-        info: ReleaseInfo {
-            notes_url: release.html_url.clone(),
-            version: version.clone(),
-        },
-        asset_name,
-        bin_path: format!("mini-rtt-viewer-{version}-windows-x86_64/mini-rtt-viewer.exe"),
-    }))
+    Ok(())
 }
 
 /// 首次检查始终到期，后续检查间隔至少 24 小时；时钟回拨时继续等待。
@@ -324,6 +394,7 @@ fn parse_version(value: &str) -> Result<Version> {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
     use std::fs;
     use std::io::{Cursor, Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -371,10 +442,46 @@ mod tests {
         }
     }
 
+    struct FixtureRelease {
+        version: String,
+        asset_version: String,
+        draft: bool,
+        prerelease: bool,
+        include_archive_exe: bool,
+    }
+
+    impl FixtureRelease {
+        fn new(version: &str) -> Self {
+            Self {
+                version: version.into(),
+                asset_version: version.into(),
+                draft: false,
+                prerelease: false,
+                include_archive_exe: true,
+            }
+        }
+
+        fn draft(mut self) -> Self {
+            self.draft = true;
+            self
+        }
+
+        fn prerelease(mut self) -> Self {
+            self.prerelease = true;
+            self
+        }
+
+        fn with_asset_version(mut self, version: &str) -> Self {
+            self.asset_version = version.into();
+            self
+        }
+    }
+
     struct FixtureResponses {
         releases: Vec<u8>,
-        archive: Vec<u8>,
-        sums: Vec<u8>,
+        release_objects: HashMap<String, Vec<u8>>,
+        archives: HashMap<String, Vec<u8>>,
+        sums: HashMap<String, Vec<u8>>,
         checksum_mode: ChecksumMode,
         disconnect_download: AtomicBool,
         gate_download: AtomicBool,
@@ -391,7 +498,7 @@ mod tests {
 
     impl ReleaseFixture {
         fn new(current: &str, latest: &str, checksum_mode: ChecksumMode) -> Self {
-            Self::with_archive_exe(current, latest, checksum_mode, true)
+            Self::from_releases(current, vec![FixtureRelease::new(latest)], checksum_mode)
         }
 
         fn with_archive_exe(
@@ -400,71 +507,95 @@ mod tests {
             checksum_mode: ChecksumMode,
             include_archive_exe: bool,
         ) -> Self {
+            let mut release = FixtureRelease::new(latest);
+            release.include_archive_exe = include_archive_exe;
+            Self::from_releases(current, vec![release], checksum_mode)
+        }
+
+        fn from_releases(
+            current: &str,
+            specs: Vec<FixtureRelease>,
+            checksum_mode: ChecksumMode,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let base_url = format!("http://{}", listener.local_addr().unwrap());
-            let version = latest.strip_prefix('v').unwrap_or(latest);
-            let asset_name = format!("mini-rtt-viewer-{version}-windows-x86_64.zip");
-            let archive_path = if include_archive_exe {
-                format!("mini-rtt-viewer-{version}-windows-x86_64/mini-rtt-viewer.exe")
-            } else {
-                format!("mini-rtt-viewer-{version}-windows-x86_64/other.exe")
-            };
-            let mut archive_writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-            archive_writer
-                .start_file(
-                    archive_path,
-                    zip::write::SimpleFileOptions::default()
-                        .compression_method(zip::CompressionMethod::Deflated),
-                )
-                .unwrap();
-            archive_writer.write_all(b"new-binary").unwrap();
-            let archive = archive_writer.finish().unwrap().into_inner();
-            let digest = match checksum_mode {
-                ChecksumMode::Wrong => "0".repeat(64),
-                _ => Sha256::digest(&archive)
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect(),
-            };
-            let sums = format!("{digest}  {asset_name}\n").into_bytes();
-            let mut assets = vec![serde_json::json!({
-                "id": 1,
-                "name": asset_name,
-                "url": format!("{base_url}/assets/release.zip"),
-                "browser_download_url": format!("{base_url}/assets/release.zip"),
-                "content_type": "application/zip",
-                "size": archive.len(),
-                "digest": null
-            })];
-            if !matches!(checksum_mode, ChecksumMode::Missing) {
-                assets.push(serde_json::json!({
-                    "id": 2,
-                    "name": "SHA256SUMS",
-                    "url": format!("{base_url}/assets/SHA256SUMS"),
-                    "browser_download_url": format!("{base_url}/assets/SHA256SUMS"),
-                    "content_type": "text/plain",
-                    "size": sums.len(),
+            let mut release_values = Vec::new();
+            let mut release_objects = HashMap::new();
+            let mut archives = HashMap::new();
+            let mut sums_by_path = HashMap::new();
+            for (index, spec) in specs.into_iter().enumerate() {
+                let version = spec.version.strip_prefix('v').unwrap_or(&spec.version);
+                let asset_name =
+                    format!("mini-rtt-viewer-{}-windows-x86_64.zip", spec.asset_version);
+                let archive_path = if spec.include_archive_exe {
+                    format!("mini-rtt-viewer-{version}-windows-x86_64/mini-rtt-viewer.exe")
+                } else {
+                    format!("mini-rtt-viewer-{version}-windows-x86_64/other.exe")
+                };
+                let mut archive_writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                archive_writer
+                    .start_file(
+                        archive_path,
+                        zip::write::SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Deflated),
+                    )
+                    .unwrap();
+                archive_writer.write_all(b"new-binary").unwrap();
+                let archive = archive_writer.finish().unwrap().into_inner();
+                let digest = match checksum_mode {
+                    ChecksumMode::Wrong => "0".repeat(64),
+                    _ => Sha256::digest(&archive)
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect(),
+                };
+                let sums = format!("{digest}  {asset_name}\n").into_bytes();
+                let archive_url = format!("/assets/{version}/release.zip");
+                let sums_url = format!("/assets/{version}/SHA256SUMS");
+                let mut assets = vec![serde_json::json!({
+                    "id": index * 2 + 1,
+                    "name": asset_name,
+                    "url": format!("{base_url}{archive_url}"),
+                    "browser_download_url": format!("{base_url}{archive_url}"),
+                    "content_type": "application/zip",
+                    "size": archive.len(),
                     "digest": null
-                }));
+                })];
+                if !matches!(checksum_mode, ChecksumMode::Missing) {
+                    assets.push(serde_json::json!({
+                        "id": index * 2 + 2,
+                        "name": "SHA256SUMS",
+                        "url": format!("{base_url}{sums_url}"),
+                        "browser_download_url": format!("{base_url}{sums_url}"),
+                        "content_type": "text/plain",
+                        "size": sums.len(),
+                        "digest": null
+                    }));
+                }
+                let tag_name = format!("v{version}");
+                let value = serde_json::json!({
+                    "id": index + 1,
+                    "tag_name": tag_name,
+                    "created_at": "2026-10-30T00:00:00Z",
+                    "published_at": "2026-10-30T00:00:00Z",
+                    "name": version,
+                    "body": "local fixture",
+                    "html_url": format!("{base_url}/releases/v{version}"),
+                    "draft": spec.draft,
+                    "prerelease": spec.prerelease,
+                    "assets": assets
+                });
+                release_objects.insert(tag_name, serde_json::to_vec(&value).unwrap());
+                release_values.push(value);
+                archives.insert(archive_url, archive);
+                sums_by_path.insert(sums_url, sums);
             }
-            let releases = serde_json::to_vec(&serde_json::json!([{
-                "id": 1,
-                "tag_name": format!("v{version}"),
-                "created_at": "2026-10-30T00:00:00Z",
-                "published_at": "2026-10-30T00:00:00Z",
-                "name": version,
-                "body": "local fixture",
-                "html_url": format!("{base_url}/releases/v{version}"),
-                "draft": false,
-                "prerelease": false,
-                "assets": assets
-            }]))
-            .unwrap();
             let responses = Arc::new(FixtureResponses {
-                releases,
-                archive,
-                sums,
+                releases: serde_json::to_vec(&release_values).unwrap(),
+                release_objects,
+                archives,
+                sums: sums_by_path,
                 checksum_mode,
                 disconnect_download: AtomicBool::new(false),
                 gate_download: AtomicBool::new(false),
@@ -551,13 +682,23 @@ mod tests {
         }
         let request = String::from_utf8(request).unwrap();
         let path = request.split_whitespace().nth(1).unwrap();
-        if path.starts_with("/repos/MisakaMikoto128/mini-rtt-viewer/releases") {
-            write_response(&mut stream, 200, "application/json", &responses.releases);
-        } else if path == "/assets/SHA256SUMS"
-            && !matches!(responses.checksum_mode, ChecksumMode::Missing)
+        if let Some(tag) =
+            path.strip_prefix("/repos/MisakaMikoto128/mini-rtt-viewer/releases/tags/")
         {
-            write_response(&mut stream, 200, "text/plain", &responses.sums);
-        } else if path == "/assets/release.zip" {
+            if let Some(release) = responses.release_objects.get(tag) {
+                write_response(&mut stream, 200, "application/json", release);
+            } else {
+                write_response(&mut stream, 404, "text/plain", b"not found");
+            }
+        } else if path.starts_with("/repos/MisakaMikoto128/mini-rtt-viewer/releases") {
+            write_response(&mut stream, 200, "application/json", &responses.releases);
+        } else if let Some(sums) = responses.sums.get(path) {
+            if matches!(responses.checksum_mode, ChecksumMode::Missing) {
+                write_response(&mut stream, 404, "text/plain", b"not found");
+            } else {
+                write_response(&mut stream, 200, "text/plain", sums);
+            }
+        } else if let Some(archive) = responses.archives.get(path) {
             if responses.gate_download.swap(false, Ordering::SeqCst) {
                 responses.gate.pause();
             }
@@ -565,14 +706,12 @@ mod tests {
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    responses.archive.len()
+                    archive.len()
                 )
                 .unwrap();
-                stream
-                    .write_all(&responses.archive[..responses.archive.len() / 2])
-                    .unwrap();
+                stream.write_all(&archive[..archive.len() / 2]).unwrap();
             } else {
-                write_response(&mut stream, 200, "application/zip", &responses.archive);
+                write_response(&mut stream, 200, "application/zip", archive);
             }
         } else {
             write_response(&mut stream, 404, "text/plain", b"not found");
@@ -777,6 +916,60 @@ mod tests {
             first.join().unwrap().unwrap().phase,
             UpdatePhase::ReadyToRestart
         );
+    }
+
+    #[test]
+    fn draft_and_prerelease_releases_are_not_offered_or_installed() {
+        for release in [
+            FixtureRelease::new("10.0.0").draft(),
+            FixtureRelease::new("10.0.0-rc.1").prerelease(),
+        ] {
+            let fixture =
+                ReleaseFixture::from_releases("0.5.2", vec![release], ChecksumMode::Correct);
+            let old = TempExecutable::new("old-binary");
+            let manager = UpdateManager::new(fixture.config(old.path()));
+            assert_eq!(manager.check_now().unwrap().phase, UpdatePhase::UpToDate);
+            assert!(manager.install().is_err());
+            assert_eq!(old.contents(), b"old-binary");
+        }
+    }
+
+    #[test]
+    fn out_of_order_releases_use_highest_stable_for_check_and_install() {
+        let fixture = ReleaseFixture::from_releases(
+            "0.5.2",
+            vec![
+                FixtureRelease::new("9.0.0"),
+                FixtureRelease::new("10.0.0"),
+                FixtureRelease::new("8.0.0"),
+            ],
+            ChecksumMode::Correct,
+        );
+        let old = TempExecutable::new("old-binary");
+        let manager = UpdateManager::new(fixture.config(old.path()));
+        let available = manager.check_now().unwrap();
+        assert_eq!(available.latest_version.as_deref(), Some("10.0.0"));
+        assert_eq!(
+            available.notes_url.as_deref(),
+            Some(format!("{}/releases/v10.0.0", fixture.base_url).as_str())
+        );
+        let installed = manager.install().unwrap();
+        assert_eq!(installed.phase, UpdatePhase::ReadyToRestart);
+        assert_eq!(installed.latest_version.as_deref(), Some("10.0.0"));
+    }
+
+    #[test]
+    fn mismatched_asset_version_is_rejected_before_replacing_exe() {
+        let fixture = ReleaseFixture::from_releases(
+            "0.5.2",
+            vec![FixtureRelease::new("9.0.0").with_asset_version("8.0.0")],
+            ChecksumMode::Correct,
+        );
+        let old = TempExecutable::new("old-binary");
+        let manager = UpdateManager::new(fixture.config(old.path()));
+        assert!(manager.install().is_err());
+        assert_eq!(old.contents(), b"old-binary");
+        assert_eq!(manager.status().phase, UpdatePhase::Error);
     }
 
     #[test]

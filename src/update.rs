@@ -253,6 +253,9 @@ impl UpdateManager {
         ) {
             bail!("更新操作冲突 (409)：已有检查或安装正在进行");
         }
+        if phase == UpdatePhase::Installing && state.status.phase != UpdatePhase::Available {
+            bail!("更新安装冲突 (409)：当前状态不是已确认的新版");
+        }
         state.status.phase = phase;
         state.status.message = None;
         if phase == UpdatePhase::Checking {
@@ -466,7 +469,7 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Condvar, Mutex};
+    use std::sync::{Arc, Barrier, Condvar, Mutex};
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
     use tempfile::TempDir;
@@ -1051,6 +1054,63 @@ mod tests {
     }
 
     #[test]
+    fn ready_to_restart_cannot_be_installed_again() {
+        let fixture = ReleaseFixture::new("0.5.2", "9.0.0", ChecksumMode::Correct);
+        let old = TempExecutable::new("old-binary");
+        let manager = UpdateManager::new(fixture.config(old.path()));
+        manager.check_now().unwrap();
+        manager.install().unwrap();
+
+        let error = manager.install().unwrap_err();
+        assert!(
+            error.to_string().contains("409"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(manager.status().phase, UpdatePhase::ReadyToRestart);
+        assert_eq!(old.contents(), b"new-binary");
+    }
+
+    #[test]
+    fn stale_available_admission_yields_one_install_and_one_conflict() {
+        let fixture = ReleaseFixture::new("0.5.2", "9.0.0", ChecksumMode::Correct);
+        let old = TempExecutable::new("old-binary");
+        let manager = Arc::new(UpdateManager::new(fixture.config(old.path())));
+        manager.check_now().unwrap();
+        let admitted = Arc::new(Barrier::new(2));
+        let first_done = Arc::new(Barrier::new(2));
+
+        let first_manager = Arc::clone(&manager);
+        let first_admitted = Arc::clone(&admitted);
+        let first_finished = Arc::clone(&first_done);
+        let first = thread::spawn(move || {
+            assert_eq!(first_manager.status().phase, UpdatePhase::Available);
+            first_admitted.wait();
+            let result = first_manager.install();
+            first_finished.wait();
+            result
+        });
+        let second_manager = Arc::clone(&manager);
+        let second = thread::spawn(move || {
+            assert_eq!(second_manager.status().phase, UpdatePhase::Available);
+            admitted.wait();
+            first_done.wait();
+            second_manager.install()
+        });
+
+        let results = [first.join().unwrap(), second.join().unwrap()];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let conflict = results
+            .into_iter()
+            .find_map(Result::err)
+            .expect("one stale install must conflict");
+        assert!(
+            conflict.to_string().contains("409"),
+            "unexpected error: {conflict}"
+        );
+        assert_eq!(manager.status().phase, UpdatePhase::ReadyToRestart);
+    }
+
+    #[test]
     fn draft_and_prerelease_releases_are_not_offered_or_installed() {
         for release in [
             FixtureRelease::new("10.0.0").draft(),
@@ -1172,6 +1232,7 @@ mod tests {
         );
         let old = TempExecutable::new("old-binary");
         let manager = UpdateManager::new(fixture.config(old.path()));
+        manager.check_now().unwrap();
         assert!(manager.install().is_err());
         assert_eq!(old.contents(), b"old-binary");
         assert_eq!(manager.status().phase, UpdatePhase::Error);

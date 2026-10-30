@@ -58,6 +58,7 @@ class QAServer:
             **os.environ,
             "APPDATA": str(self.tmpdir),  # 隔离:真实 %APPDATA% 不碰
             "RTT_PREFS_FILE": str(self.prefs_file),
+            "RTT_LOG_DIR": str(self.tmpdir / "logs"),
             "RTT_WEB_NO_BROWSER": "1",
             **self.extra_env,
         }

@@ -291,6 +291,25 @@ def test_headless_install_succeeds_but_never_requests_restart(qa):
     assert get_json("/api/status")["uptimeSec"] >= 0
 
 
+def test_qa_log_dir_overrides_inherited_environment(
+    tmp_path, release_fixture, monkeypatch
+):
+    qa_dir = tmp_path / "qa"
+    qa_dir.mkdir()
+    inherited_dir = tmp_path / "inherited-logs"
+    monkeypatch.setenv("RTT_LOG_DIR", str(inherited_dir))
+    server, _install_path = make_qa(qa_dir, release_fixture)
+    try:
+        server.start()
+        status, text = http("POST", "/api/logs/save", {})
+        assert status == 200, text
+        name = json.loads(text)["name"]
+        assert (qa_dir / "logs" / name).is_file()
+        assert not (inherited_dir / name).exists()
+    finally:
+        server.stop()
+
+
 def test_automatic_check_happens_only_once_per_twenty_four_hours(
     tmp_path, release_fixture
 ):

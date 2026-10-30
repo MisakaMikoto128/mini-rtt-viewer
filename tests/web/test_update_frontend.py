@@ -343,6 +343,128 @@ def test_release_data_is_rendered_as_text_not_html(page):
     assert page.evaluate("window.__updateXss || false") is False
 
 
+def test_delayed_initial_status_renders_with_about_already_open(page):
+    deferred = []
+    page.route("**/api/update/status", lambda route: deferred.append(route))
+    page.goto(BASE)
+    open_about(page)
+    expect(page.locator("#update-check")).to_be_disabled()
+    assert len(deferred) == 1
+
+    fulfill_json(
+        deferred[0], update_status(phase="available", latestVersion="9.0.0")
+    )
+    expect(page.locator("#update-status")).to_have_text("发现新版本 9.0.0")
+    expect(page.locator("#update-install")).to_be_enabled()
+
+
+def test_background_status_advances_while_about_is_open(page):
+    status_requests = []
+    deferred = []
+
+    def status(route):
+        status_requests.append(route.request)
+        if len(status_requests) == 1:
+            fulfill_json(route, update_status())
+        else:
+            deferred.append(route)
+
+    page.route("**/api/update/status", status)
+    page.goto(BASE)
+    expect(page.locator("#update-check")).to_be_enabled()
+    open_about(page)
+    for _ in range(40):
+        if deferred:
+            break
+        page.wait_for_timeout(100)
+    assert len(deferred) == 1
+
+    fulfill_json(
+        deferred[0], update_status(phase="available", latestVersion="9.0.0")
+    )
+    expect(page.locator("#update-status")).to_have_text("发现新版本 9.0.0")
+    expect(page.locator("#update-install")).to_be_enabled()
+
+
+def test_failed_install_reconciles_error_then_check_allows_real_retry(page):
+    server_state = {
+        "status": update_status(phase="available", latestVersion="9.0.0")
+    }
+    install_attempts = []
+
+    def status(route):
+        fulfill_json(route, server_state["status"])
+
+    def install(route):
+        install_attempts.append(route.request)
+        if len(install_attempts) == 1:
+            server_state["status"] = update_status(
+                phase="error", latestVersion="9.0.0", message="下载校验失败"
+            )
+            route.fulfill(
+                status=500, content_type="text/plain", body="安装请求失败"
+            )
+        else:
+            server_state["status"] = update_status(
+                phase="readyToRestart", latestVersion="9.0.0"
+            )
+            fulfill_json(route, server_state["status"])
+
+    def check(route):
+        server_state["status"] = update_status(
+            phase="available", latestVersion="9.0.0"
+        )
+        fulfill_json(route, server_state["status"])
+
+    page.route("**/api/update/status", status)
+    page.route("**/api/update/install", install)
+    page.route("**/api/update/check", check)
+    page.goto(BASE)
+    expect(page.locator("#update-install")).to_be_enabled()
+    open_about(page)
+    page.click("#update-install")
+
+    expect(page.locator("#update-status")).to_have_text("下载校验失败")
+    expect(page.locator("#update-install")).to_be_hidden()
+    expect(page.locator("#update-check")).to_be_enabled()
+
+    page.click("#update-check")
+    expect(page.locator("#update-status")).to_have_text("发现新版本 9.0.0")
+    expect(page.locator("#update-install")).to_be_enabled()
+    page.click("#update-install")
+    expect(page.locator("#update-status")).to_have_text("请手动重启应用")
+    assert len(install_attempts) == 2
+
+
+def test_closed_about_polls_cannot_apply_newer_then_older_status(page):
+    status_requests = []
+    deferred = []
+
+    def status(route):
+        status_requests.append(route.request)
+        if len(status_requests) == 1:
+            fulfill_json(route, update_status())
+        else:
+            deferred.append(route)
+
+    page.route("**/api/update/status", status)
+    page.goto(BASE)
+    expect(page.locator("#update-check")).to_be_enabled()
+    for _ in range(50):
+        if len(deferred) >= 2:
+            break
+        page.wait_for_timeout(100)
+    assert len(deferred) >= 2
+
+    fulfill_json(
+        deferred[1], update_status(phase="available", latestVersion="9.0.0")
+    )
+    expect(page.locator("#version")).to_have_attribute("title", "发现新版本 9.0.0")
+    fulfill_json(deferred[0], update_status())
+    expect(page.locator("#version")).to_have_attribute("title", "发现新版本 9.0.0")
+    expect(page.locator("#version")).to_have_class(re.compile(r"update-available"))
+
+
 def test_restart_conflict_allows_an_explicit_retry(page):
     attempts = []
 

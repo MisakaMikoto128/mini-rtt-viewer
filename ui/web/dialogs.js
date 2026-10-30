@@ -93,13 +93,15 @@ function initShellAndAbout() {
   let updateOperation = '';
   let updateError = '';
   let restartRequested = false;
+  let updateStale = false;
+  let updateRequestSeq = 0;
 
   function renderUpdate(status) {
     updateState = status;
     const phase = status.phase;
     const latest = status.latestVersion;
     const desktop = !!window.__MINI_SHELL;
-    const canInstall = phase === 'available' || (phase === 'error' && !!latest);
+    const canInstall = phase === 'available';
     const ready = phase === 'readyToRestart';
 
     $('about-ver').textContent = 'v' + status.currentVersion;
@@ -109,12 +111,12 @@ function initShellAndAbout() {
       ? '发现新版本 ' + latest
       : '关于 Mini RTT Viewer';
 
-    $('update-check').disabled = updateBusy || ready
+    $('update-check').disabled = updateBusy || updateStale || ready
       || phase === 'checking' || phase === 'installing';
     $('update-install').hidden = !(canInstall || phase === 'installing');
-    $('update-install').disabled = updateBusy || !canInstall;
+    $('update-install').disabled = updateBusy || updateStale || !canInstall;
     $('update-restart').hidden = !ready || !desktop;
-    $('update-restart').disabled = updateBusy || !ready || restartRequested;
+    $('update-restart').disabled = updateBusy || updateStale || !ready || restartRequested;
     $('update-notes').hidden = !status.notesUrl;
     $('update-notes').disabled = updateBusy || !status.notesUrl;
     $('update-notes').dataset.url = status.notesUrl || '';
@@ -148,18 +150,27 @@ function initShellAndAbout() {
     $('update-status').setAttribute('aria-busy', String(updateBusy));
   }
 
-  function refreshUpdate() {
-    if (updateBusy || about.open) return;
-    getJson('/api/update/status').then(status => {
-      if (updateBusy || about.open) return;
-      updateError = '';
+  function fetchUpdateStatus(preserveError = false) {
+    const requestSeq = ++updateRequestSeq;
+    return getJson('/api/update/status').then(status => {
+      // 只应用最后发起的状态读取；显式操作也会使此前在途轮询失效。
+      if (requestSeq !== updateRequestSeq) return;
+      updateStale = false;
+      if (!preserveError || status.phase === 'error') updateError = '';
       if (status.phase !== 'readyToRestart') restartRequested = false;
       renderUpdate(status);
-    }).catch(() => {});
+    });
+  }
+
+  function refreshUpdate() {
+    if (updateBusy) return;
+    fetchUpdateStatus().catch(() => {});
   }
 
   function runUpdate(operation) {
-    if (updateBusy || !updateState || (operation === 'restart' && restartRequested)) return;
+    if (updateBusy || updateStale || !updateState
+      || (operation === 'restart' && restartRequested)) return;
+    ++updateRequestSeq;
     updateBusy = true;
     updateOperation = operation;
     updateError = '';
@@ -169,11 +180,14 @@ function initShellAndAbout() {
     postJson('/api/update/' + operation).then(response => (
       operation === 'restart' ? null : response.json()
     )).then(status => {
+      updateStale = false;
       if (operation === 'restart') restartRequested = true;
       else renderUpdate(status);
     }).catch(error => {
+      updateStale = true;
       updateError = error.message || '更新请求失败';
       showToast(updateError);
+      return fetchUpdateStatus(true).catch(() => {});
     }).finally(() => {
       updateBusy = false;
       updateOperation = '';

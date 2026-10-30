@@ -259,6 +259,9 @@ impl UpdateManager {
 
     fn begin(&self, phase: UpdatePhase) -> Result<()> {
         let mut state = self.lock_state();
+        if state.status.phase == UpdatePhase::ReadyToRestart {
+            bail!("更新操作冲突 (409)：更新已安装，请重启完成更新");
+        }
         if matches!(
             state.status.phase,
             UpdatePhase::Checking | UpdatePhase::Installing
@@ -415,7 +418,10 @@ fn select_release(current_version: &str, releases: &[Release]) -> Result<Option<
         if release.draft || release.prerelease {
             continue;
         }
-        let version = parse_version(&release.tag_name)?;
+        let version = match parse_version(&release.tag_name) {
+            Ok(version) => version,
+            Err(_) => continue,
+        };
         if version <= current || !version.pre.is_empty() {
             continue;
         }
@@ -480,7 +486,7 @@ mod tests {
     use std::io::{Cursor, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Condvar, Mutex};
     use std::thread::{self, JoinHandle};
     use std::time::Duration;
@@ -571,6 +577,7 @@ mod tests {
         checksum_mode: ChecksumMode,
         disconnect_download: AtomicBool,
         gate_download: AtomicBool,
+        archive_requests: AtomicUsize,
         gate: Arc<DownloadGate>,
     }
 
@@ -713,6 +720,7 @@ mod tests {
                 checksum_mode,
                 disconnect_download: AtomicBool::new(false),
                 gate_download: AtomicBool::new(false),
+                archive_requests: AtomicUsize::new(0),
                 gate: Arc::new(DownloadGate::default()),
             });
             let stop = Arc::new(AtomicBool::new(false));
@@ -767,6 +775,10 @@ mod tests {
 
         fn release_download(&self) {
             self.responses.gate.release();
+        }
+
+        fn archive_requests(&self) -> usize {
+            self.responses.archive_requests.load(Ordering::SeqCst)
         }
 
         fn set_release_link(&self, page: usize, link: Option<String>) {
@@ -832,6 +844,7 @@ mod tests {
                 write_response(&mut stream, 200, "text/plain", sums);
             }
         } else if let Some(archive) = responses.archives.get(path) {
+            responses.archive_requests.fetch_add(1, Ordering::SeqCst);
             if responses.gate_download.swap(false, Ordering::SeqCst) {
                 responses.gate.pause();
             }
@@ -951,6 +964,56 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn malformed_release_tags_are_ignored_when_valid_newer_releases_exist() {
+        let malformed = release("nightly", false, false, &[]);
+        let valid = release(
+            "v9.0.0",
+            false,
+            false,
+            &["mini-rtt-viewer-9.0.0-windows-x86_64.zip", "SHA256SUMS"],
+        );
+        assert_eq!(
+            plan_release("0.5.2", &[malformed, valid])
+                .unwrap()
+                .unwrap()
+                .info
+                .version,
+            "9.0.0"
+        );
+
+        let fixture = ReleaseFixture::from_releases(
+            "0.5.2",
+            vec![
+                FixtureRelease::new("nightly"),
+                FixtureRelease::new("9.0.0"),
+                FixtureRelease::new("10.0.0"),
+            ],
+            ChecksumMode::Correct,
+        );
+        let old = TempExecutable::new("old-binary");
+        let manager = UpdateManager::new(fixture.config(old.path()));
+        let available = manager.check_now().unwrap();
+        assert_eq!(available.phase, UpdatePhase::Available);
+        assert_eq!(available.latest_version.as_deref(), Some("10.0.0"));
+        assert_eq!(
+            manager.install().unwrap().phase,
+            UpdatePhase::ReadyToRestart
+        );
+        assert_eq!(old.contents(), b"new-binary");
+    }
+
+    #[test]
+    fn current_version_parse_errors_remain_errors() {
+        let valid = release(
+            "v9.0.0",
+            false,
+            false,
+            &["mini-rtt-viewer-9.0.0-windows-x86_64.zip", "SHA256SUMS"],
+        );
+        assert!(plan_release("not-a-version", &[valid]).is_err());
     }
 
     #[test]
@@ -1083,6 +1146,35 @@ mod tests {
     }
 
     #[test]
+    fn ready_to_restart_is_terminal_and_restart_admission_remains_valid() {
+        let fixture = ReleaseFixture::new("0.5.2", "9.0.0", ChecksumMode::Correct);
+        let old = TempExecutable::new("old-binary");
+        let manager = UpdateManager::new(fixture.config(old.path()));
+        manager.check_now().unwrap();
+        manager.install().unwrap();
+        let ready = manager.status();
+        assert_eq!(ready.phase, UpdatePhase::ReadyToRestart);
+        assert_eq!(fixture.archive_requests(), 1);
+
+        let check_error = manager.check_now().unwrap_err();
+        assert!(check_error.to_string().contains("409"));
+        assert_eq!(manager.status(), ready);
+
+        let install_error = manager.install().unwrap_err();
+        assert!(install_error.to_string().contains("409"));
+        assert_eq!(manager.status(), ready);
+        assert_eq!(fixture.archive_requests(), 1);
+        assert_eq!(old.contents(), b"new-binary");
+
+        let emitted = AtomicBool::new(false);
+        manager
+            .request_restart(|| emitted.store(true, Ordering::Relaxed))
+            .unwrap();
+        assert!(emitted.load(Ordering::Relaxed));
+        assert_eq!(manager.status(), ready);
+    }
+
+    #[test]
     fn restart_admission_rejects_non_ready_state_without_emitting() {
         let old = TempExecutable::new("old-binary");
         let manager = UpdateManager::new(ReleaseConfig {
@@ -1139,9 +1231,10 @@ mod tests {
 
         release_tx.send(()).unwrap();
         restart.join().unwrap().unwrap();
-        check.join().unwrap().unwrap();
+        let error = check.join().unwrap().unwrap_err();
+        assert!(error.to_string().contains("409"));
         checked_rx.recv().unwrap();
-        assert_eq!(manager.status().phase, UpdatePhase::Checking);
+        assert_eq!(manager.status().phase, UpdatePhase::ReadyToRestart);
     }
 
     #[test]

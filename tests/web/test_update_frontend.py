@@ -465,6 +465,50 @@ def test_closed_about_polls_cannot_apply_newer_then_older_status(page):
     expect(page.locator("#version")).to_have_class(re.compile(r"update-available"))
 
 
+def test_ready_status_poll_reenables_restart_after_successful_request(page):
+    ready = update_status(phase="readyToRestart", latestVersion="9.0.0")
+    status_requests = []
+    deferred = []
+    restart_attempts = []
+
+    def status(route):
+        status_requests.append(route.request)
+        if len(status_requests) == 1:
+            fulfill_json(route, ready)
+        else:
+            deferred.append(route)
+
+    def restart(route):
+        restart_attempts.append(route.request)
+        route.fulfill(status=200, content_type="text/plain", body="")
+
+    page.route("**/api/update/status", status)
+    page.route("**/api/update/restart", restart)
+    page.add_init_script("window.__MINI_SHELL = true;")
+    page.goto(BASE)
+    page.wait_for_selector("#version", state="visible")
+    open_about(page)
+    page.click("#update-restart")
+
+    expect(page.locator("#update-restart")).to_be_disabled()
+    expect(page.locator("#update-status")).to_have_text("重启请求已发送")
+    assert len(restart_attempts) == 1
+    for _ in range(40):
+        if deferred:
+            break
+        page.wait_for_timeout(100)
+    assert deferred, "a fresh authoritative ready status is required"
+
+    fulfill_json(deferred[0], ready)
+    expect(page.locator("#update-restart")).to_be_enabled()
+    expect(page.locator("#update-status")).to_have_text("更新已安装，请重启完成更新")
+    assert len(restart_attempts) == 1
+
+    page.click("#update-restart")
+    expect(page.locator("#update-restart")).to_be_disabled()
+    assert len(restart_attempts) == 2
+
+
 def test_restart_conflict_allows_an_explicit_retry(page):
     attempts = []
 

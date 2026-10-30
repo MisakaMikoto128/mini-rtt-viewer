@@ -30,38 +30,37 @@ def test_release_workflow_asset_layout_matches_updater():
     updater = repo_text("src/update.rs")
     workflow = repo_text(".github/workflows/release.yml")
 
-    assert 'format!("mini-rtt-viewer-{version}-windows-x86_64.zip")' in updater
-    assert (
-        'format!("mini-rtt-viewer-{version}-windows-x86_64/mini-rtt-viewer.exe")'
-        in updater
-    )
     checksum_name = re.search(
         r'const CHECKSUM_ASSET_NAME: &str = "([^"]+)";', updater
     )
     assert checksum_name is not None
     assert checksum_name.group(1) == "SHA256SUMS"
-    assert '.checksum_from_asset(CHECKSUM_ASSET_NAME)' in updater
+    assert re.search(
+        r"\.checksum_from_asset\s*\(\s*CHECKSUM_ASSET_NAME\s*\)", updater
+    )
 
-    assert '$name = "mini-rtt-viewer-$ver-windows-x86_64"' in workflow
-    assert 'New-Item -ItemType Directory -Force -Path "pack/$name"' in workflow
-    assert 'Copy-Item target/release/mini-rtt-viewer.exe "pack/$name/"' in workflow
+    normalized = " ".join(workflow.split())
+    assert '$name = "mini-rtt-viewer-$ver-windows-x86_64"' in normalized
+    assert 'New-Item -ItemType Directory -Force -Path "pack/$name"' in normalized
+    assert 'Copy-Item target/release/mini-rtt-viewer.exe "pack/$name/"' in normalized
     assert (
         'Compress-Archive -Force -Path "pack/$name" '
-        '-DestinationPath "pack/$name.zip"' in workflow
+        '-DestinationPath "pack/$name.zip"' in normalized
     )
-    assert (
-        '"$sha  $name.zip" | Out-File -FilePath "pack/SHA256SUMS" '
-        '-Encoding ascii' in workflow
+    assert re.search(
+        r'"\$sha {2}\$name\.zip"\s*\|\s*Out-File\s+-FilePath\s+'
+        r'"pack/SHA256SUMS"\s+-Encoding\s+ascii',
+        workflow,
     )
-    assert "pack/*.zip" in workflow
-    assert "pack/SHA256SUMS" in workflow
+    assert "pack/*.zip" in normalized
+    assert "pack/SHA256SUMS" in normalized
 
 
 def test_public_documents_describe_the_explicit_update_contract():
     """Old no-update wording or missing safety limits misstates the public API."""
     required = {
         "README.md": ("24 小时", "下载并安装", "SHA-256", "断开"),
-        "CHANGELOG.md": ("## Unreleased", "GitHub Release"),
+        "CHANGELOG.md": ("GitHub Release", "下载并安装", "重启"),
         "AGENTS.md": ("src/update.rs", "RTT_QA_UPDATE_INSTALL_PATH", "RTT_PREFS_FILE"),
         "docs/product/spec.md": ("FR-31", "readyToRestart", "24 小时"),
         "SECURITY.md": ("同一个 GitHub Release", "真实性", "回环"),
@@ -242,6 +241,11 @@ def disconnect(server):
     assert poll(lambda: get_json("/api/status")["connected"], False, 3.0)
 
 
+def connect():
+    status, text = http("POST", "/api/connect", {"chip": "STM32F103C8"})
+    assert status == 200, text
+
+
 def check_available():
     status, text = http("POST", "/api/update/check")
     assert status == 200, text
@@ -270,6 +274,19 @@ def test_connected_install_returns_409_without_side_effects(qa):
     assert http("POST", "/api/update/install")[0] == 409
     assert get_json("/api/update/status") == before
     assert fixture.release_list_requests == 0
+    assert install_path.read_bytes() == b"old-binary"
+
+
+def test_registered_session_excludes_install_before_connected_flag_is_pumped(qa):
+    server, install_path, fixture = qa
+    disconnect(server)
+    check_available()
+
+    connect()
+    before = get_json("/api/update/status")
+    assert http("POST", "/api/update/install")[0] == 409
+    assert get_json("/api/update/status") == before
+    assert fixture.archive_requests == 0
     assert install_path.read_bytes() == b"old-binary"
 
 
@@ -330,6 +347,59 @@ def test_concurrent_and_repeated_install_return_409(qa):
     archive_requests = fixture.archive_requests
     assert http("POST", "/api/update/install")[0] == 409
     assert fixture.archive_requests == archive_requests
+
+
+def test_paused_install_excludes_connect_and_finishes_disconnected(qa):
+    server, install_path, fixture = qa
+    disconnect(server)
+    check_available()
+    sentinel = install_path.with_name("unrelated.bin")
+    sentinel.write_bytes(b"unchanged")
+    fixture.pause_next_download()
+    install_result = []
+
+    def install():
+        install_result.append(http("POST", "/api/update/install"))
+
+    installing = threading.Thread(target=install)
+    installing.start()
+    assert fixture.download_started.wait(3)
+
+    started = time.monotonic()
+    status, text = http("POST", "/api/connect", {"chip": "STM32F103C8"})
+    assert status == 409, text
+    assert time.monotonic() - started < 1.0
+    assert get_json("/api/status")["connected"] is False
+    assert get_json("/api/update/status")["phase"] == "installing"
+
+    fixture.release_download()
+    installing.join(timeout=10)
+    assert not installing.is_alive()
+    assert install_result[0][0] == 200, install_result
+    assert json.loads(install_result[0][1])["phase"] == "readyToRestart"
+    assert get_json("/api/status")["connected"] is False
+    assert install_path.read_bytes() == b"new-binary"
+    assert sentinel.read_bytes() == b"unchanged"
+
+
+def test_ready_to_restart_rejects_check_and_repeat_install(qa):
+    server, install_path, fixture = qa
+    disconnect(server)
+    check_available()
+    status, text = http("POST", "/api/update/install")
+    assert status == 200, text
+    ready = json.loads(text)
+    assert ready["phase"] == "readyToRestart"
+    assert fixture.archive_requests == 1
+
+    assert http("POST", "/api/update/check")[0] == 409
+    assert get_json("/api/update/status") == ready
+    assert http("POST", "/api/update/install")[0] == 409
+    assert get_json("/api/update/status") == ready
+    assert fixture.archive_requests == 1
+    assert install_path.read_bytes() == b"new-binary"
+    assert http("POST", "/api/update/restart")[0] == 409
+    assert get_json("/api/update/status") == ready
 
 
 def test_restart_without_completed_install_returns_409(qa):

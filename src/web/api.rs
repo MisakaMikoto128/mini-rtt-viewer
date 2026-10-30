@@ -206,7 +206,7 @@ pub(crate) async fn api_update_check(State(shared): State<Arc<Shared>>) -> Respo
 }
 
 fn ensure_install_allowed(shared: &Shared) -> anyhow::Result<()> {
-    if shared.connected.load(Ordering::Relaxed) {
+    if shared.connected.load(Ordering::Relaxed) || shared.session.lock().unwrap().is_some() {
         anyhow::bail!("更新安装冲突 (409)：请先断开目标设备");
     }
     if shared.update.status().phase != UpdatePhase::Available {
@@ -222,6 +222,13 @@ pub(crate) async fn api_update_install(
     if !peer.ip().is_loopback() {
         return (StatusCode::FORBIDDEN, "仅允许本机安装更新").into_response();
     }
+    let admission = Arc::clone(&shared.connect_install);
+    let _admission = match admission.try_lock_owned() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (StatusCode::CONFLICT, "正在连接目标设备,请稍候").into_response();
+        }
+    };
     if let Err(error) = ensure_install_allowed(&shared) {
         return update_result_response(Err(error));
     }
@@ -445,6 +452,13 @@ pub(crate) async fn api_connect(
     State(shared): State<Arc<Shared>>,
     Json(req): Json<ConnectReq>,
 ) -> Response {
+    let admission = Arc::clone(&shared.connect_install);
+    let _admission = match admission.try_lock_owned() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (StatusCode::CONFLICT, "正在安装更新,请稍候").into_response();
+        }
+    };
     let backend = shared.backend();
     // reset reconnect 的 1 秒等待窗口内 session 已被 take 清空,存活检查
     // 会放行——重连门闩在此堵住双 worker 并发。

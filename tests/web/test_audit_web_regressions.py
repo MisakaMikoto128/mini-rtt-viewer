@@ -140,42 +140,41 @@ def exported_hex_byte_count(exported):
     )
 
 
-def wait_for_coherent_hex(rx_origin, expected_power_messages):
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        rx_count = get_json("/api/status")["rxBytes"] - rx_origin
-        exported = http("GET", "/api/export")[1]
-        displayed_count = exported_hex_byte_count(exported)
-        power_messages = exported.count("J-Link 19")
-        if power_messages == expected_power_messages and rx_count == displayed_count:
-            return rx_count, displayed_count
-        time.sleep(0.02)
-    raise AssertionError(
-        "HEX RX/export did not drain coherently: "
-        f"RX={rx_count}, displayed={displayed_count}, "
-        f"powerMessages={power_messages}"
-    )
+def hex_snapshot(rx_origin):
+    status = get_json("/api/status")
+    exported = http("GET", "/api/export")[1]
+    return status["rxBytes"], exported_hex_byte_count(exported), rx_origin
+
+
+def hex_coherent(rx_origin):
+    rx_bytes, displayed_count, origin = hex_snapshot(rx_origin)
+    return rx_bytes - origin == displayed_count
 
 
 def test_hex_rx_counts_raw_bytes_not_display_characters(server):
     assert http("POST", "/api/settings", {"hexRx": True})[0] == 200
     time.sleep(0.5)  # 等待切换前已入队的文本块排空
-    assert http("POST", "/api/power", {"on": False})[0] == 200
-    assert poll(
-        lambda: "J-Link 19" in http("GET", "/api/export")[1], True, 3.0
-    )
+    server.stop_stream()
     assert http("POST", "/api/clear")[0] == 200
     rx_origin = get_json("/api/status")["rxBytes"]
-    rx_before, raw_before = wait_for_coherent_hex(rx_origin, 0)
+    assert poll(lambda: hex_coherent(rx_origin), True, 3.0)
+    rx_before, raw_before, _ = hex_snapshot(rx_origin)
+    assert rx_before - rx_origin == raw_before
+    assert not poll(
+        lambda: get_json("/api/status")["rxBytes"] > rx_before,
+        True,
+        0.5,
+    ), "stream control must stop new QA Blocks while preserving the session"
 
-    assert http("POST", "/api/power", {"on": True})[0] == 200
+    server.resume_stream()
     assert poll(
-        lambda: get_json("/api/status")["rxBytes"] > rx_origin + rx_before,
+        lambda: get_json("/api/status")["rxBytes"] > rx_before,
         True,
         3.0,
     )
-    assert http("POST", "/api/power", {"on": False})[0] == 200
-    rx_after, raw_after = wait_for_coherent_hex(rx_origin, 2)
+    server.stop_stream()
+    assert poll(lambda: hex_coherent(rx_origin), True, 3.0)
+    rx_after, raw_after, _ = hex_snapshot(rx_origin)
 
     displayed_raw_delta = raw_after - raw_before
     assert displayed_raw_delta > 0

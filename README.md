@@ -57,7 +57,7 @@
 日志默认保存到 `%APPDATA%/MiniRttViewer/logs`,业务偏好保存到
 `%APPDATA%/MiniRttViewer/prefs.json`。主题、字号、时间戳和音效开关保存在当前
 WebView2/浏览器 profile 的 localStorage 中。程序无遥测,不收集日志内容;
-仅在检查更新时访问固定官方 GitHub 仓库。
+更新检查和用户确认的「下载并安装」都会访问固定官方 GitHub 仓库,除此之外不访问该仓库。
 
 ## 应用更新
 

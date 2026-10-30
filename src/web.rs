@@ -48,6 +48,10 @@
 //! - POST /api/logs/open   → {opened:true};创建并打开应用 logs 目录
 //! - POST /api/open-browser 在系统默认浏览器打开管理台(底栏按钮与壳内外链用;
 //!   管理台 URL 由服务端监听端口拼出;外链仅放行公开仓库前缀)
+//! - GET  /api/update/status → 服务端更新状态;POST /api/update/check 只检查元数据,
+//!   readyToRestart 为终态,检查与重复安装均 409
+//! - POST /api/update/install 仅回环;与 connect 全程互斥,连接标志或已注册会话存在均 409
+//! - POST /api/update/restart 仅回环桌面壳;安装成功后仍需显式请求
 //! - WS   /ws              {type:"rows"/"snapshot"/"cleared"} 与
 //!   {type:"state"/"device"/"power"/"progress"/"names"/"jlinks"/"stats"}
 //!
@@ -104,7 +108,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex as TokioMutex};
 
 mod api;
 mod pump;
@@ -361,6 +365,7 @@ async fn serve(
         status_text: Mutex::new("未连接".into()),
         on_state: on_event.clone(),
         desktop_mode,
+        connect_install: Arc::new(TokioMutex::new(())),
         update,
         update_last_check_unix: AtomicU64::new(saved.update_last_check_unix),
         port: opts.port,

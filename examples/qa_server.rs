@@ -19,7 +19,7 @@ enum QaCmd {
 }
 
 struct QaBackend {
-    command: Mutex<Option<mpsc::Sender<QaCmd>>>,
+    command: Mutex<Option<(mpsc::Sender<QaCmd>, SessionHandle)>>,
 }
 
 static QA_BACKEND: QaBackend = QaBackend {
@@ -29,7 +29,8 @@ static QA_BACKEND: QaBackend = QaBackend {
 impl QaBackend {
     fn ensure_singleton(&self, host: &dyn Host) {
         let mut slot = self.command.lock().unwrap();
-        if slot.is_some() {
+        if let Some((_, handle)) = slot.as_ref() {
+            host.set_session(Some(handle.clone()));
             return;
         }
         let (cmd_tx, cmd_rx) = mpsc::channel();
@@ -38,14 +39,15 @@ impl QaBackend {
             stop: AtomicBool::new(false),
             alive: AtomicBool::new(true),
         });
-        host.set_session(Some(SessionHandle { handle, cmd_tx }));
-        *slot = Some(qa_tx);
+        let session = SessionHandle { handle, cmd_tx };
+        host.set_session(Some(session.clone()));
+        *slot = Some((qa_tx, session));
         drop(slot);
         spawn_stream(host, cmd_rx, qa_rx);
     }
 
     fn send_command(&self, command: QaCmd) {
-        if let Some(tx) = self.command.lock().unwrap().as_ref() {
+        if let Some((tx, _)) = self.command.lock().unwrap().as_ref() {
             let _ = tx.send(command);
         }
     }
@@ -106,8 +108,9 @@ impl RttBackend for QaBackend {
         Ok(())
     }
 
-    fn disconnect(&self, _host: &dyn Host) {
+    fn disconnect(&self, host: &dyn Host) {
         self.send_command(QaCmd::Disconnect);
+        host.set_session(None);
     }
 
     fn reset_in_place(&self, host: &dyn Host) -> Result<(), String> {
@@ -153,9 +156,10 @@ fn emit_connected(msg_tx: &mpsc::Sender<WorkerMsg>) {
 fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc::Receiver<QaCmd>) {
     let msg_tx = host.msg_tx();
     let shared = host.worker_shared();
+    let stream_control =
+        std::env::var_os("RTT_QA_STREAM_CONTROL_FILE").map(std::path::PathBuf::from);
     std::thread::spawn(move || {
         let mut connected = false;
-        let mut powered = true;
         let mut reset_at = None;
         let mut sequence = 0_u64;
         let mut last_rx = Instant::now();
@@ -170,11 +174,6 @@ fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc:
                         let _ = msg_tx.send(WorkerMsg::Tx(data.len()));
                     }
                     WorkerCmd::Power(on) => {
-                        powered = on;
-                        if frame_open {
-                            let _ = msg_tx.send(WorkerMsg::FrameEnd);
-                            frame_open = false;
-                        }
                         let _ = msg_tx.send(WorkerMsg::PowerResult {
                             on,
                             ok: true,
@@ -217,7 +216,8 @@ fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc:
             let now = Instant::now();
             let frame_timeout =
                 Duration::from_millis(shared.frame_timeout_ms.load(Ordering::Relaxed) as u64);
-            if connected && powered {
+            let stream_stopped = stream_control.as_ref().is_some_and(|path| path.exists());
+            if connected && !stream_stopped {
                 if frame_open && now.duration_since(last_rx) > frame_timeout {
                     let _ = msg_tx.send(WorkerMsg::FrameEnd);
                 }

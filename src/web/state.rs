@@ -39,6 +39,8 @@ pub(crate) struct Shared {
     pub(crate) on_state: Option<OnEvent>,
     /// 桌面壳才允许请求重启;纯服务模式只报告 readyToRestart。
     pub(crate) desktop_mode: bool,
+    /// Connect and install are mutually exclusive for their complete operations.
+    pub(crate) connect_install: Arc<TokioMutex<()>>,
     /// 服务端持有的唯一更新状态机。
     pub(crate) update: UpdateManager,
     /// 自动检查时间戳的共享真源,由偏好快照落盘。

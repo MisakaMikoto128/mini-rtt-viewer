@@ -37,6 +37,7 @@ class QAServer:
     def __init__(self, tmpdir: Path, extra_env: dict | None = None):
         self.tmpdir = tmpdir
         self.prefs_file = tmpdir / "prefs.json"
+        self.stream_control_file = tmpdir / "qa-stream.stop"
         self.extra_env = extra_env or {}
         self.proc: subprocess.Popen | None = None
 
@@ -60,6 +61,7 @@ class QAServer:
             "RTT_PREFS_FILE": str(self.prefs_file),
             "RTT_LOG_DIR": str(self.tmpdir / "logs"),
             "RTT_WEB_NO_BROWSER": "1",
+            "RTT_QA_STREAM_CONTROL_FILE": str(self.stream_control_file),
             **self.extra_env,
         }
         # 测试夹具默认带入一个合法芯片名，确保单独运行重连用例也可重复。
@@ -119,6 +121,13 @@ class QAServer:
     def restart(self) -> None:
         self.stop()
         self.start()
+
+    def stop_stream(self) -> None:
+        """Stop new QA Blocks without changing connection or power semantics."""
+        self.stream_control_file.write_text("stopped\n", encoding="utf-8")
+
+    def resume_stream(self) -> None:
+        self.stream_control_file.unlink(missing_ok=True)
 
     def prefs_on_disk(self) -> dict:
         """直接读 RTT_PREFS_FILE 磁盘文件(落盘验收用)。

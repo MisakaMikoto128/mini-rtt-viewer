@@ -157,7 +157,9 @@ function initShellAndAbout() {
       if (requestSeq !== updateRequestSeq) return;
       updateStale = false;
       if (!preserveError || status.phase === 'error') updateError = '';
-      if (status.phase !== 'readyToRestart') restartRequested = false;
+      // A fresh authoritative status means the native restart attempt has settled;
+      // keep only the in-flight click latched, never disable later explicit retries.
+      restartRequested = false;
       renderUpdate(status);
     });
   }

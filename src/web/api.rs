@@ -248,14 +248,19 @@ pub(crate) async fn api_update_restart(
     if !peer.ip().is_loopback() {
         return (StatusCode::FORBIDDEN, "仅允许本机重启").into_response();
     }
-    if !shared.desktop_mode || shared.update.status().phase != UpdatePhase::ReadyToRestart {
-        return (StatusCode::CONFLICT, "当前状态不允许重启").into_response();
+    if !shared.desktop_mode {
+        return (StatusCode::CONFLICT, "纯服务模式请手动重启").into_response();
     }
     let Some(on_event) = &shared.on_state else {
         return (StatusCode::CONFLICT, "纯服务模式请手动重启").into_response();
     };
-    on_event(ServiceEvent::Restart);
-    StatusCode::OK.into_response()
+    match shared
+        .update
+        .request_restart(|| on_event(ServiceEvent::Restart))
+    {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+    }
 }
 
 pub(crate) fn embedded_asset(content: &'static str, mime: &'static str) -> Response {

@@ -145,6 +145,18 @@ impl UpdateManager {
         self.lock_state().status.clone()
     }
 
+    /// 在同一状态临界区内确认安装完成并发出非阻塞桌面重启事件。
+    /// 调用方不得在回调中再次访问更新状态或执行阻塞操作。
+    pub fn request_restart(&self, emit: impl FnOnce()) -> Result<()> {
+        let state = self.lock_state();
+        if state.status.phase != UpdatePhase::ReadyToRestart {
+            bail!("更新重启冲突 (409)：当前状态不是等待重启");
+        }
+        emit();
+        drop(state);
+        Ok(())
+    }
+
     pub fn check_now(&self) -> Result<UpdateStatus> {
         self.begin(UpdatePhase::Checking)?;
         let result = (|| {
@@ -1068,6 +1080,68 @@ mod tests {
         );
         assert_eq!(manager.status().phase, UpdatePhase::ReadyToRestart);
         assert_eq!(old.contents(), b"new-binary");
+    }
+
+    #[test]
+    fn restart_admission_rejects_non_ready_state_without_emitting() {
+        let old = TempExecutable::new("old-binary");
+        let manager = UpdateManager::new(ReleaseConfig {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            api_base_url: "http://127.0.0.1:1".into(),
+            current_version: "0.5.2".into(),
+            install_path: old.path().to_owned(),
+        });
+        let emitted = AtomicBool::new(false);
+        let error = manager
+            .request_restart(|| emitted.store(true, Ordering::Relaxed))
+            .unwrap_err();
+        assert!(error.to_string().contains("409"));
+        assert!(!emitted.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn restart_admission_holds_state_lock_until_event_is_emitted() {
+        let old = TempExecutable::new("old-binary");
+        let manager = Arc::new(UpdateManager::new(ReleaseConfig {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            api_base_url: "http://127.0.0.1:1".into(),
+            current_version: "0.5.2".into(),
+            install_path: old.path().to_owned(),
+        }));
+        manager.lock_state().status.phase = UpdatePhase::ReadyToRestart;
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let restarting = Arc::clone(&manager);
+        let restart = thread::spawn(move || {
+            restarting.request_restart(|| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx.recv().unwrap();
+
+        let (checking_tx, checking_rx) = std::sync::mpsc::channel();
+        let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+        let checking = Arc::clone(&manager);
+        let check = thread::spawn(move || {
+            checking_tx.send(()).unwrap();
+            let result = checking.begin(UpdatePhase::Checking);
+            checked_tx.send(()).unwrap();
+            result
+        });
+        checking_rx.recv().unwrap();
+        assert!(
+            checked_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "state changed before the restart event finished"
+        );
+
+        release_tx.send(()).unwrap();
+        restart.join().unwrap().unwrap();
+        check.join().unwrap().unwrap();
+        checked_rx.recv().unwrap();
+        assert_eq!(manager.status().phase, UpdatePhase::Checking);
     }
 
     #[test]

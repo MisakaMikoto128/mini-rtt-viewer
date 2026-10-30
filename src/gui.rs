@@ -49,6 +49,8 @@ pub enum UserEvent {
     ConnectedChanged(bool),
     ShowWindow,
     OpenBrowser,
+    /// 已安装更新且用户确认重启:启动替换进程,成功后走统一退出汇点。
+    Restart,
     /// 托盘菜单「退出」:走 `exit_process` 退出序列(见模块头)。
     Quit,
 }
@@ -63,6 +65,8 @@ const ID_QUIT: &str = "quit";
 const READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
+    let restart_port = opts.port;
+    let restart_listen = opts.listen;
     // 事件循环必须建在主线程(Win32);build 需要 &mut
     let mut loop_builder = tao::event_loop::EventLoopBuilder::<UserEvent>::with_user_event();
     let event_loop = loop_builder.build();
@@ -76,7 +80,9 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
             let _ = proxy_for_state.send_event(UserEvent::ConnectedChanged(connected));
         }
         web::ServiceEvent::Ready(_) => {} // ready 握手走独立通道,不经这里
-        web::ServiceEvent::Restart => {}  // 实际进程重启由后续桌面壳任务实现
+        web::ServiceEvent::Restart => {
+            let _ = proxy_for_state.send_event(UserEvent::Restart);
+        }
     });
     let ready_rx = web::spawn_gui_service(opts, on_event)?;
 
@@ -131,6 +137,7 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
     };
 
     // —— 事件循环(主线程;绝不 await/block_on,见模块头)——
+    let mut restart_gate = RestartGate::default();
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
@@ -151,6 +158,20 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
                 }
                 UserEvent::OpenBrowser => {
                     web::open_in_browser(&format!("http://{addr}/"));
+                }
+                UserEvent::Restart => {
+                    if restart_gate.claim() {
+                        match spawn_replacement(restart_port, restart_listen, no_tray) {
+                            Ok(_) => exit_process(tray.as_ref(), webview.take()),
+                            Err(error) => {
+                                // 新进程未启动时保留旧应用,并允许用户重试。
+                                restart_gate.reset();
+                                let message = format!("启动更新后的程序失败: {error}");
+                                eprintln!("[mini-rtt-viewer] {message}");
+                                fatal_msgbox(&message);
+                            }
+                        }
+                    }
                 }
                 UserEvent::Quit => {
                     // 关窗/托盘退出共用同一退出序列(见模块头与 exit_process 文档)
@@ -176,6 +197,57 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
             _ => {}
         }
     });
+}
+
+/// GUI 主线程的一次性重启准入;spawn 失败时 reset,避免永久锁死重试。
+#[derive(Default)]
+struct RestartGate {
+    claimed: bool,
+}
+
+impl RestartGate {
+    fn claim(&mut self) -> bool {
+        if self.claimed {
+            return false;
+        }
+        self.claimed = true;
+        true
+    }
+
+    fn reset(&mut self) {
+        self.claimed = false;
+    }
+}
+
+fn restart_arguments(
+    port: u16,
+    listen: std::net::IpAddr,
+    no_tray: bool,
+    wait_pid: u32,
+) -> Vec<String> {
+    let mut args = vec![
+        "--port".into(),
+        port.to_string(),
+        "--listen".into(),
+        listen.to_string(),
+    ];
+    if no_tray {
+        args.push("--no-tray".into());
+    }
+    args.push("--update-wait-pid".into());
+    args.push(wait_pid.to_string());
+    args
+}
+
+fn spawn_replacement(
+    port: u16,
+    listen: std::net::IpAddr,
+    no_tray: bool,
+) -> std::io::Result<std::process::Child> {
+    let current_exe = std::env::current_exe()?;
+    std::process::Command::new(current_exe)
+        .args(restart_arguments(port, listen, no_tray, std::process::id()))
+        .spawn()
 }
 
 /// 退出汇点(关窗 CloseRequested / 托盘退出共用)——序列与理由(模块头有摘要):
@@ -453,5 +525,42 @@ mod tests {
             position: PhysicalPosition::new(0.0, 0.0),
             rect: Rect::default(),
         }));
+    }
+
+    #[test]
+    fn restart_arguments_contain_only_the_fixed_handshake() {
+        let loopback = std::net::IpAddr::from([127, 0, 0, 1]);
+        assert_eq!(
+            restart_arguments(8686, loopback, false, 1234),
+            [
+                "--port",
+                "8686",
+                "--listen",
+                "127.0.0.1",
+                "--update-wait-pid",
+                "1234",
+            ]
+        );
+        assert_eq!(
+            restart_arguments(8686, loopback, true, 1234),
+            [
+                "--port",
+                "8686",
+                "--listen",
+                "127.0.0.1",
+                "--no-tray",
+                "--update-wait-pid",
+                "1234",
+            ]
+        );
+    }
+
+    #[test]
+    fn restart_gate_deduplicates_and_allows_retry_after_spawn_failure() {
+        let mut gate = RestartGate::default();
+        assert!(gate.claim());
+        assert!(!gate.claim());
+        gate.reset();
+        assert!(gate.claim());
     }
 }

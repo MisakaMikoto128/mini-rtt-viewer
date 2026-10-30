@@ -95,6 +95,7 @@ fn main() {
         // 窗口模式由 WebView 承载界面、托盘菜单按需开浏览器;纯服务面向自动化,
         // 都不自动弹浏览器(RTT_WEB_NO_BROWSER 环境变量语义保留给 open_browser=true 的调用方)
         open_browser: false,
+        update_manager: None,
     };
 
     if no_window {

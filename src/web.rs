@@ -82,11 +82,12 @@ use crate::backend::{
 use crate::config::{self, StoredPrefs};
 use crate::log_model::{LogPump, DEFAULT_FRAME_TIMEOUT_MS, FLUSH_MS, MAX_LOG_ROWS};
 use crate::rtt::SPEEDS_KHZ;
+use crate::update::{self, UpdateManager, UpdatePhase, UpdateStatus};
 use axum::{
     body::Bytes,
     extract::{
         ws::{Message, WebSocket},
-        Path, State, WebSocketUpgrade,
+        ConnectInfo, Path, State, WebSocketUpgrade,
     },
     http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
@@ -165,6 +166,9 @@ pub struct WebOptions {
     /// 窗口模式由 WebView 承载界面、托盘菜单按需开浏览器;纯服务面向自动化;
     /// 环境变量 RTT_WEB_NO_BROWSER=1 可强制跳过,无头/测试场景)
     pub open_browser: bool,
+    /// 仅供独立 QA 进程注入本地 Release fixture;正式入口恒为 None。
+    #[doc(hidden)]
+    pub update_manager: Option<UpdateManager>,
 }
 
 /// 服务 → GUI 的事件(经 `OnEvent` 回调打回主线程,SerialHub service.rs 同构)。
@@ -174,6 +178,8 @@ pub enum ServiceEvent {
     Ready(SocketAddr),
     /// 连接状态变化(驱动托盘图标刷新)。
     ConnectedChanged(bool),
+    /// 已安装更新且用户在桌面壳确认重启。
+    Restart,
 }
 
 /// 事件回调:在服务线程/数据泵线程触发,**必须非阻塞**
@@ -298,6 +304,15 @@ async fn serve(
     };
     // 选定:CLI --backend → 偏好 backend(serve 内归一化)→ 列表首个
     let backend = resolve_backend(opts.backend.as_deref(), &saved.backend, &backends_available);
+    let automatic_update_check = should_run_automatic_update_check(
+        backend_override.is_some(),
+        opts.update_manager.is_some(),
+    );
+    let update = match opts.update_manager {
+        Some(manager) => manager,
+        None => UpdateManager::official()?,
+    };
+    let desktop_mode = on_event.is_some();
     // saved 的字段随后被逐个 move/partial move,先取出共享原子的初值
     let jlink_serial_init = saved.jlink_serial;
     let shared = Arc::new(Shared {
@@ -345,6 +360,9 @@ async fn serve(
         session_start: Mutex::new(None),
         status_text: Mutex::new("未连接".into()),
         on_state: on_event.clone(),
+        desktop_mode,
+        update,
+        update_last_check_unix: AtomicU64::new(saved.update_last_check_unix),
         port: opts.port,
         listen: opts.listen,
     });
@@ -431,9 +449,13 @@ async fn serve(
         .route("/api/logs/save", post(api_logs_save))
         .route("/api/logs/open", post(api_logs_open))
         .route("/api/open-browser", post(api_open_browser))
+        .route("/api/update/status", get(api_update_status))
+        .route("/api/update/check", post(api_update_check))
+        .route("/api/update/install", post(api_update_install))
+        .route("/api/update/restart", post(api_update_restart))
         .route("/api/addr", get(api_addr))
         .route("/ws", get(ws_handler))
-        .with_state(shared);
+        .with_state(shared.clone());
 
     let bind_addr = SocketAddr::new(opts.listen, opts.port);
     // 展示/WebView 加载地址:绑 0.0.0.0 时回环同样可达(全接口含 127.0.0.1),
@@ -466,13 +488,48 @@ async fn serve(
     if opts.open_browser && std::env::var("RTT_WEB_NO_BROWSER").as_deref() != Ok("1") {
         open_in_browser(&format!("http://{addr}"));
     }
-    axum::serve(listener, app).await?;
+    if automatic_update_check {
+        spawn_automatic_update_check(shared);
+    }
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
+}
+
+fn should_run_automatic_update_check(qa_backend: bool, qa_update_fixture: bool) -> bool {
+    // 独立 QA 进程只有显式注入本地更新 fixture 才可发起自动检查;
+    // 正式 backend_override=None 的启动行为不变。
+    !qa_backend || qa_update_fixture
+}
+
+fn spawn_automatic_update_check(shared: Arc<Shared>) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if !update::automatic_check_due(shared.update_last_check_unix.load(Ordering::Relaxed), now) {
+        return;
+    }
+    // 发起网络前记录本次尝试,服务不可用时也不会因反复启动形成请求风暴。
+    shared.update_last_check_unix.store(now, Ordering::Relaxed);
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || shared.update.check_now()).await;
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_qa_never_runs_an_official_automatic_update_check() {
+        assert!(!should_run_automatic_update_check(true, false));
+        assert!(should_run_automatic_update_check(true, true));
+        assert!(should_run_automatic_update_check(false, false));
+    }
 
     #[test]
     fn hex_parse_tolerates_separators_and_prefix() {

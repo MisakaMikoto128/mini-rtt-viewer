@@ -4,6 +4,7 @@ use mini_rtt_viewer::backend::{
     text_to_hex_upper, BackendCaps, ConnectParams, DeviceInfo, Host, RttBackend, SessionHandle,
     WorkerCmd, WorkerHandle, WorkerMsg, APP_SHUTDOWN,
 };
+use mini_rtt_viewer::update::{ReleaseConfig, UpdateManager};
 use mini_rtt_viewer::web::{self, WebOptions};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -246,9 +247,26 @@ fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc:
     });
 }
 
+fn qa_update_manager() -> Option<UpdateManager> {
+    let api_base = std::env::var("RTT_QA_UPDATE_API_BASE").ok();
+    let install_path = std::env::var("RTT_QA_UPDATE_INSTALL_PATH").ok();
+    match (api_base, install_path) {
+        (None, None) => None,
+        (Some(api_base_url), Some(install_path)) => Some(UpdateManager::new(ReleaseConfig {
+            owner: "MisakaMikoto128".into(),
+            repo: "mini-rtt-viewer".into(),
+            api_base_url,
+            current_version: env!("CARGO_PKG_VERSION").into(),
+            install_path: install_path.into(),
+        })),
+        _ => panic!("QA update fixture requires both API base and install path"),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut port = 18099;
+    let mut listen = std::net::IpAddr::from([127, 0, 0, 1]);
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -260,6 +278,13 @@ fn main() {
                 index += 1;
             }
             "--no-window" => {}
+            "--listen" => {
+                listen = args
+                    .get(index + 1)
+                    .and_then(|value| value.parse().ok())
+                    .expect("--listen requires a valid IP address");
+                index += 1;
+            }
             other => panic!("unsupported QA argument: {other}"),
         }
         index += 1;
@@ -267,8 +292,9 @@ fn main() {
     let options = WebOptions {
         backend: Some("qa".into()),
         port,
-        listen: std::net::IpAddr::from([127, 0, 0, 1]),
+        listen,
         open_browser: false,
+        update_manager: qa_update_manager(),
     };
     if let Err(error) = web::run_with_backend(options, &QA_BACKEND) {
         eprintln!("QA server failed: {error}");

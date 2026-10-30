@@ -76,6 +76,7 @@ pub fn run_gui(opts: WebOptions, no_tray: bool) -> Result<(), String> {
             let _ = proxy_for_state.send_event(UserEvent::ConnectedChanged(connected));
         }
         web::ServiceEvent::Ready(_) => {} // ready 握手走独立通道,不经这里
+        web::ServiceEvent::Restart => {}  // 实际进程重启由后续桌面壳任务实现
     });
     let ready_rx = web::spawn_gui_service(opts, on_event)?;
 

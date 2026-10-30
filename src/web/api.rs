@@ -180,6 +180,84 @@ pub(crate) async fn api_open_browser(
     StatusCode::OK
 }
 
+pub(crate) async fn api_update_status(State(shared): State<Arc<Shared>>) -> Json<UpdateStatus> {
+    Json(shared.update.status())
+}
+
+fn update_result_response(result: anyhow::Result<UpdateStatus>) -> Response {
+    match result {
+        Ok(status) => Json(status).into_response(),
+        Err(error) if error.to_string().contains("(409)") => {
+            (StatusCode::CONFLICT, error.to_string()).into_response()
+        }
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+pub(crate) async fn api_update_check(State(shared): State<Arc<Shared>>) -> Response {
+    match tokio::task::spawn_blocking(move || shared.update.check_now()).await {
+        Ok(result) => update_result_response(result),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("更新检查任务失败:{error}"),
+        )
+            .into_response(),
+    }
+}
+
+fn ensure_install_allowed(shared: &Shared) -> anyhow::Result<()> {
+    if shared.connected.load(Ordering::Relaxed) {
+        anyhow::bail!("更新安装冲突 (409)：请先断开目标设备");
+    }
+    if shared.update.status().phase != UpdatePhase::Available {
+        anyhow::bail!("更新安装冲突 (409)：请先完成检查且不要重复安装");
+    }
+    Ok(())
+}
+
+pub(crate) async fn api_update_install(
+    State(shared): State<Arc<Shared>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> Response {
+    if !peer.ip().is_loopback() {
+        return (StatusCode::FORBIDDEN, "仅允许本机安装更新").into_response();
+    }
+    if let Err(error) = ensure_install_allowed(&shared) {
+        return update_result_response(Err(error));
+    }
+    match tokio::task::spawn_blocking(move || {
+        // Await scheduling must not leave a connection/state check stale.
+        ensure_install_allowed(&shared)?;
+        shared.update.install()
+    })
+    .await
+    {
+        Ok(result) => update_result_response(result),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("更新安装任务失败:{error}"),
+        )
+            .into_response(),
+    }
+}
+
+pub(crate) async fn api_update_restart(
+    State(shared): State<Arc<Shared>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> Response {
+    if !peer.ip().is_loopback() {
+        return (StatusCode::FORBIDDEN, "仅允许本机重启").into_response();
+    }
+    if !shared.desktop_mode || shared.update.status().phase != UpdatePhase::ReadyToRestart {
+        return (StatusCode::CONFLICT, "当前状态不允许重启").into_response();
+    }
+    let Some(on_event) = &shared.on_state else {
+        return (StatusCode::CONFLICT, "纯服务模式请手动重启").into_response();
+    };
+    on_event(ServiceEvent::Restart);
+    StatusCode::OK.into_response()
+}
+
 pub(crate) fn embedded_asset(content: &'static str, mime: &'static str) -> Response {
     ([(header::CONTENT_TYPE, mime)], content).into_response()
 }

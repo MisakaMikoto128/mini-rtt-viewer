@@ -40,7 +40,7 @@ class QAServer:
         self.extra_env = extra_env or {}
         self.proc: subprocess.Popen | None = None
 
-    def start(self, production: bool = False) -> None:
+    def start(self, production: bool = False, listen: str | None = None) -> None:
         # 前置:端口必须空闲,否则会连到僵尸进程,污染黑盒断言
         s = socket.socket()
         s.settimeout(0.5)
@@ -64,10 +64,19 @@ class QAServer:
         # 测试夹具默认带入一个合法芯片名，确保单独运行重连用例也可重复。
         if not self.prefs_file.exists():
             self.prefs_file.write_text(
-                json.dumps({"chip_name": "STM32F103C8"}), encoding="utf-8"
+                json.dumps(
+                    {
+                        "chip_name": "STM32F103C8",
+                        # Ordinary black-box tests must never trigger a real GitHub check.
+                        "update_last_check_unix": int(time.time()),
+                    }
+                ),
+                encoding="utf-8",
             )
         executable = EXE if production else QA_EXE
         args = [str(executable), "--no-window", "--port", str(PORT)]
+        if listen is not None:
+            args.extend(["--listen", listen])
         self.proc = subprocess.Popen(
             args, cwd=str(ROOT), env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

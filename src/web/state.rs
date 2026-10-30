@@ -37,6 +37,12 @@ pub(crate) struct Shared {
     pub(crate) backends_available: Vec<&'static dyn RttBackend>,
     /// 连接状态变化回调(gui 壳注入,驱动托盘图标;纯服务模式 None)
     pub(crate) on_state: Option<OnEvent>,
+    /// 桌面壳才允许请求重启;纯服务模式只报告 readyToRestart。
+    pub(crate) desktop_mode: bool,
+    /// 服务端持有的唯一更新状态机。
+    pub(crate) update: UpdateManager,
+    /// 自动检查时间戳的共享真源,由偏好快照落盘。
+    pub(crate) update_last_check_unix: AtomicU64,
     // ---- 偏好快照源(tick 内 500ms 比对落盘;未连接态也保存)----
     /// 启动时读到的完整偏好底版:桌面专用字段原样保留写回,不丢失旧值
     pub(crate) prefs_base: StoredPrefs,
@@ -217,6 +223,7 @@ pub(crate) fn snapshot_prefs(s: &Shared) -> StoredPrefs {
     p.send_ending = *s.send_ending.lock().unwrap();
     p.hex_send = s.hex_send.load(Ordering::Relaxed);
     p.keep_awake = s.keep_awake.load(Ordering::Relaxed);
+    p.update_last_check_unix = s.update_last_check_unix.load(Ordering::Relaxed);
     // 后端 id(阶段二):随快照落盘,重启恢复上次选定(serve 内已归一化)
     p.backend = s.backend().id().to_string();
     p

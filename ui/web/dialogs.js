@@ -88,8 +88,104 @@ function initShellAndAbout() {
     .catch(() => showToast('打开浏览器失败'));
 
   const about = $('about');
+  let updateState = null;
+  let updateBusy = false;
+  let updateOperation = '';
+  let updateError = '';
+  let restartRequested = false;
+
+  function renderUpdate(status) {
+    updateState = status;
+    const phase = status.phase;
+    const latest = status.latestVersion;
+    const desktop = !!window.__MINI_SHELL;
+    const canInstall = phase === 'available' || (phase === 'error' && !!latest);
+    const ready = phase === 'readyToRestart';
+
+    $('about-ver').textContent = 'v' + status.currentVersion;
+    $('version').textContent = 'v' + status.currentVersion;
+    $('version').classList.toggle('update-available', phase === 'available');
+    $('version').title = phase === 'available'
+      ? '发现新版本 ' + latest
+      : '关于 Mini RTT Viewer';
+
+    $('update-check').disabled = updateBusy || ready
+      || phase === 'checking' || phase === 'installing';
+    $('update-install').hidden = !(canInstall || phase === 'installing');
+    $('update-install').disabled = updateBusy || !canInstall;
+    $('update-restart').hidden = !ready || !desktop;
+    $('update-restart').disabled = updateBusy || !ready || restartRequested;
+    $('update-notes').hidden = !status.notesUrl;
+    $('update-notes').disabled = updateBusy || !status.notesUrl;
+    $('update-notes').dataset.url = status.notesUrl || '';
+
+    let message;
+    if (updateBusy) {
+      message = updateOperation === 'check' ? '正在检查…'
+        : updateOperation === 'install' ? '正在下载并安装…'
+        : '正在请求重启…';
+    } else if (restartRequested) {
+      message = '重启请求已发送';
+    } else if (updateError) {
+      message = updateError;
+    } else if (phase === 'checking') {
+      message = '正在检查…';
+    } else if (phase === 'available') {
+      message = '发现新版本 ' + latest;
+    } else if (phase === 'upToDate') {
+      message = '当前已是最新版本';
+    } else if (phase === 'installing') {
+      message = '正在下载并安装…';
+    } else if (ready) {
+      message = desktop ? '更新已安装，请重启完成更新' : '请手动重启应用';
+    } else if (phase === 'error') {
+      message = status.message || '更新失败，请重试';
+    } else {
+      message = '尚未检查更新';
+    }
+    $('update-status').textContent = message;
+    $('update-status').classList.toggle('error', !!updateError || phase === 'error');
+    $('update-status').setAttribute('aria-busy', String(updateBusy));
+  }
+
+  function refreshUpdate() {
+    if (updateBusy || about.open) return;
+    getJson('/api/update/status').then(status => {
+      if (updateBusy || about.open) return;
+      updateError = '';
+      if (status.phase !== 'readyToRestart') restartRequested = false;
+      renderUpdate(status);
+    }).catch(() => {});
+  }
+
+  function runUpdate(operation) {
+    if (updateBusy || !updateState || (operation === 'restart' && restartRequested)) return;
+    updateBusy = true;
+    updateOperation = operation;
+    updateError = '';
+    if (operation !== 'restart') restartRequested = false;
+    renderUpdate(updateState);
+
+    postJson('/api/update/' + operation).then(response => (
+      operation === 'restart' ? null : response.json()
+    )).then(status => {
+      if (operation === 'restart') restartRequested = true;
+      else renderUpdate(status);
+    }).catch(error => {
+      updateError = error.message || '更新请求失败';
+      showToast(updateError);
+    }).finally(() => {
+      updateBusy = false;
+      updateOperation = '';
+      renderUpdate(updateState);
+    });
+  }
+
+  $('update-check').onclick = () => runUpdate('check');
+  $('update-install').onclick = () => runUpdate('install');
+  $('update-restart').onclick = () => runUpdate('restart');
   $('version').onclick = () => {
-    $('about-ver').textContent = $('version').textContent;
+    if (!updateState) $('about-ver').textContent = $('version').textContent;
     about.showModal();
     playSound('open');
   };
@@ -110,6 +206,8 @@ function initShellAndAbout() {
       }
     };
   });
+  refreshUpdate();
+  setInterval(refreshUpdate, 2000);
 }
 
 function initRemoteDialog() {

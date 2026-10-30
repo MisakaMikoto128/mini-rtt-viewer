@@ -166,6 +166,17 @@
   </div>
   <p class="about-line">SEGGER RTT 日志查看器 · UTF-8 / emoji 原样显示 · ANSI 彩色</p>
   <p class="about-line">MIT License</p>
+  <div class="update-panel" aria-label="应用更新">
+    <div class="update-actions">
+      <button type="button" id="update-check" disabled>检查更新</button>
+      <button type="button" id="update-install" hidden disabled>下载并安装</button>
+      <button type="button" id="update-restart" hidden disabled>重启完成更新</button>
+    </div>
+    <p class="about-line" id="update-status" role="status" aria-live="polite">正在获取更新状态…</p>
+    <div class="about-links update-release">
+      <button type="button" id="update-notes" hidden disabled>Release 说明</button>
+    </div>
+  </div>
   <div class="about-links">
     <button data-url="https://github.com/MisakaMikoto128/mini-rtt-viewer">GitHub 仓库</button>
     <button data-url="https://github.com/MisakaMikoto128/mini-rtt-viewer/blob/main/CHANGELOG.md">更新日志</button>

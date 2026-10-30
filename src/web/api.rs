@@ -205,9 +205,18 @@ pub(crate) async fn api_update_check(State(shared): State<Arc<Shared>>) -> Respo
     }
 }
 
+fn install_device_busy(connected: bool, reconnecting: bool, has_session: bool) -> bool {
+    connected || reconnecting || has_session
+}
+
 fn ensure_install_allowed(shared: &Shared) -> anyhow::Result<()> {
-    if shared.connected.load(Ordering::Relaxed) || shared.session.lock().unwrap().is_some() {
-        anyhow::bail!("更新安装冲突 (409)：请先断开目标设备");
+    let has_session = shared.session.lock().unwrap().is_some();
+    if install_device_busy(
+        shared.connected.load(Ordering::Relaxed),
+        shared.reconnecting.load(Ordering::Relaxed),
+        has_session,
+    ) {
+        anyhow::bail!("更新安装冲突 (409)：请先断开目标设备并等待重连结束");
     }
     if shared.update.status().phase != UpdatePhase::Available {
         anyhow::bail!("更新安装冲突 (409)：请先完成检查且不要重复安装");
@@ -570,6 +579,15 @@ pub(crate) async fn api_reset(State(shared): State<Arc<Shared>>, body: Bytes) ->
             Err(msg) => (StatusCode::CONFLICT, msg).into_response(),
         },
         ResetMode::Reconnect => {
+            // 与手动连接/更新安装共用准入：本分支返回后 reconnecting 门闩继续
+            // 覆盖后台等待与重连，直到新 session 登记或重连失败。
+            let admission = Arc::clone(&shared.connect_install);
+            let _admission = match admission.try_lock_owned() {
+                Ok(guard) => guard,
+                Err(_) => {
+                    return (StatusCode::CONFLICT, "正在连接设备或安装更新,请稍候").into_response();
+                }
+            };
             // 已在重连等待期:拒绝重复触发(避免多个重连线程叠跑)
             if shared.reconnecting.load(Ordering::Relaxed) {
                 return (StatusCode::CONFLICT, "正在自动重连,请稍候").into_response();
@@ -979,7 +997,15 @@ pub(crate) async fn api_export(State(shared): State<Arc<Shared>>) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_chip;
+    use super::{install_device_busy, resolve_chip};
+
+    #[test]
+    fn reconnect_pending_excludes_update_install() {
+        assert!(install_device_busy(false, true, false));
+        assert!(install_device_busy(false, false, true));
+        assert!(install_device_busy(true, false, false));
+        assert!(!install_device_busy(false, false, false));
+    }
 
     #[test]
     fn chip_resolution_preserves_exact_non_f103_device() {

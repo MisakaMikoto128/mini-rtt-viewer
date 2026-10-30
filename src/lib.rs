@@ -16,4 +16,5 @@ pub mod gui;
 pub mod jlink_dll;
 pub mod log_model;
 pub mod rtt;
+pub mod update;
 pub mod web;

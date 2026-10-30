@@ -72,6 +72,8 @@ pub struct StoredPrefs {
     /// 数据采集后端 id(当前正式程序仅 "jlink")。可用列表校验/回落在
     /// web.rs serve() 完成,旧值不会阻止启动。
     pub backend: String,
+    /// 上次自动检查更新的 Unix 秒时间戳;0 表示尚未检查
+    pub update_last_check_unix: u64,
 }
 
 impl Default for StoredPrefs {
@@ -106,6 +108,7 @@ impl Default for StoredPrefs {
             timer_hex: false,
             search_regex: false,
             backend: crate::backend::BACKEND_JLINK.into(),
+            update_last_check_unix: 0,
         }
     }
 }
@@ -222,6 +225,7 @@ mod tests {
             timer_hex: true,
             search_regex: true,
             backend: "legacy-backend".into(),
+            update_last_check_unix: 1_700_000_000,
         };
         save_to(&p, &prefs).unwrap();
         let back = load_from(&p);
@@ -247,6 +251,7 @@ mod tests {
         let prefs = load_from(&p);
         assert_eq!(prefs.chip_name, "STM32F030C8");
         assert_eq!(prefs.speed_index, StoredPrefs::default().speed_index);
+        assert_eq!(prefs.update_last_check_unix, 0);
         assert!(prefs.auto_frame);
         let _ = std::fs::remove_file(&p);
     }

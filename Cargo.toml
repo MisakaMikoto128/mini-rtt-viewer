@@ -35,6 +35,11 @@ tao = "0.37.0"
 tray-icon = "0.25.0"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
+[dev-dependencies]
+tempfile = "3"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+sha2 = "0.11"
+
 [build-dependencies]
 png = "0.17"   # 构建期把托盘/窗口 PNG 解码成 RGBA(存在才嵌入,见 build.rs)
 winres = "0.1" # exe 内嵌 app.ico(build.rs 仅在 Windows 目标且文件存在时调用)

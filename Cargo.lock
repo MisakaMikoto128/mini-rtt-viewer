@@ -1824,7 +1824,9 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tao",
+ "tempfile",
  "tokio",
  "tray-icon",
  "unicode-width",
@@ -1832,6 +1834,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "winres",
  "wry",
+ "zip",
 ]
 
 [[package]]

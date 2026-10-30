@@ -133,21 +133,50 @@ def test_timer_invalid_enabled_payload_has_no_partial_update(server):
     assert get_json("/api/prefs") == before
 
 
+def exported_hex_byte_count(exported):
+    hex_line = re.compile(r"[0-9A-F]{2}(?: [0-9A-F]{2})* ?")
+    return sum(
+        len(line.split()) for line in exported.splitlines() if hex_line.fullmatch(line)
+    )
+
+
+def wait_for_coherent_hex(rx_origin, expected_power_messages):
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        rx_count = get_json("/api/status")["rxBytes"] - rx_origin
+        exported = http("GET", "/api/export")[1]
+        displayed_count = exported_hex_byte_count(exported)
+        power_messages = exported.count("J-Link 19")
+        if power_messages == expected_power_messages and rx_count == displayed_count:
+            return rx_count, displayed_count
+        time.sleep(0.02)
+    raise AssertionError(
+        "HEX RX/export did not drain coherently: "
+        f"RX={rx_count}, displayed={displayed_count}, "
+        f"powerMessages={power_messages}"
+    )
+
+
 def test_hex_rx_counts_raw_bytes_not_display_characters(server):
     assert http("POST", "/api/settings", {"hexRx": True})[0] == 200
     time.sleep(0.5)  # 等待切换前已入队的文本块排空
+    assert http("POST", "/api/power", {"on": False})[0] == 200
+    assert poll(
+        lambda: "J-Link 19" in http("GET", "/api/export")[1], True, 3.0
+    )
     assert http("POST", "/api/clear")[0] == 200
-    time.sleep(0.2)
+    rx_origin = get_json("/api/status")["rxBytes"]
+    rx_before, raw_before = wait_for_coherent_hex(rx_origin, 0)
 
-    rx_before = get_json("/api/status")["rxBytes"]
-    export_before = http("GET", "/api/export")[1]
-    time.sleep(0.6)
-    rx_after = get_json("/api/status")["rxBytes"]
-    export_after = http("GET", "/api/export")[1]
+    assert http("POST", "/api/power", {"on": True})[0] == 200
+    assert poll(
+        lambda: get_json("/api/status")["rxBytes"] > rx_origin + rx_before,
+        True,
+        3.0,
+    )
+    assert http("POST", "/api/power", {"on": False})[0] == 200
+    rx_after, raw_after = wait_for_coherent_hex(rx_origin, 2)
 
-    token = re.compile(r"(?<![0-9A-Fa-f])[0-9A-F]{2}(?![0-9A-Fa-f])")
-    raw_before = len(token.findall(export_before))
-    raw_after = len(token.findall(export_after))
     displayed_raw_delta = raw_after - raw_before
     assert displayed_raw_delta > 0
     assert rx_after - rx_before == displayed_raw_delta

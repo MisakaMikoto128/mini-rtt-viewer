@@ -155,6 +155,7 @@ fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc:
     let shared = host.worker_shared();
     std::thread::spawn(move || {
         let mut connected = false;
+        let mut powered = true;
         let mut reset_at = None;
         let mut sequence = 0_u64;
         let mut last_rx = Instant::now();
@@ -169,6 +170,11 @@ fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc:
                         let _ = msg_tx.send(WorkerMsg::Tx(data.len()));
                     }
                     WorkerCmd::Power(on) => {
+                        powered = on;
+                        if frame_open {
+                            let _ = msg_tx.send(WorkerMsg::FrameEnd);
+                            frame_open = false;
+                        }
                         let _ = msg_tx.send(WorkerMsg::PowerResult {
                             on,
                             ok: true,
@@ -211,7 +217,7 @@ fn spawn_stream(host: &dyn Host, cmd_rx: mpsc::Receiver<WorkerCmd>, qa_rx: mpsc:
             let now = Instant::now();
             let frame_timeout =
                 Duration::from_millis(shared.frame_timeout_ms.load(Ordering::Relaxed) as u64);
-            if connected {
+            if connected && powered {
                 if frame_open && now.duration_since(last_rx) > frame_timeout {
                     let _ = msg_tx.send(WorkerMsg::FrameEnd);
                 }

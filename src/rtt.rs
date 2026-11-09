@@ -465,25 +465,41 @@ fn connect_target(
         );
     }
 
-    // 部分设备(实测 STM32G070)的 J-Link 自动发现会漏掉有效 RTT 控制块。
-    // 用设备数据库的 RAM 区域显式定位并设置地址;找不到时保留原有自动发现,
-    // 不把固件尚未初始化 RTT 误判成连接失败。初始 RTT START 仍严格早于 Connect。
-    let regions = jlink.ram_regions_for_device(chip);
-    let control_block = find_rtt_control_block(&regions, *channel, |addr, buf| {
-        jlink.read_mem(addr, buf) >= 0
-    });
-    if let Some(addr) = control_block {
-        let response = restart_rtt_at(
-            addr,
-            |addr| jlink.exec_command_with_status(&format!("SetRTTAddr 0x{addr:08X}")),
-            |cmd| jlink.rtt_control(cmd),
-        )?;
-        if !response.trim().is_empty() {
-            let _ = tx.send(WorkerMsg::Log(format!("[J-Link] {response}\r\n")));
+    // J-Link 在 Connect 时已经自动定位到控制块时，不再重设地址：SetRTTAddr 会让
+    // DLL 把读指针同步到写指针，固件启动阶段已写入的数据随之丢失（本芯片实测丢
+    // 155 字节；固件只在启动打印时，掉了就再也看不到）。只有自动发现失败时才按
+    // 设备库的 RAM 区域扫描并显式设置——部分设备(实测 STM32G070)会自动漏掉有效
+    // 控制块。初始 RTT START 仍严格早于 Connect。
+    let mut num_up = jlink.rtt_num_up_buffers();
+    for _ in 0..15 {
+        if num_up > 0 {
+            break;
         }
+        thread::sleep(Duration::from_millis(20));
+        num_up = jlink.rtt_num_up_buffers();
+    }
+    if num_up > 0 {
         let _ = tx.send(WorkerMsg::Log(format!(
-            "[RTT] 已定位控制块 0x{addr:08X}\r\n"
+            "[RTT] J-Link 自动定位到 {num_up} 个上行通道\r\n"
         )));
+    } else {
+        let regions = jlink.ram_regions_for_device(chip);
+        let control_block = find_rtt_control_block(&regions, *channel, |addr, buf| {
+            jlink.read_mem(addr, buf) >= 0
+        });
+        if let Some(addr) = control_block {
+            let response = restart_rtt_at(
+                addr,
+                |addr| jlink.exec_command_with_status(&format!("SetRTTAddr 0x{addr:08X}")),
+                |cmd| jlink.rtt_control(cmd),
+            )?;
+            if !response.trim().is_empty() {
+                let _ = tx.send(WorkerMsg::Log(format!("[J-Link] {response}\r\n")));
+            }
+            let _ = tx.send(WorkerMsg::Log(format!(
+                "[RTT] 已定位控制块 0x{addr:08X}\r\n"
+            )));
+        }
     }
 
     let iface_name = if tif == TIF_SWD { "SWD" } else { "JTAG" };

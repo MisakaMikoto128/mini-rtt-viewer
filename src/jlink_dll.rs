@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const RTT_CMD_START: c_int = 0;
 pub const RTT_CMD_STOP: c_int = 1;
+pub const RTT_CMD_GETNUMBUF: c_int = 3;
+/// JLINK_RTTERMINAL_Control 的查询方向:UP = 0、DOWN = 1
+const RTT_DIR_UP: c_int = 0;
 
 pub const TIF_JTAG: c_int = 0;
 pub const TIF_SWD: c_int = 1;
@@ -198,6 +201,19 @@ impl JLinkDll {
             let f: Symbol<unsafe extern "C" fn(c_int, *mut c_void) -> c_int> =
                 self.lib.get(b"JLINK_RTTERMINAL_Control").unwrap();
             f(cmd, std::ptr::null_mut())
+        }
+    }
+
+    /// RTT 上行通道数;负值表示 DLL 尚未定位到控制块。
+    ///
+    /// GETNUMBUF 的入参是“查询方向”的地址(UP = 0),返回值才是通道数,
+    /// 与 START/STOP 传空指针的用法不同。
+    pub fn rtt_num_up_buffers(&self) -> c_int {
+        unsafe {
+            let f: Symbol<unsafe extern "C" fn(c_int, *mut c_void) -> c_int> =
+                self.lib.get(b"JLINK_RTTERMINAL_Control").unwrap();
+            let mut dir: c_int = RTT_DIR_UP;
+            f(RTT_CMD_GETNUMBUF, &mut dir as *mut c_int as *mut c_void)
         }
     }
 

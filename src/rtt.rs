@@ -110,8 +110,8 @@ fn run(
     cmd_rx: &mpsc::Receiver<WorkerCmd>,
     stop: &AtomicBool,
 ) -> anyhow::Result<()> {
-    let jlink = connect_target(config, tx, stop)?;
-    rtt_read_loop(&jlink, config, tx, cmd_rx, stop);
+    let (jlink, rtt_block_addr) = connect_target(config, tx, stop)?;
+    rtt_read_loop(&jlink, config, tx, cmd_rx, stop, rtt_block_addr);
     Ok(())
 }
 
@@ -360,7 +360,7 @@ fn connect_target(
     config: &WorkerConfig,
     tx: &mpsc::Sender<WorkerMsg>,
     stop: &AtomicBool,
-) -> anyhow::Result<JLinkDll> {
+) -> anyhow::Result<(JLinkDll, Option<u32>)> {
     let WorkerConfig {
         chip,
         iface_index,
@@ -471,6 +471,8 @@ fn connect_target(
     // 设备库的 RAM 区域扫描并显式设置——部分设备(实测 STM32G070)会自动漏掉有效
     // 控制块。初始 RTT START 仍严格早于 Connect。
     let mut num_up = jlink.rtt_num_up_buffers();
+    // 本次连接显式钉过的控制块地址；留给复位路径判断要不要重设
+    let mut pinned_addr: Option<u32> = None;
     for _ in 0..15 {
         if num_up > 0 {
             break;
@@ -499,6 +501,7 @@ fn connect_target(
             let _ = tx.send(WorkerMsg::Log(format!(
                 "[RTT] 已定位控制块 0x{addr:08X}\r\n"
             )));
+            pinned_addr = Some(addr);
         }
     }
 
@@ -519,7 +522,7 @@ fn connect_target(
         iface: iface_name.into(),
         speed_khz: *speed_khz,
     }));
-    Ok(jlink)
+    Ok((jlink, pinned_addr))
 }
 
 /// RTT 读循环:5ms 轮询读通道 → 帧间隔判定 → 透传块;同时消化命令管道
@@ -530,6 +533,7 @@ fn rtt_read_loop(
     tx: &mpsc::Sender<WorkerMsg>,
     cmd_rx: &mpsc::Receiver<WorkerCmd>,
     stop: &AtomicBool,
+    mut rtt_block_addr: Option<u32>,
 ) {
     let WorkerConfig {
         channel,
@@ -629,28 +633,41 @@ fn rtt_read_loop(
                                 },
                                 || thread::sleep(RESET_DISCOVERY_DELAY),
                             )?;
-                            if let Some(addr) = control_block {
-                                let response = restart_rtt_at(
-                                    addr,
-                                    |addr| {
-                                        jlink.exec_command_with_status(&format!(
-                                            "SetRTTAddr 0x{addr:08X}"
-                                        ))
-                                    },
-                                    |cmd| jlink.rtt_control(cmd),
-                                )?;
-                                if !response.trim().is_empty() {
-                                    let _ =
-                                        tx.send(WorkerMsg::Log(format!("[J-Link] {response}\r\n")));
+                            match control_block {
+                                // 地址没变就不动 RTT：重设地址会让 DLL 把读指针同步到
+                                // 写指针，固件复位后刚打印的内容整块丢失（实测重设读
+                                // 0 字节、不重设读 155 字节）。静态分配的控制块不会搬家。
+                                Some(addr) if Some(addr) == rtt_block_addr => {
+                                    let _ = tx.send(WorkerMsg::Log(format!(
+                                        "[RTT] 控制块地址未变 0x{addr:08X},沿用现有会话\r\n"
+                                    )));
                                 }
-                                let _ = tx.send(WorkerMsg::Log(format!(
-                                    "[RTT] 复位后已定位控制块 0x{addr:08X}\r\n"
-                                )));
-                            } else {
-                                restart_rtt(|cmd| jlink.rtt_control(cmd))?;
-                                let _ = tx.send(WorkerMsg::Log(
-                                    "[RTT] 复位后未定位控制块,使用自动发现\r\n".into(),
-                                ));
+                                Some(addr) => {
+                                    let response = restart_rtt_at(
+                                        addr,
+                                        |addr| {
+                                            jlink.exec_command_with_status(&format!(
+                                                "SetRTTAddr 0x{addr:08X}"
+                                            ))
+                                        },
+                                        |cmd| jlink.rtt_control(cmd),
+                                    )?;
+                                    if !response.trim().is_empty() {
+                                        let _ = tx.send(WorkerMsg::Log(format!(
+                                            "[J-Link] {response}\r\n"
+                                        )));
+                                    }
+                                    let _ = tx.send(WorkerMsg::Log(format!(
+                                        "[RTT] 复位后已定位控制块 0x{addr:08X}\r\n"
+                                    )));
+                                    rtt_block_addr = Some(addr);
+                                }
+                                None => {
+                                    restart_rtt(|cmd| jlink.rtt_control(cmd))?;
+                                    let _ = tx.send(WorkerMsg::Log(
+                                        "[RTT] 复位后未定位控制块,使用自动发现\r\n".into(),
+                                    ));
+                                }
                             }
                             Ok(())
                         },

@@ -146,6 +146,8 @@ pub trait Host: Send + Sync + 'static {
     fn set_session(&self, s: Option<SessionHandle>);
     fn connected(&self) -> bool;
     fn jlinks(&self) -> Vec<(u32, String)>;
+    /// 独立控制烧录器电源时使用用户选择的序列号。
+    fn selected_jlink_sn(&self) -> Option<u32>;
     fn set_device_names(&self, names: Vec<String>);
     fn worker_shared(&self) -> WorkerShared;
     /// reset reconnect 等待窗口门闩:web 层置位,重连线程收尾清除

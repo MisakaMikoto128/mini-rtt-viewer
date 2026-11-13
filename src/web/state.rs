@@ -171,6 +171,10 @@ impl Host for Shared {
         self.jlinks.lock().unwrap().clone()
     }
 
+    fn selected_jlink_sn(&self) -> Option<u32> {
+        *self.jlink_serial.lock().unwrap()
+    }
+
     fn set_device_names(&self, names: Vec<String>) {
         *self.device_names.lock().unwrap() = names;
     }

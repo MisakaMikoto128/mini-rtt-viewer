@@ -156,7 +156,16 @@ def test_power_http_failure_rolls_back_checkbox(page):
     assert not page.is_checked("#power")
 
 
-def test_power_websocket_result_is_authoritative_and_disconnect_clears(page):
+def test_power_control_is_available_without_rtt_connection(page):
+    emit(page, {"type": "state", "connected": False, "status": "● 未连接 (qa)"})
+    assert page.is_enabled("#power")
+    page.route("**/api/power", lambda route: route.fulfill(status=200, body=""))
+    with page.expect_request("**/api/power") as request:
+        page.check("#power")
+    assert json.loads(request.value.post_data) == {"on": True}
+
+
+def test_power_websocket_result_is_authoritative_and_disconnect_preserves_state(page):
     emit(page, {"type": "state", "connected": True, "status": "● 已连接 (qa)"})
     page.route("**/api/power", lambda route: route.fulfill(status=200, body=""))
 
@@ -175,7 +184,8 @@ def test_power_websocket_result_is_authoritative_and_disconnect_clears(page):
     emit(page, {"type": "power", "on": True, "ok": True, "message": "已开启"})
     assert page.is_checked("#power")
     emit(page, {"type": "state", "connected": False, "status": "● 未连接 (qa)"})
-    assert not page.is_checked("#power")
+    assert page.is_checked("#power")
+    assert page.is_enabled("#power")
 
 
 @pytest.mark.parametrize("status", [200, 500])

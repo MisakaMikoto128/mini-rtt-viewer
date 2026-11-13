@@ -128,11 +128,17 @@ impl RttBackend for QaBackend {
     }
 
     fn power(&self, host: &dyn Host, on: bool) -> Result<(), String> {
-        if !host.connected() {
-            return Err("未连接".into());
-        }
         if let Some(session) = host.session() {
             let _ = session.cmd_tx.send(WorkerCmd::Power(on));
+        } else {
+            host.send_msg(WorkerMsg::PowerResult {
+                on,
+                ok: true,
+                message: format!(
+                    "[J-Link] 电源输出 {}  (qa, 无 RTT 会话)\r\n",
+                    if on { "开" } else { "关" }
+                ),
+            });
         }
         Ok(())
     }

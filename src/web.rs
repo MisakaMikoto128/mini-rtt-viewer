@@ -23,7 +23,7 @@
 //! - POST /api/connect     {chip, ifaceIndex, speedIndex, channel, jlinkSn?};
 //!   jlinkSn = 选中的序列号(缺省/无效回落列表首台);连接参数写入偏好快照源
 //! - POST /api/disconnect  停止当前 worker,Exited 后回到未连接态
-//! - POST /api/power       {on};未连接 409
+//! - POST /api/power       {on};独立控制烧录器,不要求 RTT 会话
 //! - POST /api/reset       {mode?: "in-place"|"reconnect"};缺省 in-place;
 //!   reconnect=先走断开逻辑,1 秒后用上次连接参数重新 spawn worker(无上次
 //!   参数 409);空请求体容忍为缺省 in-place

@@ -132,15 +132,13 @@ function setState(on, status) {
   if (!on) {
     zeroRates();
     $('session').textContent = '0s';
-    powerOn = false;
-    $('power').checked = false;
   }
   const btn = $('connect-btn');
   btn.textContent = on ? '断开' : '连接';
   btn.classList.toggle('danger', on);
   btn.classList.toggle('primary', !on);
   $('reset-btn').disabled = !on;
-  $('power').disabled = !on;
+  $('power').disabled = false;
   $('send-btn').disabled = !on;
   // 断开后设备信息为上次残留数据(F2):置灰示不可信,连接态恢复
   $('device-details').classList.toggle('off', !on);

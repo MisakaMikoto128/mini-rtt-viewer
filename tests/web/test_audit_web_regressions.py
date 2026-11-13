@@ -46,6 +46,19 @@ def test_disconnected_send_has_no_state_side_effects(server):
     assert http("POST", "/api/send", {"text": "abc", "hex": True})[0] == 400
 
 
+def test_disconnected_power_controls_probe_without_rtt_session(server):
+    assert poll(lambda: get_json("/api/status")["connected"], True, 3.0)
+    assert http("POST", "/api/disconnect")[0] == 200
+    assert poll(lambda: get_json("/api/status")["connected"], False, 3.0)
+
+    status, _ = http("POST", "/api/power", {"on": True})
+    assert status == 200
+    assert get_json("/api/status")["connected"] is False
+    assert poll(
+        lambda: "电源输出 开" in http("GET", "/api/export")[1], True, 3.0
+    )
+
+
 def test_settings_validate_backend_before_applying_any_field(server):
     assert http("POST", "/api/settings", {"rxEnding": 2})[0] == 200
 

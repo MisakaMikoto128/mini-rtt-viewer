@@ -16,7 +16,7 @@ NOTES_URL = (
 def update_status(**overrides):
     """Mirror every field of the camelCase UpdateStatus API contract."""
     status = {
-        "currentVersion": "0.5.2",
+        "currentVersion": "0.6.0",
         "latestVersion": None,
         "phase": "idle",
         "notesUrl": None,
@@ -141,7 +141,7 @@ def test_failed_check_preserves_current_version_and_recovers(page):
     page.click("#update-check")
 
     expect(page.locator("#update-status")).to_have_text("检查失败:网络不可用")
-    expect(page.locator("#about-ver")).to_have_text("v0.5.2")
+    expect(page.locator("#about-ver")).to_have_text("v0.6.0")
     expect(page.locator("#update-check")).to_be_enabled()
     expect(page.locator("#update-install")).to_be_hidden()
 
@@ -199,7 +199,7 @@ def test_connected_install_409_is_shown_and_requires_explicit_retry(page):
     expect(page.locator("#update-status")).to_have_text(
         "更新安装冲突 (409)：请先断开目标设备"
     )
-    expect(page.locator("#about-ver")).to_have_text("v0.5.2")
+    expect(page.locator("#about-ver")).to_have_text("v0.6.0")
     expect(page.locator("#update-install")).to_be_enabled()
     expect(page.locator("#update-restart")).to_be_hidden()
     page.wait_for_timeout(150)

@@ -351,6 +351,42 @@ where
     });
 }
 
+/// 不连接目标，仅临时打开选定烧录器控制 19 脚供电。
+/// 保持与 RTT worker 相同的 SelectByUSBSN → SetHostIF → OpenEx 顺序，
+/// 但不执行 RTT START、TIF、Device 或 Connect。
+pub fn power_probe_without_target(
+    on: bool,
+    selected_sn: Option<u32>,
+    tx: &mpsc::Sender<WorkerMsg>,
+) -> anyhow::Result<()> {
+    let result = (|| {
+        let jlink = JLinkDll::load()?;
+        jlink.disable_dialog_boxes();
+        let selected_sn =
+            selected_sn.or_else(|| jlink.enumerate_emulators().first().map(|(sn, _)| *sn));
+        if let Some(sn) = selected_sn {
+            if jlink.select_by_usb_sn(sn) < 0 {
+                anyhow::bail!("找不到序列号 {sn} 的 J-Link(可能已拔出,请重新选择)");
+            }
+            jlink.exec_command(&format!("SetHostIF USB = {sn}"));
+        }
+        let rc = jlink.open_ex();
+        if rc < 0 {
+            anyhow::bail!("J-Link 打开失败(错误码 {rc}):请检查驱动安装/设备连接");
+        }
+        power_target(on, tx, |command| jlink.exec_command_with_status(command));
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        let _ = tx.send(WorkerMsg::PowerResult {
+            on,
+            ok: false,
+            message: format!("[J-Link] 电源控制失败:{error}\r\n"),
+        });
+    }
+    result
+}
+
 /// 连接序列:加载 DLL → 抑制弹窗 → 选定调试器 → OpenEx → RTT START →
 /// TIF/速度/设备名 → Connect(带重试)→ 设备 RAM 显式定位 RTT 控制块 →
 /// State(true) + DeviceInfo。

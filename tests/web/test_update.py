@@ -257,7 +257,7 @@ def check_available():
 def test_update_check_does_not_install_and_status_uses_server_truth(qa):
     _server, install_path, fixture = qa
     status = get_json("/api/update/status")
-    assert status["currentVersion"] == "0.5.2"
+    assert status["currentVersion"] == "0.6.0"
     assert status["phase"] == "idle"
 
     checked = check_available()

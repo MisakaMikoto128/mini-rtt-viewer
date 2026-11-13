@@ -1,6 +1,6 @@
 # Mini RTT Viewer — 项目经验笔记
 
-## 项目现状速览(2026-10-31,v0.5.2 + GitHub Release 更新)
+## 项目现状速览(2026-10-31,v0.6.0)
 
 **一句话**:J-Link RTT 日志查看器,单 exe 双形态——桌面壳(tao+wry+tray 内嵌
 WebView)与纯服务(`--no-window`)共用同一套 Rust 数据层 + axum Web 管理台。

@@ -533,10 +533,22 @@ pub(crate) async fn api_power(
     State(shared): State<Arc<Shared>>,
     Json(req): Json<PowerReq>,
 ) -> Response {
-    // 未连接拒绝(前端此时也禁用勾选框;409 文案由后端提供)
-    match shared.backend().power(&*shared, req.on) {
-        Ok(()) => StatusCode::OK.into_response(),
-        Err(msg) => (StatusCode::CONFLICT, msg).into_response(),
+    // 独立电源会话与连接/重连/更新共用烧录器准入，避免并发打开同一 J-Link。
+    let admission = Arc::clone(&shared.connect_install);
+    let _admission = match admission.try_lock_owned() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return (StatusCode::CONFLICT, "正在连接设备或安装更新,请稍候").into_response();
+        }
+    };
+    match tokio::task::spawn_blocking(move || shared.backend().power(&*shared, req.on)).await {
+        Ok(Ok(())) => StatusCode::OK.into_response(),
+        Ok(Err(msg)) => (StatusCode::CONFLICT, msg).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("电源控制任务失败:{error}"),
+        )
+            .into_response(),
     }
 }
 

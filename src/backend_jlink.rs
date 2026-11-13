@@ -204,14 +204,18 @@ impl RttBackend for JLinkBackend {
         Ok(())
     }
 
-    /// 电源输出开关(J-Link 19 脚):未登记会话 409「未连接」;会话存在但
-    /// 尚未连上目标时命令照发(worker 侧连上后生效),与现状一致
+    /// 电源属于烧录器控制面：有 RTT 会话时复用 worker，避免同一 DLL 并发；
+    /// 没有会话时只临时打开选定 J-Link，不连接目标或启动 RTT。
     fn power(&self, host: &dyn Host, on: bool) -> Result<(), String> {
-        let Some(s) = host.session() else {
-            return Err("未连接".into());
-        };
-        let _ = s.cmd_tx.send(WorkerCmd::Power(on));
-        Ok(())
+        if let Some(s) = host.session() {
+            let _ = s.cmd_tx.send(WorkerCmd::Power(on));
+            return Ok(());
+        }
+        let selected_sn = host
+            .selected_jlink_sn()
+            .or_else(|| host.jlinks().first().map(|(sn, _)| *sn));
+        rtt::power_probe_without_target(on, selected_sn, &host.msg_tx())
+            .map_err(|error| error.to_string())
     }
 }
 
